@@ -170,10 +170,21 @@
     }
     .dl-icon { width: 38px; height: 38px; flex-shrink: 0; }
     .dl-info { display: flex; flex-direction: column; flex: 1; }
-    .dl-label { font-size: 10px; font-weight: 700; color: #3ddc84; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 2px; }
     .dl-title { font-size: 17px; font-weight: 800; color: #fff; line-height: 1.2; }
     .dl-sub { font-size: 11.5px; font-weight: 500; color: rgba(255,255,255,0.45); margin-top: 3px; }
     .dl-arrow { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.4; }
+    .dl-entry-note {
+      margin-top: 12px; text-align: center;
+      font-size: 12.5px; font-weight: 500; color: #555;
+      line-height: 1.5;
+    }
+    .dl-entry-note strong { color: #111; font-weight: 700; }
+    .dl-entry-crypto {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: #f0f0f0; border-radius: 6px;
+      padding: 1px 7px; font-size: 11.5px; font-weight: 700;
+      color: #333; margin-left: 2px; vertical-align: middle;
+    }
 
     footer {
       text-align: center; padding: 20px;
@@ -371,8 +382,6 @@
           <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-10C2.67 8 2 8.67 2 9.5v7c0 .83.67 1.5 1.5 1.5S5 17.33 5 16.5v-7C5 8.67 4.33 8 3.5 8zm17 0c-.83 0-1.5.67-1.5 1.5v7c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5v-7c0-.83-.67-1.5-1.5-1.5zm-4.97-5.84 1.3-1.3a.496.496 0 0 0 0-.71.503.503 0 0 0-.71 0l-1.48 1.48A5.84 5.84 0 0 0 12 1c-1.1 0-2.15.23-3.09.63L7.43.15a.503.503 0 0 0-.71 0 .496.496 0 0 0 0 .71l1.3 1.3C6.41 3.07 5 5.38 5 8h14c0-2.62-1.41-4.93-3.47-5.84zM10 6H9V5h1v1zm5 0h-1V5h1v1z" fill="#3ddc84"/>
         </svg>
         <span class="dl-info">
-          <span class="dl-label" data-lang="es visible">Descarga gratuita</span>
-          <span class="dl-label" data-lang="en">Free download</span>
           <span class="dl-title">Android</span>
           <span class="dl-sub" data-lang="es visible">APK · v1.0</span>
           <span class="dl-sub" data-lang="en">APK · v1.0</span>
@@ -382,6 +391,14 @@
         </svg>
       </a>
     </div>
+    <p class="dl-entry-note" data-lang="es visible">
+      App gratuita · la entrada a cada episodio cuesta <strong>$15</strong> abonados con
+      <span class="dl-entry-crypto">USDC</span> en red <span class="dl-entry-crypto">Polygon</span>
+    </p>
+    <p class="dl-entry-note" data-lang="en">
+      Free app · each episode entry costs <strong>$15</strong> paid with
+      <span class="dl-entry-crypto">USDC</span> on <span class="dl-entry-crypto">Polygon</span> network
+    </p>
   </section>
 
 </main>
