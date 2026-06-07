@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -204,28 +204,28 @@
 <header>
   <img src="icon.png" alt="Mining The Blocks" class="logo">
   <h1>Mining The Blocks</h1>
-  <p class="tagline" data-lang-inline="es visible">Excavá un cubo de 8 millones de celdas. Ganá premios reales en USDC.</p>
-  <p class="tagline" data-lang-inline="en">Mine a cube of 8 million cells. Win real prizes in USDC.</p>
+  <p class="tagline" data-lang-inline="es">Excavá un cubo de 8 millones de celdas. Ganá premios reales en USDC.</p>
+  <p class="tagline" data-lang-inline="en visible">Mine a cube of 8 million cells. Win real prizes in USDC.</p>
 </header>
 
 <div class="lang-bar">
-  <button class="lang-btn active" onclick="setLang('es')">ES</button>
-  <button class="lang-btn" onclick="setLang('en')">EN</button>
+  <button class="lang-btn" onclick="setLang('es')">ES</button>
+  <button class="lang-btn active" onclick="setLang('en')">EN</button>
 </div>
 
 <main>
 
   <!-- ── CANJEAR CÓDIGO ── -->
   <section>
-    <div class="section-label" data-lang="es visible">Canjear código de gema / NFT</div>
-    <div class="section-label" data-lang="en">Redeem gem / NFT code</div>
+    <div class="section-label" data-lang="es">Canjear código de gema / NFT</div>
+    <div class="section-label" data-lang="en visible">Redeem gem / NFT code</div>
 
     <div id="stepCode">
       <div class="input-row">
         <input type="text" id="codeInput" placeholder="MTB3-XXXXXXXX-XXXXXX" maxlength="24" autocomplete="off" spellcheck="false">
         <button class="btn" onclick="verifyCode()" id="btnVerify">
-          <span data-lang-inline="es visible">Verificar</span>
-          <span data-lang-inline="en">Verify</span>
+          <span data-lang-inline="es">Verificar</span>
+          <span data-lang-inline="en visible">Verify</span>
         </button>
       </div>
       <p class="msg-error" id="codeError"></p>
@@ -234,111 +234,111 @@
     <div class="card" id="cardEmail">
       <span class="gem-badge" id="gemBadge"></span>
       <p class="card-title">
-        <span data-lang-inline="es visible">🎉 ¡Código válido!</span>
-        <span data-lang-inline="en">🎉 Valid code!</span>
+        <span data-lang-inline="es">🎉 ¡Código válido!</span>
+        <span data-lang-inline="en visible">🎉 Valid code!</span>
       </p>
       <p class="card-sub">
-        <span data-lang-inline="es visible">Ingresá tu email para recibir las instrucciones de cobro de tu premio.</span>
-        <span data-lang-inline="en">Enter your email to receive prize claim instructions.</span>
+        <span data-lang-inline="es">Ingresá tu email para recibir las instrucciones de cobro de tu premio.</span>
+        <span data-lang-inline="en visible">Enter your email to receive prize claim instructions.</span>
       </p>
       <div class="input-row">
         <input type="email" id="emailInput" placeholder="email@ejemplo.com">
         <button class="btn" onclick="submitClaim()" id="btnClaim">
-          <span data-lang-inline="es visible">Enviar</span>
-          <span data-lang-inline="en">Send</span>
+          <span data-lang-inline="es">Enviar</span>
+          <span data-lang-inline="en visible">Send</span>
         </button>
       </div>
       <p class="msg-error" id="emailError"></p>
     </div>
 
     <div class="card" id="cardDone">
-      <p class="card-title">✅ <span data-lang-inline="es visible">¡Solicitud enviada!</span><span data-lang-inline="en">Request submitted!</span></p>
+      <p class="card-title">✅ <span data-lang-inline="es">¡Solicitud enviada!</span><span data-lang-inline="en visible">Request submitted!</span></p>
       <p class="card-sub">
-        <span data-lang-inline="es visible">Te contactamos por email con los próximos pasos. Puede demorar hasta 48 horas hábiles.</span>
-        <span data-lang-inline="en">We'll contact you by email with next steps. Allow up to 48 business hours.</span>
+        <span data-lang-inline="es">Te contactamos por email con los próximos pasos. Puede demorar hasta 48 horas hábiles.</span>
+        <span data-lang-inline="en visible">We'll contact you by email with next steps. Allow up to 48 business hours.</span>
       </p>
     </div>
   </section>
 
   <!-- ── QUÉ ES ── -->
   <section>
-    <div class="section-label" data-lang="es visible">¿Qué es?</div>
-    <div class="section-label" data-lang="en">What is it?</div>
+    <div class="section-label" data-lang="es">¿Qué es?</div>
+    <div class="section-label" data-lang="en visible">What is it?</div>
 
-    <p class="desc" data-lang="es visible">
-      <strong>Mining The Blocks</strong> es un juego multijugador de minería por turnos. El mundo es un cubo masivo de <strong>201×201×201 bloques</strong> — más de 8 millones de celdas — que los jugadores excavan juntos en episodios de hasta <strong>100,000 participantes</strong>. Cada día recibís un pico gratis para minar; también podés conseguir más viendo anuncios o invitando amigos.
+    <p class="desc" data-lang="es">
+      <strong>Mining The Blocks</strong> es un juego multijugador de minería. El mundo es un cubo masivo de <strong>201×201×201 bloques</strong> — más de 8 millones de celdas — que los jugadores excavan juntos en episodios de hasta <strong>100,000 participantes</strong>. Cada día recibís un pico gratis para minar; también podés conseguir más viendo anuncios o invitando amigos.
     </p>
-    <p class="desc" data-lang="es visible">
+    <p class="desc" data-lang="es">
       Dentro del cubo hay <strong>9 tipos de gemas</strong> con valor real en USDC, desde $15 hasta $100,000. Las gemas más raras están enterradas en las capas más profundas: cuanto más adentro llegues, mayor es el premio. También hay <strong>283,241 picos</strong> escondidos que otorgan turnos adicionales de minería.
     </p>
-    <p class="desc" data-lang="en">
-      <strong>Mining The Blocks</strong> is a multiplayer turn-based mining game. The world is a massive <strong>201×201×201-block cube</strong> — over 8 million cells — that players mine together in episodes of up to <strong>100,000 participants</strong>. Every day you receive a free pick to mine; you can earn more by watching ads or inviting friends.
+    <p class="desc" data-lang="en visible">
+      <strong>Mining The Blocks</strong> is a multiplayer mining game. The world is a massive <strong>201×201×201-block cube</strong> — over 8 million cells — that players mine together in episodes of up to <strong>100,000 participants</strong>. Every day you receive a free pick to mine; you can earn more by watching ads or inviting friends.
     </p>
-    <p class="desc" data-lang="en">
+    <p class="desc" data-lang="en visible">
       Inside the cube are <strong>9 gem types</strong> with real USDC value, ranging from $15 to $100,000. The rarest gems are buried in the deepest layers: the further you go, the bigger the prize. There are also <strong>283,241 picks</strong> hidden inside that grant additional mining turns.
     </p>
 
     <div class="stats-grid">
       <div class="stat">
         <div class="stat-num">8.1M</div>
-        <div class="stat-lbl" data-lang="es visible">Cubos por servidor</div>
-        <div class="stat-lbl" data-lang="en">Cubes per server</div>
+        <div class="stat-lbl" data-lang="es">Cubos por servidor</div>
+        <div class="stat-lbl" data-lang="en visible">Cubes per server</div>
       </div>
       <div class="stat">
         <div class="stat-num">$211K</div>
-        <div class="stat-lbl" data-lang="es visible">En premios por cubo completo</div>
-        <div class="stat-lbl" data-lang="en">In prizes per completed cube</div>
+        <div class="stat-lbl" data-lang="es">En premios por cubo completo</div>
+        <div class="stat-lbl" data-lang="en visible">In prizes per completed cube</div>
       </div>
       <div class="stat">
         <div class="stat-num">9</div>
-        <div class="stat-lbl" data-lang="es visible">Tipos de gemas con valor real</div>
-        <div class="stat-lbl" data-lang="en">Gem types with real cash value</div>
+        <div class="stat-lbl" data-lang="es">Tipos de gemas con valor real</div>
+        <div class="stat-lbl" data-lang="en visible">Gem types with real cash value</div>
       </div>
       <div class="stat">
         <div class="stat-num">10</div>
-        <div class="stat-lbl" data-lang="es visible">Episodios por cadena</div>
-        <div class="stat-lbl" data-lang="en">Episodes per chain</div>
+        <div class="stat-lbl" data-lang="es">Episodios por cadena</div>
+        <div class="stat-lbl" data-lang="en visible">Episodes per chain</div>
       </div>
     </div>
 
     <div class="episode-free">
-      <div class="episode-free-title" data-lang="es visible">🎁 Episodio 10 gratis</div>
-      <div class="episode-free-title" data-lang="en">🎁 Episode 10 is free</div>
-      <div class="episode-free-desc" data-lang="es visible">Si participás en los 9 episodios anteriores de la misma cadena, el episodio final no tiene costo de entrada.</div>
-      <div class="episode-free-desc" data-lang="en">If you participate in the 9 previous episodes of the same chain, the final episode has no entry cost.</div>
+      <div class="episode-free-title" data-lang="es">🎁 Episodio 10 gratis</div>
+      <div class="episode-free-title" data-lang="en visible">🎁 Episode 10 is free</div>
+      <div class="episode-free-desc" data-lang="es">Si participás en los 9 episodios anteriores de la misma cadena, el episodio final no tiene costo de entrada.</div>
+      <div class="episode-free-desc" data-lang="en visible">If you participate in the 9 previous episodes of the same chain, the final episode has no entry cost.</div>
     </div>
   </section>
 
   <!-- ── GEMAS Y PICOS ── -->
   <section>
-    <div class="section-label" data-lang="es visible">Gemas y premios</div>
-    <div class="section-label" data-lang="en">Gems &amp; prizes</div>
+    <div class="section-label" data-lang="es">Gemas y premios</div>
+    <div class="section-label" data-lang="en visible">Gems &amp; prizes</div>
 
     <table class="gems-table">
       <thead>
         <tr>
-          <th><span data-lang-inline="es visible">Gema</span><span data-lang-inline="en">Gem</span></th>
-          <th><span data-lang-inline="es visible">Premio</span><span data-lang-inline="en">Prize</span></th>
-          <th><span data-lang-inline="es visible">Cant. / cubo</span><span data-lang-inline="en">Qty / cube</span></th>
+          <th><span data-lang-inline="es">Gema</span><span data-lang-inline="en visible">Gem</span></th>
+          <th><span data-lang-inline="es">Premio</span><span data-lang-inline="en visible">Prize</span></th>
+          <th><span data-lang-inline="es">Cant. / cubo</span><span data-lang-inline="en visible">Qty / cube</span></th>
         </tr>
       </thead>
       <tbody>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_1.png" alt="">Diamante rojo</td>       <td class="gem-prize">$100,000</td><td class="gem-qty">×1</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_2.png" alt="">Painita</td>             <td class="gem-prize">$50,000</td> <td class="gem-qty">×1</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_3.png" alt="">Musgravita</td>          <td class="gem-prize">$10,000</td> <td class="gem-qty">×5</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_4.png" alt="">Jadeíta imperial</td>    <td class="gem-prize">$1,000</td>  <td class="gem-qty">×50</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_5.png" alt="">Alejandrita</td>         <td class="gem-prize">$500</td>    <td class="gem-qty">×100</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_6.png" alt="">Rubí sangre de paloma</td><td class="gem-prize">$100</td>  <td class="gem-qty">×500</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_7.png" alt="">Diamante azul</td>       <td class="gem-prize">$50</td>     <td class="gem-qty">×1,000</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_8.png" alt="">Diamante rosa</td>       <td class="gem-prize">$25</td>     <td class="gem-qty">×4,000</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_9.png" alt="">Esmeralda colombiana</td><td class="gem-prize">$15</td>    <td class="gem-qty">×10,000</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_1.png" alt=""><span data-lang-inline="es">Diamante rojo</span><span data-lang-inline="en visible">Red Diamond</span></td>          <td class="gem-prize">$100,000</td><td class="gem-qty">×1</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_2.png" alt=""><span data-lang-inline="es">Painita</span><span data-lang-inline="en visible">Painite</span></td>                          <td class="gem-prize">$50,000</td> <td class="gem-qty">×1</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_3.png" alt=""><span data-lang-inline="es">Musgravita</span><span data-lang-inline="en visible">Musgravite</span></td>                    <td class="gem-prize">$10,000</td> <td class="gem-qty">×5</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_4.png" alt=""><span data-lang-inline="es">Jadeíta imperial</span><span data-lang-inline="en visible">Imperial Jadeite</span></td>        <td class="gem-prize">$1,000</td>  <td class="gem-qty">×50</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_5.png" alt=""><span data-lang-inline="es">Alejandrita</span><span data-lang-inline="en visible">Alexandrite</span></td>                  <td class="gem-prize">$500</td>    <td class="gem-qty">×100</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_6.png" alt=""><span data-lang-inline="es">Rubí sangre de paloma</span><span data-lang-inline="en visible">Pigeon Blood Ruby</span></td>  <td class="gem-prize">$100</td>    <td class="gem-qty">×500</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_7.png" alt=""><span data-lang-inline="es">Diamante azul</span><span data-lang-inline="en visible">Blue Diamond</span></td>               <td class="gem-prize">$50</td>     <td class="gem-qty">×1,000</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_8.png" alt=""><span data-lang-inline="es">Diamante rosa</span><span data-lang-inline="en visible">Pink Diamond</span></td>               <td class="gem-prize">$25</td>     <td class="gem-qty">×4,000</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_9.png" alt=""><span data-lang-inline="es">Esmeralda colombiana</span><span data-lang-inline="en visible">Colombian Emerald</span></td>   <td class="gem-prize">$15</td>     <td class="gem-qty">×10,000</td></tr>
       </tbody>
     </table>
-    <p class="gem-note" data-lang="es visible">
+    <p class="gem-note" data-lang="es">
       ⛏️
       Además, el cubo contiene <strong>283,241 picos</strong> que dan acceso a turnos de minería adicionales.
     </p>
-    <p class="gem-note" data-lang="en">
+    <p class="gem-note" data-lang="en visible">
       ⛏️
       The cube also contains <strong>283,241 picks</strong> that grant additional mining turns.
     </p>
@@ -346,8 +346,8 @@
 
   <!-- ── DESCARGAR ── -->
   <section>
-    <div class="section-label" data-lang="es visible">Descargar la app</div>
-    <div class="section-label" data-lang="en">Download the app</div>
+    <div class="section-label" data-lang="es">Descargar la app</div>
+    <div class="section-label" data-lang="en visible">Download the app</div>
 
     <div class="dl-grid">
       <a href="https://github.com/miningtheblocks/Mining-The-Blocks/releases/download/v1.0/MiningTheBlocks.apk" class="dl-btn" id="downloadAndroid">
@@ -355,8 +355,8 @@
           <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-10C2.67 8 2 8.67 2 9.5v7c0 .83.67 1.5 1.5 1.5S5 17.33 5 16.5v-7C5 8.67 4.33 8 3.5 8zm17 0c-.83 0-1.5.67-1.5 1.5v7c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5v-7c0-.83-.67-1.5-1.5-1.5zm-4.97-5.84 1.3-1.3a.496.496 0 0 0 0-.71.503.503 0 0 0-.71 0l-1.48 1.48A5.84 5.84 0 0 0 12 1c-1.1 0-2.15.23-3.09.63L7.43.15a.503.503 0 0 0-.71 0 .496.496 0 0 0 0 .71l1.3 1.3C6.41 3.07 5 5.38 5 8h14c0-2.62-1.41-4.93-3.47-5.84zM10 6H9V5h1v1zm5 0h-1V5h1v1z" fill="#3ddc84"/>
         </svg>
         <span class="dl-info">
-          <span class="dl-title" data-lang="es visible">Descargar para Android</span>
-          <span class="dl-title" data-lang="en">Download for Android</span>
+          <span class="dl-title" data-lang="es">Descargar para Android</span>
+          <span class="dl-title" data-lang="en visible">Download for Android</span>
           <span class="dl-sub">APK · v1.0</span>
         </span>
         <svg class="dl-arrow" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -364,11 +364,11 @@
         </svg>
       </a>
     </div>
-    <p class="dl-entry-note" data-lang="es visible">
+    <p class="dl-entry-note" data-lang="es">
       App gratuita · la entrada a cada episodio cuesta <strong>$15</strong> abonados con
       <span class="dl-entry-crypto">USDC</span> en red <span class="dl-entry-crypto">Polygon</span>
     </p>
-    <p class="dl-entry-note" data-lang="en">
+    <p class="dl-entry-note" data-lang="en visible">
       Free app · each episode entry costs <strong>$15</strong> paid with
       <span class="dl-entry-crypto">USDC</span> on <span class="dl-entry-crypto">Polygon</span> network
     </p>
@@ -378,17 +378,20 @@
 
 <footer>
   Mining The Blocks &nbsp;·&nbsp;
-  <a href="mailto:nachoo9106@gmail.com">nachoo9106@gmail.com</a>
+  <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>
 </footer>
 
 <script>
   var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
-  var currentLang = 'es';
+  var currentLang = 'en';
 
   var GEM_NAMES = {
-    1:'Diamante rojo', 2:'Painita', 3:'Musgravita', 4:'Jadeíta imperial',
-    5:'Alejandrita', 6:'Rubí sangre de paloma', 7:'Diamante azul',
-    8:'Diamante rosa', 9:'Esmeralda colombiana'
+    es: { 1:'Diamante rojo', 2:'Painita', 3:'Musgravita', 4:'Jadeíta imperial',
+          5:'Alejandrita', 6:'Rubí sangre de paloma', 7:'Diamante azul',
+          8:'Diamante rosa', 9:'Esmeralda colombiana' },
+    en: { 1:'Red Diamond', 2:'Painite', 3:'Musgravite', 4:'Imperial Jadeite',
+          5:'Alexandrite', 6:'Pigeon Blood Ruby', 7:'Blue Diamond',
+          8:'Pink Diamond', 9:'Colombian Emerald' }
   };
   var GEM_PRIZES = { 1:'$100,000', 2:'$50,000', 3:'$10,000', 4:'$1,000', 5:'$500', 6:'$100', 7:'$50', 8:'$25', 9:'$15' };
 
@@ -453,7 +456,7 @@
         return;
       }
       verifiedCode = code;
-      var name = GEM_NAMES[data.tier] || ('Tier ' + data.tier);
+      var name = GEM_NAMES[currentLang][data.tier] || ('Tier ' + data.tier);
       var prize = GEM_PRIZES[data.tier] || '';
       document.getElementById('gemBadge').textContent = name + (prize ? ' · ' + prize : '');
       document.getElementById('cardEmail').classList.add('visible');
@@ -493,7 +496,7 @@
   }
 
   document.addEventListener('DOMContentLoaded', function() {
-    setLang('es');
+    setLang('en');
     document.getElementById('codeInput').addEventListener('keydown', function(e) {
       if (e.key === 'Enter') verifyCode();
     });
