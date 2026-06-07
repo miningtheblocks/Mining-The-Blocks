@@ -1,0 +1,93 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users: each user can only read/write their own document
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+      match /mines/{doc} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // Servers: any authenticated user can list and read servers
+    match /servers/{serverId} {
+      allow read: if request.auth != null;
+      // Only Cloud Functions (admin) can create/update servers
+      allow write: if false;
+
+      // Mined cubes: any authenticated user can read
+      // Writes only via Cloud Functions (admin bypasses rules)
+      match /mined/{cubeId} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+
+      // Layer stats: any authenticated user can read
+      match /layers/{layerId} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+    }
+
+    // Server chains: authenticated users can read chain data and write history entries
+    match /serverChains/{chainId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      match /episodes/{episodeId} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+
+      // Contador de secuencia para el historial (solo el campo seq)
+      match /meta/{doc} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null
+          && request.resource.data.keys().hasOnly(['seq'])
+          && request.resource.data.seq is int;
+      }
+
+      match /history/{entryId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.type in ['mine', 'episode_complete', 'episode_start'];
+        allow update, delete: if false;
+      }
+    }
+
+    // Activity feed: any authenticated user can read (global live feed)
+    match /activityFeed/{eventId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // Crypto payments: only the owner can read their own pending payment
+    match /pendingCryptoPayments/{paymentId} {
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Legacy global collections (read-only for authenticated users)
+    match /layers/{doc} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    match /mined/{doc} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    match /{collection}/{doc} {
+      allow read: if collection.matches('rewards_.*') && request.auth != null;
+      allow write: if false;
+    }
+
+    // Gem claims desde la web: solo Cloud Functions (admin) puede leer/escribir
+    match /gemClaims/{doc} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Mining The Blocks — excavá un cubo de 201×201×201 capas y ganá premios reales en USDC.">
+  <title>Mining The Blocks</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #fff;
+      color: #111;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header {
+      text-align: center;
+      padding: 56px 24px 36px;
+      border-bottom: 1px solid #e8e8e8;
+      width: 100%;
+    }
+    .logo {
+      width: 96px; height: 96px;
+      border-radius: 22px;
+      margin-bottom: 18px;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.13);
+      display: block;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; }
+    .tagline { color: #666; font-size: 15px; margin-top: 8px; line-height: 1.5; }
+
+    main {
+      width: 100%;
+      max-width: 500px;
+      padding: 44px 24px;
+      flex: 1;
+    }
+
+    section { margin-bottom: 48px; }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: #aaa;
+      margin-bottom: 14px;
+    }
+
+    /* Redeem */
+    .input-row { display: flex; gap: 8px; }
+
+    input[type="text"],
+    input[type="email"] {
+      flex: 1;
+      padding: 13px 14px;
+      border: 1.5px solid #ddd;
+      border-radius: 10px;
+      font-size: 15px;
+      font-family: 'Courier New', 'Lucida Console', monospace;
+      letter-spacing: 1px;
+      outline: none;
+      transition: border-color 0.15s;
+      background: #fff;
+      color: #111;
+    }
+    input[type="email"] {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      letter-spacing: 0;
+    }
+    input:focus { border-color: #111; }
+
+    .btn {
+      padding: 13px 18px;
+      background: #111;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .btn:hover { opacity: 0.78; }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .msg-error { color: #b00020; font-size: 13px; margin-top: 9px; min-height: 18px; }
+
+    /* Success card */
+    .card {
+      border: 1.5px solid #111;
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 14px;
+      display: none;
+    }
+    .card.visible { display: block; }
+
+    .gem-badge {
+      display: inline-block;
+      background: #111;
+      color: #fff;
+      padding: 4px 11px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      margin-bottom: 12px;
+    }
+    .card-title { font-size: 20px; font-weight: 800; margin-bottom: 6px; }
+    .card-sub { color: #666; font-size: 14px; line-height: 1.5; margin-bottom: 16px; }
+
+    /* Stats grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .stat {
+      border: 1.5px solid #ebebeb;
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .stat-num { font-size: 22px; font-weight: 800; }
+    .stat-lbl { font-size: 12px; color: #999; margin-top: 2px; }
+
+    .desc {
+      font-size: 14px;
+      color: #555;
+      line-height: 1.65;
+      margin-bottom: 14px;
+    }
+
+    /* Download */
+    .download-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      padding: 17px;
+      background: #111;
+      color: #fff;
+      border-radius: 14px;
+      text-decoration: none;
+      font-size: 16px;
+      font-weight: 700;
+      transition: opacity 0.15s;
+    }
+    .download-btn:hover { opacity: 0.82; }
+    .download-btn.soon {
+      background: #f0f0f0;
+      color: #999;
+      pointer-events: none;
+    }
+    .download-sub {
+      font-size: 11px;
+      font-weight: 400;
+      opacity: 0.65;
+      display: block;
+      margin-top: 2px;
+    }
+
+    footer {
+      text-align: center;
+      padding: 20px;
+      font-size: 12px;
+      color: #ccc;
+      border-top: 1px solid #ebebeb;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <img src="icon.png" alt="Mining The Blocks logo" class="logo">
+  <h1>Mining The Blocks</h1>
+  <p class="tagline">Excavá un cubo de 201×201×201 capas.<br>Ganá premios reales en USDC.</p>
+</header>
+
+<main>
+
+  <!-- ── Canjear código ── -->
+  <section>
+    <div class="section-label">Canjear código de gema / NFT</div>
+
+    <div id="stepCode">
+      <div class="input-row">
+        <input type="text" id="codeInput" placeholder="MTB3-XXXXXXXX-XXXXXX"
+               maxlength="24" autocomplete="off" spellcheck="false">
+        <button class="btn" onclick="verifyCode()" id="btnVerify">Verificar</button>
+      </div>
+      <p class="msg-error" id="codeError"></p>
+    </div>
+
+    <div class="card" id="cardEmail">
+      <span class="gem-badge" id="gemBadge"></span>
+      <p class="card-title">🎉 ¡Código válido!</p>
+      <p class="card-sub">Ingresá tu email para recibir las instrucciones de cobro de tu premio.</p>
+      <div class="input-row">
+        <input type="email" id="emailInput" placeholder="tu@email.com">
+        <button class="btn" onclick="submitClaim()" id="btnClaim">Enviar</button>
+      </div>
+      <p class="msg-error" id="emailError"></p>
+    </div>
+
+    <div class="card" id="cardDone">
+      <p class="card-title">✅ ¡Solicitud enviada!</p>
+      <p class="card-sub">Te contactamos por email con los próximos pasos para recibir tu premio. Puede demorar hasta 48 horas hábiles.</p>
+    </div>
+  </section>
+
+  <!-- ── Qué es ── -->
+  <section>
+    <div class="section-label">Qué es</div>
+    <p class="desc">Mining The Blocks es un juego de minería por turnos. El mundo es un cubo masivo de 201×201×201 bloques — más de 8 millones de celdas — que los jugadores excavan juntos en episodios de hasta 100,000 participantes.</p>
+    <p class="desc">Dentro del cubo hay gemas raras con valor real: desde $15 hasta $100,000 en USDC. Cuanto más profundo llegues, mayor es el premio.</p>
+    <div class="stats-grid">
+      <div class="stat">
+        <div class="stat-num">8.1M</div>
+        <div class="stat-lbl">celdas por cubo</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">$211K</div>
+        <div class="stat-lbl">en premios por cubo</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">9</div>
+        <div class="stat-lbl">tipos de gemas</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">10</div>
+        <div class="stat-lbl">episodios por cadena</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Descargar ── -->
+  <section>
+    <div class="section-label">Descargar la app</div>
+    <a href="DOWNLOAD_URL_PLACEHOLDER" class="download-btn soon" id="downloadBtn">
+      <div>
+        <span>⬇ Descargar APK</span>
+        <span class="download-sub">Android · disponible próximamente</span>
+      </div>
+    </a>
+  </section>
+
+</main>
+
+<footer>Mining The Blocks · <a href="mailto:nachoo9106@gmail.com" style="color:#bbb">nachoo9106@gmail.com</a></footer>
+
+<script>
+  var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
+
+  var GEM_NAMES = {
+    1: 'Diamante rojo',
+    2: 'Painita',
+    3: 'Musgravita',
+    4: 'Jadeíta imperial',
+    5: 'Alejandrita',
+    6: 'Rubí sangre de paloma',
+    7: 'Diamante azul',
+    8: 'Diamante rosa',
+    9: 'Esmeralda colombiana',
+  };
+  var GEM_PRIZES = { 1:'$100,000', 2:'$50,000', 3:'$10,000', 4:'$1,000', 5:'$500', 6:'$100', 7:'$50', 8:'$25', 9:'$15' };
+
+  var ERRORS = {
+    not_found:       'Código no encontrado. Revisá que esté escrito correctamente.',
+    already_redeemed:'Este código ya fue canjeado por efectivo.',
+    already_minted:  'Este código ya fue reclamado como NFT.',
+    server_error:    'Error del servidor. Intentá de nuevo en unos minutos.',
+    invalid_email:   'El email ingresado no es válido.',
+    missing_fields:  'Completá todos los campos.',
+    missing_code:    'Ingresá tu código.',
+  };
+
+  var verifiedCode = null;
+
+  function showError(id, msg) {
+    document.getElementById(id).textContent = msg || '';
+  }
+
+  function setLoading(btnId, loading) {
+    var btn = document.getElementById(btnId);
+    btn.disabled = loading;
+    btn.textContent = loading ? '...' : (btnId === 'btnVerify' ? 'Verificar' : 'Enviar');
+  }
+
+  async function verifyCode() {
+    var code = document.getElementById('codeInput').value.trim().toUpperCase();
+    showError('codeError', '');
+    document.getElementById('cardEmail').classList.remove('visible');
+    document.getElementById('cardDone').classList.remove('visible');
+
+    if (!code) { showError('codeError', 'Ingresá tu código.'); return; }
+
+    setLoading('btnVerify', true);
+    try {
+      var res = await fetch(FUNCTIONS_BASE + '/verifyGemCode?code=' + encodeURIComponent(code));
+      var data = await res.json();
+      if (!res.ok || !data.valid) {
+        showError('codeError', ERRORS[data.error] || 'Código inválido.');
+        return;
+      }
+      verifiedCode = code;
+      var name = GEM_NAMES[data.tier] || ('Tier ' + data.tier);
+      var prize = GEM_PRIZES[data.tier] || '';
+      document.getElementById('gemBadge').textContent = name + (prize ? ' · ' + prize : '');
+      document.getElementById('cardEmail').classList.add('visible');
+      document.getElementById('emailInput').focus();
+    } catch (e) {
+      showError('codeError', 'No se pudo conectar. Verificá tu conexión a internet.');
+    } finally {
+      setLoading('btnVerify', false);
+    }
+  }
+
+  async function submitClaim() {
+    var email = document.getElementById('emailInput').value.trim();
+    showError('emailError', '');
+    if (!email) { showError('emailError', 'Ingresá tu email.'); return; }
+
+    setLoading('btnClaim', true);
+    try {
+      var res = await fetch(FUNCTIONS_BASE + '/submitGemClaim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: verifiedCode, email: email }),
+      });
+      var data = await res.json();
+      if (!res.ok || !data.success) {
+        showError('emailError', ERRORS[data.error] || 'Error al enviar. Intentá de nuevo.');
+        return;
+      }
+      document.getElementById('cardEmail').classList.remove('visible');
+      document.getElementById('cardDone').classList.add('visible');
+    } catch (e) {
+      showError('emailError', 'No se pudo conectar. Intentá más tarde.');
+    } finally {
+      setLoading('btnClaim', false);
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('codeInput').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') verifyCode();
+    });
+    document.getElementById('emailInput').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') submitClaim();
+    });
+  });
+</script>
+
+</body>
+</html>
