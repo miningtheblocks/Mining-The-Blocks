@@ -64,7 +64,7 @@
     .section-label {
       font-size: 11px; font-weight: 800;
       text-transform: uppercase; letter-spacing: 1.4px;
-      color: #999; margin-bottom: 16px;
+      color: #555; margin-bottom: 16px;
     }
 
     /* ── Redeem ── */
@@ -103,28 +103,32 @@
     .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
     .stat { border: 1.5px solid #e0e0e0; border-radius: 10px; padding: 14px 16px; }
     .stat-num { font-size: 24px; font-weight: 900; color: #000; }
-    .stat-lbl { font-size: 12px; color: #555; margin-top: 3px; font-weight: 600; line-height: 1.4; }
+    .stat-lbl { font-size: 12px; color: #222; margin-top: 3px; font-weight: 700; line-height: 1.4; }
 
-    p.desc { font-size: 15px; color: #333; line-height: 1.7; margin-bottom: 14px; font-weight: 500; }
+    p.desc { font-size: 15px; color: #222; line-height: 1.75; margin-bottom: 14px; font-weight: 400; }
 
     /* ── Gems table ── */
     .gems-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
     .gems-table th {
       text-align: left; font-size: 11px; font-weight: 800;
-      color: #777; text-transform: uppercase; letter-spacing: 0.8px;
-      padding: 6px 10px; border-bottom: 2px solid #e0e0e0;
+      color: #333; text-transform: uppercase; letter-spacing: 0.8px;
+      padding: 8px 12px; border-bottom: 2px solid #ccc;
     }
+    .gems-table th:nth-child(2),
+    .gems-table td:nth-child(2) { text-align: right; }
+    .gems-table th:nth-child(3),
+    .gems-table td:nth-child(3) { text-align: right; }
     .gems-table td {
-      padding: 9px 10px; font-size: 13px; color: #222;
-      border-bottom: 1px solid #f0f0f0; font-weight: 500;
+      padding: 10px 12px; font-size: 14px; color: #111;
+      border-bottom: 1px solid #ebebeb; font-weight: 500;
     }
     .gems-table tr:last-child td { border-bottom: none; }
     .gems-table .gem-name { font-weight: 700; color: #000; }
     .gems-table .gem-prize { font-weight: 800; color: #000; }
-    .gems-table .gem-qty { color: #666; }
+    .gems-table .gem-qty { color: #222; font-weight: 600; }
     .gem-note {
-      font-size: 12px; color: #666; font-weight: 500;
-      margin-top: 10px; line-height: 1.5;
+      font-size: 13px; color: #222; font-weight: 600;
+      margin-top: 12px; line-height: 1.6;
     }
 
     /* ── Episodes ── */
@@ -133,7 +137,7 @@
       border-radius: 10px; padding: 14px 16px; margin-top: 12px;
     }
     .episode-free-title { font-size: 14px; font-weight: 800; color: #000; margin-bottom: 4px; }
-    .episode-free-desc { font-size: 13px; color: #444; line-height: 1.6; font-weight: 500; }
+    .episode-free-desc { font-size: 13px; color: #222; line-height: 1.6; font-weight: 500; }
 
     /* ── Download ── */
     .dl-grid { display: flex; flex-direction: column; gap: 10px; }
@@ -231,10 +235,16 @@
     <div class="section-label" data-lang="en">What is it?</div>
 
     <p class="desc" data-lang="es visible">
-      <strong>Mining The Blocks</strong> es un juego de minería por turnos donde el mundo es un cubo masivo de 201×201×201 bloques. Más de 8 millones de celdas que los jugadores excavan juntos en episodios de hasta 100,000 participantes. Dentro del cubo hay gemas raras con valor real: desde <strong>$15 hasta $100,000 en USDC</strong>. Cuanto más profundo llegues, mayor es el premio.
+      <strong>Mining The Blocks</strong> es un juego multijugador de minería por turnos. El mundo es un cubo masivo de <strong>201×201×201 bloques</strong> — más de 8 millones de celdas — que los jugadores excavan juntos en episodios de hasta <strong>100,000 participantes</strong>. Cada día recibís un pico gratis para minar; también podés conseguir más viendo anuncios o invitando amigos.
+    </p>
+    <p class="desc" data-lang="es visible">
+      Dentro del cubo hay <strong>9 tipos de gemas</strong> con valor real en USDC, desde $15 hasta $100,000. Las gemas más raras están enterradas en las capas más profundas: cuanto más adentro llegues, mayor es el premio. También hay <strong>283,241 picos</strong> escondidos que otorgan turnos adicionales de minería.
     </p>
     <p class="desc" data-lang="en">
-      <strong>Mining The Blocks</strong> is a turn-based mining game where the world is a massive 201×201×201-block cube. Over 8 million cells that players mine together in episodes of up to 100,000 participants. Hidden inside are rare gems with real cash value: from <strong>$15 up to $100,000 in USDC</strong>. The deeper you go, the bigger the prize.
+      <strong>Mining The Blocks</strong> is a multiplayer turn-based mining game. The world is a massive <strong>201×201×201-block cube</strong> — over 8 million cells — that players mine together in episodes of up to <strong>100,000 participants</strong>. Every day you receive a free pick to mine; you can earn more by watching ads or inviting friends.
+    </p>
+    <p class="desc" data-lang="en">
+      Inside the cube are <strong>9 gem types</strong> with real USDC value, ranging from $15 to $100,000. The rarest gems are buried in the deepest layers: the further you go, the bigger the prize. There are also <strong>283,241 picks</strong> hidden inside that grant additional mining turns.
     </p>
 
     <div class="stats-grid">
@@ -276,12 +286,9 @@
     <table class="gems-table">
       <thead>
         <tr>
-          <th data-lang="es visible">Gema</th>
-          <th data-lang="en">Gem</th>
-          <th data-lang="es visible">Premio</th>
-          <th data-lang="en">Prize</th>
-          <th data-lang="es visible">Cantidad / cubo</th>
-          <th data-lang="en">Qty / cube</th>
+          <th><span data-lang-inline="es visible">Gema</span><span data-lang-inline="en">Gem</span></th>
+          <th><span data-lang-inline="es visible">Premio</span><span data-lang-inline="en">Prize</span></th>
+          <th><span data-lang-inline="es visible">Cant. / cubo</span><span data-lang-inline="en">Qty / cube</span></th>
         </tr>
       </thead>
       <tbody>
