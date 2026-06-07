@@ -119,17 +119,29 @@
     .gems-table th:nth-child(3),
     .gems-table td:nth-child(3) { text-align: right; }
     .gems-table td {
-      padding: 10px 12px; font-size: 14px; color: #111;
+      padding: 9px 12px; font-size: 14px; color: #111;
       border-bottom: 1px solid #ebebeb; font-weight: 500;
+      vertical-align: middle;
     }
     .gems-table tr:last-child td { border-bottom: none; }
-    .gems-table .gem-name { font-weight: 700; color: #000; }
+    .gems-table .gem-name {
+      font-weight: 700; color: #000;
+      display: flex; align-items: center; gap: 9px;
+    }
+    .gem-icon {
+      width: 28px; height: 28px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      flex-shrink: 0;
+    }
     .gems-table .gem-prize { font-weight: 800; color: #000; }
     .gems-table .gem-qty { color: #222; font-weight: 600; }
     .gem-note {
       font-size: 13px; color: #222; font-weight: 600;
       margin-top: 12px; line-height: 1.6;
+      display: flex; align-items: center; gap: 8px;
     }
+    .pick-icon { width: 22px; height: 22px; flex-shrink: 0; image-rendering: pixelated; }
 
     /* ── Episodes ── */
     .episode-free {
@@ -301,19 +313,51 @@
         </tr>
       </thead>
       <tbody>
-        <tr><td class="gem-name">Diamante rojo</td>      <td class="gem-prize">$100,000</td><td class="gem-qty">×1</td></tr>
-        <tr><td class="gem-name">Painita</td>            <td class="gem-prize">$50,000</td> <td class="gem-qty">×1</td></tr>
-        <tr><td class="gem-name">Musgravita</td>         <td class="gem-prize">$10,000</td> <td class="gem-qty">×5</td></tr>
-        <tr><td class="gem-name">Jadeíta imperial</td>   <td class="gem-prize">$1,000</td>  <td class="gem-qty">×50</td></tr>
-        <tr><td class="gem-name">Alejandrita</td>        <td class="gem-prize">$500</td>    <td class="gem-qty">×100</td></tr>
-        <tr><td class="gem-name">Rubí sangre de paloma</td><td class="gem-prize">$100</td>  <td class="gem-qty">×500</td></tr>
-        <tr><td class="gem-name">Diamante azul</td>      <td class="gem-prize">$50</td>     <td class="gem-qty">×1,000</td></tr>
-        <tr><td class="gem-name">Diamante rosa</td>      <td class="gem-prize">$25</td>     <td class="gem-qty">×4,000</td></tr>
-        <tr><td class="gem-name">Esmeralda colombiana</td><td class="gem-prize">$15</td>    <td class="gem-qty">×10,000</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_1.png" alt="">Diamante rojo</td>       <td class="gem-prize">$100,000</td><td class="gem-qty">×1</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_2.png" alt="">Painita</td>             <td class="gem-prize">$50,000</td> <td class="gem-qty">×1</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_3.png" alt="">Musgravita</td>          <td class="gem-prize">$10,000</td> <td class="gem-qty">×5</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_4.png" alt="">Jadeíta imperial</td>    <td class="gem-prize">$1,000</td>  <td class="gem-qty">×50</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_5.png" alt="">Alejandrita</td>         <td class="gem-prize">$500</td>    <td class="gem-qty">×100</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_6.png" alt="">Rubí sangre de paloma</td><td class="gem-prize">$100</td>  <td class="gem-qty">×500</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_7.png" alt="">Diamante azul</td>       <td class="gem-prize">$50</td>     <td class="gem-qty">×1,000</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_8.png" alt="">Diamante rosa</td>       <td class="gem-prize">$25</td>     <td class="gem-qty">×4,000</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_9.png" alt="">Esmeralda colombiana</td><td class="gem-prize">$15</td>    <td class="gem-qty">×10,000</td></tr>
       </tbody>
     </table>
-    <p class="gem-note" data-lang="es visible">⛏️ Además, el cubo contiene <strong>283,241 picos</strong> que dan acceso a turnos de minería adicionales.</p>
-    <p class="gem-note" data-lang="en">⛏️ The cube also contains <strong>283,241 picks</strong> that grant additional mining turns.</p>
+    <p class="gem-note" data-lang="es visible">
+      <svg class="pick-icon" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <rect x="10" y="0" width="1" height="1" fill="#f0c040"/><rect x="11" y="0" width="1" height="1" fill="#9a7010"/>
+        <rect x="9"  y="1" width="1" height="1" fill="#f0c040"/><rect x="10" y="1" width="1" height="1" fill="#9a7010"/><rect x="11" y="1" width="1" height="1" fill="#f0c040"/>
+        <rect x="8"  y="2" width="1" height="1" fill="#f0c040"/><rect x="9"  y="2" width="1" height="1" fill="#9a7010"/><rect x="10" y="2" width="1" height="1" fill="#f0c040"/>
+        <rect x="0"  y="3" width="1" height="1" fill="#f0c040"/><rect x="7" y="3" width="1" height="1" fill="#f0c040"/><rect x="8" y="3" width="1" height="1" fill="#9a7010"/><rect x="9" y="3" width="1" height="1" fill="#f0c040"/>
+        <rect x="0"  y="4" width="1" height="1" fill="#f0c040"/><rect x="1" y="4" width="1" height="1" fill="#9a7010"/><rect x="2" y="4" width="1" height="1" fill="#f0c040"/><rect x="6" y="4" width="1" height="1" fill="#f0c040"/><rect x="7" y="4" width="1" height="1" fill="#9a7010"/><rect x="8" y="4" width="1" height="1" fill="#f0c040"/>
+        <rect x="0"  y="5" width="1" height="1" fill="#f0c040"/><rect x="1" y="5" width="1" height="1" fill="#9a7010"/><rect x="2" y="5" width="1" height="1" fill="#9a7010"/><rect x="3" y="5" width="1" height="1" fill="#f0c040"/><rect x="4" y="5" width="1" height="1" fill="#f0c040"/><rect x="5" y="5" width="1" height="1" fill="#f0c040"/><rect x="6" y="5" width="1" height="1" fill="#9a7010"/><rect x="7" y="5" width="1" height="1" fill="#f0c040"/>
+        <rect x="1"  y="6" width="1" height="1" fill="#f0c040"/><rect x="2" y="6" width="1" height="1" fill="#9a7010"/><rect x="3" y="6" width="1" height="1" fill="#9a7010"/><rect x="4" y="6" width="1" height="1" fill="#9a7010"/><rect x="5" y="6" width="1" height="1" fill="#9a7010"/><rect x="6" y="6" width="1" height="1" fill="#f0c040"/>
+        <rect x="2"  y="7" width="1" height="1" fill="#f0c040"/><rect x="3" y="7" width="1" height="1" fill="#f0c040"/><rect x="4" y="7" width="1" height="1" fill="#f0c040"/><rect x="5" y="7" width="1" height="1" fill="#f0c040"/>
+        <rect x="3"  y="8" width="1" height="1" fill="#c07028"/><rect x="4" y="8" width="1" height="1" fill="#7a3e10"/>
+        <rect x="4"  y="9" width="1" height="1" fill="#c07028"/><rect x="5" y="9" width="1" height="1" fill="#7a3e10"/>
+        <rect x="5"  y="10" width="1" height="1" fill="#c07028"/><rect x="6" y="10" width="1" height="1" fill="#7a3e10"/>
+        <rect x="6"  y="11" width="1" height="1" fill="#c07028"/><rect x="7" y="11" width="1" height="1" fill="#7a3e10"/>
+      </svg>
+      Además, el cubo contiene <strong>283,241 picos</strong> que dan acceso a turnos de minería adicionales.
+    </p>
+    <p class="gem-note" data-lang="en">
+      <svg class="pick-icon" viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <rect x="10" y="0" width="1" height="1" fill="#f0c040"/><rect x="11" y="0" width="1" height="1" fill="#9a7010"/>
+        <rect x="9"  y="1" width="1" height="1" fill="#f0c040"/><rect x="10" y="1" width="1" height="1" fill="#9a7010"/><rect x="11" y="1" width="1" height="1" fill="#f0c040"/>
+        <rect x="8"  y="2" width="1" height="1" fill="#f0c040"/><rect x="9"  y="2" width="1" height="1" fill="#9a7010"/><rect x="10" y="2" width="1" height="1" fill="#f0c040"/>
+        <rect x="0"  y="3" width="1" height="1" fill="#f0c040"/><rect x="7" y="3" width="1" height="1" fill="#f0c040"/><rect x="8" y="3" width="1" height="1" fill="#9a7010"/><rect x="9" y="3" width="1" height="1" fill="#f0c040"/>
+        <rect x="0"  y="4" width="1" height="1" fill="#f0c040"/><rect x="1" y="4" width="1" height="1" fill="#9a7010"/><rect x="2" y="4" width="1" height="1" fill="#f0c040"/><rect x="6" y="4" width="1" height="1" fill="#f0c040"/><rect x="7" y="4" width="1" height="1" fill="#9a7010"/><rect x="8" y="4" width="1" height="1" fill="#f0c040"/>
+        <rect x="0"  y="5" width="1" height="1" fill="#f0c040"/><rect x="1" y="5" width="1" height="1" fill="#9a7010"/><rect x="2" y="5" width="1" height="1" fill="#9a7010"/><rect x="3" y="5" width="1" height="1" fill="#f0c040"/><rect x="4" y="5" width="1" height="1" fill="#f0c040"/><rect x="5" y="5" width="1" height="1" fill="#f0c040"/><rect x="6" y="5" width="1" height="1" fill="#9a7010"/><rect x="7" y="5" width="1" height="1" fill="#f0c040"/>
+        <rect x="1"  y="6" width="1" height="1" fill="#f0c040"/><rect x="2" y="6" width="1" height="1" fill="#9a7010"/><rect x="3" y="6" width="1" height="1" fill="#9a7010"/><rect x="4" y="6" width="1" height="1" fill="#9a7010"/><rect x="5" y="6" width="1" height="1" fill="#9a7010"/><rect x="6" y="6" width="1" height="1" fill="#f0c040"/>
+        <rect x="2"  y="7" width="1" height="1" fill="#f0c040"/><rect x="3" y="7" width="1" height="1" fill="#f0c040"/><rect x="4" y="7" width="1" height="1" fill="#f0c040"/><rect x="5" y="7" width="1" height="1" fill="#f0c040"/>
+        <rect x="3"  y="8" width="1" height="1" fill="#c07028"/><rect x="4" y="8" width="1" height="1" fill="#7a3e10"/>
+        <rect x="4"  y="9" width="1" height="1" fill="#c07028"/><rect x="5" y="9" width="1" height="1" fill="#7a3e10"/>
+        <rect x="5"  y="10" width="1" height="1" fill="#c07028"/><rect x="6" y="10" width="1" height="1" fill="#7a3e10"/>
+        <rect x="6"  y="11" width="1" height="1" fill="#c07028"/><rect x="7" y="11" width="1" height="1" fill="#7a3e10"/>
+      </svg>
+      The cube also contains <strong>283,241 picks</strong> that grant additional mining turns.
+    </p>
   </section>
 
   <!-- ── DESCARGAR ── -->

@@ -1,0 +1,38 @@
+{
+  "name": "MTB Diamante rojo #1",
+  "description": "Mining The Blocks — Diamante rojo. Tier 1 gem discovered by mining the community cube. Fixed redemption value: $500 USD. Redeem your code at miningtheblocks.com or hold as NFT.",
+  "image": "ipfs://bafkreigqqfdlr46soksipxtz3djod3wywv6y36jemkdfatnqpiofvmmovq",
+  "external_url": "https://miningtheblocks.com",
+  "attributes": [
+    {
+      "trait_type": "Gem Name",
+      "value": "Diamante rojo"
+    },
+    {
+      "trait_type": "Tier",
+      "value": 1,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Rarity",
+      "value": "Mythic"
+    },
+    {
+      "trait_type": "Redemption Value",
+      "value": "$500 USD"
+    },
+    {
+      "trait_type": "Quantity/Server",
+      "value": 1,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Game",
+      "value": "Mining The Blocks"
+    },
+    {
+      "trait_type": "Blockchain",
+      "value": "Polygon"
+    }
+  ]
+}

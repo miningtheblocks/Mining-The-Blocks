@@ -1,0 +1,38 @@
+{
+  "name": "MTB Painita #2",
+  "description": "Mining The Blocks — Painita. Tier 2 gem discovered by mining the community cube. Fixed redemption value: $200 USD. Redeem your code at miningtheblocks.com or hold as NFT.",
+  "image": "ipfs://bafkreid7fwynp3wyxvaf5l3jtwz32o23ofvb4apyphpvelripcwvpd7rge",
+  "external_url": "https://miningtheblocks.com",
+  "attributes": [
+    {
+      "trait_type": "Gem Name",
+      "value": "Painita"
+    },
+    {
+      "trait_type": "Tier",
+      "value": 2,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Rarity",
+      "value": "Legendary"
+    },
+    {
+      "trait_type": "Redemption Value",
+      "value": "$200 USD"
+    },
+    {
+      "trait_type": "Quantity/Server",
+      "value": 1,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Game",
+      "value": "Mining The Blocks"
+    },
+    {
+      "trait_type": "Blockchain",
+      "value": "Polygon"
+    }
+  ]
+}
