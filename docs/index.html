@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Mining The Blocks — excavá un cubo de 201×201×201 capas y ganá premios reales en USDC.">
+  <meta name="description" content="Mining The Blocks — excavá un cubo de 8 millones de celdas y ganá premios reales en USDC.">
   <title>Mining The Blocks</title>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -18,285 +18,367 @@
       align-items: center;
     }
 
+    /* ── Header ── */
     header {
       text-align: center;
-      padding: 56px 24px 36px;
-      border-bottom: 1px solid #e8e8e8;
+      padding: 52px 24px 36px;
+      border-bottom: 1px solid #e0e0e0;
       width: 100%;
     }
     .logo {
       width: 96px; height: 96px;
       border-radius: 22px;
-      margin-bottom: 18px;
-      box-shadow: 0 2px 16px rgba(0,0,0,0.13);
+      margin: 0 auto 18px;
       display: block;
-      margin-left: auto;
-      margin-right: auto;
+      box-shadow: 0 3px 18px rgba(0,0,0,0.14);
     }
-    h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; }
-    .tagline { color: #666; font-size: 15px; margin-top: 8px; line-height: 1.5; }
+    h1 { font-size: 32px; font-weight: 900; letter-spacing: -0.5px; color: #000; }
+    .tagline { color: #444; font-size: 16px; margin-top: 8px; line-height: 1.5; font-weight: 500; }
 
-    main {
+    /* ── Lang toggle ── */
+    .lang-bar {
+      display: flex;
+      justify-content: flex-end;
+      padding: 10px 24px 0;
       width: 100%;
-      max-width: 500px;
-      padding: 44px 24px;
-      flex: 1;
+      max-width: 560px;
+      gap: 6px;
     }
+    .lang-btn {
+      padding: 4px 12px;
+      border: 1.5px solid #ccc;
+      border-radius: 20px;
+      background: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      color: #888;
+      transition: all 0.15s;
+    }
+    .lang-btn.active { border-color: #111; color: #111; background: #f5f5f5; }
 
-    section { margin-bottom: 48px; }
+    /* ── Main ── */
+    main { width: 100%; max-width: 560px; padding: 36px 24px; flex: 1; }
+    section { margin-bottom: 44px; }
 
     .section-label {
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 1.2px;
-      color: #aaa;
-      margin-bottom: 14px;
+      font-size: 11px; font-weight: 800;
+      text-transform: uppercase; letter-spacing: 1.4px;
+      color: #999; margin-bottom: 16px;
     }
 
-    /* Redeem */
+    /* ── Redeem ── */
     .input-row { display: flex; gap: 8px; }
-
-    input[type="text"],
-    input[type="email"] {
-      flex: 1;
-      padding: 13px 14px;
-      border: 1.5px solid #ddd;
-      border-radius: 10px;
-      font-size: 15px;
-      font-family: 'Courier New', 'Lucida Console', monospace;
-      letter-spacing: 1px;
-      outline: none;
-      transition: border-color 0.15s;
-      background: #fff;
-      color: #111;
+    input[type="text"], input[type="email"] {
+      flex: 1; padding: 13px 14px;
+      border: 1.5px solid #ccc; border-radius: 10px;
+      font-size: 15px; outline: none;
+      transition: border-color 0.15s; color: #111;
     }
-    input[type="email"] {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      letter-spacing: 0;
-    }
+    input[type="text"] { font-family: 'Courier New', monospace; letter-spacing: 1px; }
     input:focus { border-color: #111; }
-
     .btn {
-      padding: 13px 18px;
-      background: #111;
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.15s;
-      white-space: nowrap;
-      flex-shrink: 0;
+      padding: 13px 18px; background: #111; color: #fff;
+      border: none; border-radius: 10px; font-size: 14px;
+      font-weight: 700; cursor: pointer; transition: opacity 0.15s; white-space: nowrap;
     }
     .btn:hover { opacity: 0.78; }
     .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .msg-error { color: #b00020; font-size: 13px; margin-top: 8px; min-height: 18px; font-weight: 500; }
 
-    .msg-error { color: #b00020; font-size: 13px; margin-top: 9px; min-height: 18px; }
-
-    /* Success card */
     .card {
-      border: 1.5px solid #111;
-      border-radius: 12px;
-      padding: 20px;
-      margin-top: 14px;
-      display: none;
+      border: 1.5px solid #111; border-radius: 12px;
+      padding: 20px; margin-top: 14px; display: none;
     }
     .card.visible { display: block; }
-
     .gem-badge {
-      display: inline-block;
-      background: #111;
-      color: #fff;
-      padding: 4px 11px;
-      border-radius: 20px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.3px;
-      margin-bottom: 12px;
+      display: inline-block; background: #111; color: #fff;
+      padding: 4px 12px; border-radius: 20px;
+      font-size: 11px; font-weight: 800; margin-bottom: 12px;
     }
-    .card-title { font-size: 20px; font-weight: 800; margin-bottom: 6px; }
-    .card-sub { color: #666; font-size: 14px; line-height: 1.5; margin-bottom: 16px; }
+    .card-title { font-size: 20px; font-weight: 900; color: #000; margin-bottom: 6px; }
+    .card-sub { color: #444; font-size: 14px; line-height: 1.6; margin-bottom: 16px; font-weight: 500; }
 
-    /* Stats grid */
-    .stats-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-bottom: 18px;
-    }
-    .stat {
-      border: 1.5px solid #ebebeb;
-      border-radius: 10px;
-      padding: 14px 16px;
-    }
-    .stat-num { font-size: 22px; font-weight: 800; }
-    .stat-lbl { font-size: 12px; color: #999; margin-top: 2px; }
+    /* ── Stats ── */
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+    .stat { border: 1.5px solid #e0e0e0; border-radius: 10px; padding: 14px 16px; }
+    .stat-num { font-size: 24px; font-weight: 900; color: #000; }
+    .stat-lbl { font-size: 12px; color: #555; margin-top: 3px; font-weight: 600; line-height: 1.4; }
 
-    .desc {
-      font-size: 14px;
-      color: #555;
-      line-height: 1.65;
-      margin-bottom: 14px;
+    p.desc { font-size: 15px; color: #333; line-height: 1.7; margin-bottom: 14px; font-weight: 500; }
+
+    /* ── Gems table ── */
+    .gems-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    .gems-table th {
+      text-align: left; font-size: 11px; font-weight: 800;
+      color: #777; text-transform: uppercase; letter-spacing: 0.8px;
+      padding: 6px 10px; border-bottom: 2px solid #e0e0e0;
+    }
+    .gems-table td {
+      padding: 9px 10px; font-size: 13px; color: #222;
+      border-bottom: 1px solid #f0f0f0; font-weight: 500;
+    }
+    .gems-table tr:last-child td { border-bottom: none; }
+    .gems-table .gem-name { font-weight: 700; color: #000; }
+    .gems-table .gem-prize { font-weight: 800; color: #000; }
+    .gems-table .gem-qty { color: #666; }
+    .gem-note {
+      font-size: 12px; color: #666; font-weight: 500;
+      margin-top: 10px; line-height: 1.5;
     }
 
-    /* Download */
-    .download-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      width: 100%;
-      padding: 17px;
-      background: #111;
-      color: #fff;
-      border-radius: 14px;
-      text-decoration: none;
-      font-size: 16px;
-      font-weight: 700;
-      transition: opacity 0.15s;
+    /* ── Episodes ── */
+    .episode-free {
+      background: #f7f7f7; border: 1.5px solid #222;
+      border-radius: 10px; padding: 14px 16px; margin-top: 12px;
     }
-    .download-btn:hover { opacity: 0.82; }
-    .download-btn.soon {
-      background: #f0f0f0;
-      color: #999;
-      pointer-events: none;
+    .episode-free-title { font-size: 14px; font-weight: 800; color: #000; margin-bottom: 4px; }
+    .episode-free-desc { font-size: 13px; color: #444; line-height: 1.6; font-weight: 500; }
+
+    /* ── Download ── */
+    .dl-grid { display: flex; flex-direction: column; gap: 10px; }
+    .dl-btn {
+      display: flex; align-items: center; gap: 14px;
+      padding: 16px 18px; border-radius: 14px;
+      text-decoration: none; transition: opacity 0.15s;
+      border: 1.5px solid transparent;
     }
-    .download-sub {
-      font-size: 11px;
-      font-weight: 400;
-      opacity: 0.65;
-      display: block;
-      margin-top: 2px;
-    }
+    .dl-btn.available { background: #111; color: #fff; }
+    .dl-btn.soon { background: #f4f4f4; color: #999; pointer-events: none; border-color: #e0e0e0; }
+    .dl-icon { font-size: 28px; line-height: 1; }
+    .dl-info { display: flex; flex-direction: column; }
+    .dl-title { font-size: 16px; font-weight: 800; }
+    .dl-sub { font-size: 12px; font-weight: 500; opacity: 0.65; margin-top: 2px; }
 
     footer {
-      text-align: center;
-      padding: 20px;
-      font-size: 12px;
-      color: #ccc;
-      border-top: 1px solid #ebebeb;
-      width: 100%;
+      text-align: center; padding: 20px;
+      font-size: 12px; color: #bbb; font-weight: 500;
+      border-top: 1px solid #e8e8e8; width: 100%;
     }
+    footer a { color: #aaa; }
+
+    /* ── i18n: hidden by default ── */
+    [data-lang] { display: none; }
+    [data-lang].visible { display: block; }
+    [data-lang-inline] { display: none; }
+    [data-lang-inline].visible { display: inline; }
   </style>
 </head>
 <body>
 
 <header>
-  <img src="icon.png" alt="Mining The Blocks logo" class="logo">
+  <img src="icon.png" alt="Mining The Blocks" class="logo">
   <h1>Mining The Blocks</h1>
-  <p class="tagline">Excavá un cubo de 201×201×201 capas.<br>Ganá premios reales en USDC.</p>
+  <p class="tagline" data-lang-inline="es visible">Excavá un cubo de 8 millones de celdas. Ganá premios reales en USDC.</p>
+  <p class="tagline" data-lang-inline="en">Mine a cube of 8 million cells. Win real prizes in USDC.</p>
 </header>
+
+<div class="lang-bar">
+  <button class="lang-btn active" onclick="setLang('es')">ES</button>
+  <button class="lang-btn" onclick="setLang('en')">EN</button>
+</div>
 
 <main>
 
-  <!-- ── Canjear código ── -->
+  <!-- ── CANJEAR CÓDIGO ── -->
   <section>
-    <div class="section-label">Canjear código de gema / NFT</div>
+    <div class="section-label" data-lang="es visible">Canjear código de gema / NFT</div>
+    <div class="section-label" data-lang="en">Redeem gem / NFT code</div>
 
     <div id="stepCode">
       <div class="input-row">
-        <input type="text" id="codeInput" placeholder="MTB3-XXXXXXXX-XXXXXX"
-               maxlength="24" autocomplete="off" spellcheck="false">
-        <button class="btn" onclick="verifyCode()" id="btnVerify">Verificar</button>
+        <input type="text" id="codeInput" placeholder="MTB3-XXXXXXXX-XXXXXX" maxlength="24" autocomplete="off" spellcheck="false">
+        <button class="btn" onclick="verifyCode()" id="btnVerify">
+          <span data-lang-inline="es visible">Verificar</span>
+          <span data-lang-inline="en">Verify</span>
+        </button>
       </div>
       <p class="msg-error" id="codeError"></p>
     </div>
 
     <div class="card" id="cardEmail">
       <span class="gem-badge" id="gemBadge"></span>
-      <p class="card-title">🎉 ¡Código válido!</p>
-      <p class="card-sub">Ingresá tu email para recibir las instrucciones de cobro de tu premio.</p>
+      <p class="card-title">
+        <span data-lang-inline="es visible">🎉 ¡Código válido!</span>
+        <span data-lang-inline="en">🎉 Valid code!</span>
+      </p>
+      <p class="card-sub">
+        <span data-lang-inline="es visible">Ingresá tu email para recibir las instrucciones de cobro de tu premio.</span>
+        <span data-lang-inline="en">Enter your email to receive prize claim instructions.</span>
+      </p>
       <div class="input-row">
-        <input type="email" id="emailInput" placeholder="tu@email.com">
-        <button class="btn" onclick="submitClaim()" id="btnClaim">Enviar</button>
+        <input type="email" id="emailInput" placeholder="email@ejemplo.com">
+        <button class="btn" onclick="submitClaim()" id="btnClaim">
+          <span data-lang-inline="es visible">Enviar</span>
+          <span data-lang-inline="en">Send</span>
+        </button>
       </div>
       <p class="msg-error" id="emailError"></p>
     </div>
 
     <div class="card" id="cardDone">
-      <p class="card-title">✅ ¡Solicitud enviada!</p>
-      <p class="card-sub">Te contactamos por email con los próximos pasos para recibir tu premio. Puede demorar hasta 48 horas hábiles.</p>
+      <p class="card-title">✅ <span data-lang-inline="es visible">¡Solicitud enviada!</span><span data-lang-inline="en">Request submitted!</span></p>
+      <p class="card-sub">
+        <span data-lang-inline="es visible">Te contactamos por email con los próximos pasos. Puede demorar hasta 48 horas hábiles.</span>
+        <span data-lang-inline="en">We'll contact you by email with next steps. Allow up to 48 business hours.</span>
+      </p>
     </div>
   </section>
 
-  <!-- ── Qué es ── -->
+  <!-- ── QUÉ ES ── -->
   <section>
-    <div class="section-label">Qué es</div>
-    <p class="desc">Mining The Blocks es un juego de minería por turnos. El mundo es un cubo masivo de 201×201×201 bloques — más de 8 millones de celdas — que los jugadores excavan juntos en episodios de hasta 100,000 participantes.</p>
-    <p class="desc">Dentro del cubo hay gemas raras con valor real: desde $15 hasta $100,000 en USDC. Cuanto más profundo llegues, mayor es el premio.</p>
+    <div class="section-label" data-lang="es visible">¿Qué es?</div>
+    <div class="section-label" data-lang="en">What is it?</div>
+
+    <p class="desc" data-lang="es visible">
+      <strong>Mining The Blocks</strong> es un juego de minería por turnos donde el mundo es un cubo masivo de 201×201×201 bloques. Más de 8 millones de celdas que los jugadores excavan juntos en episodios de hasta 100,000 participantes. Dentro del cubo hay gemas raras con valor real: desde <strong>$15 hasta $100,000 en USDC</strong>. Cuanto más profundo llegues, mayor es el premio.
+    </p>
+    <p class="desc" data-lang="en">
+      <strong>Mining The Blocks</strong> is a turn-based mining game where the world is a massive 201×201×201-block cube. Over 8 million cells that players mine together in episodes of up to 100,000 participants. Hidden inside are rare gems with real cash value: from <strong>$15 up to $100,000 in USDC</strong>. The deeper you go, the bigger the prize.
+    </p>
+
     <div class="stats-grid">
       <div class="stat">
         <div class="stat-num">8.1M</div>
-        <div class="stat-lbl">celdas por cubo</div>
+        <div class="stat-lbl" data-lang="es visible">Cubos por servidor</div>
+        <div class="stat-lbl" data-lang="en">Cubes per server</div>
       </div>
       <div class="stat">
         <div class="stat-num">$211K</div>
-        <div class="stat-lbl">en premios por cubo</div>
+        <div class="stat-lbl" data-lang="es visible">En premios por cubo completo</div>
+        <div class="stat-lbl" data-lang="en">In prizes per completed cube</div>
       </div>
       <div class="stat">
         <div class="stat-num">9</div>
-        <div class="stat-lbl">tipos de gemas</div>
+        <div class="stat-lbl" data-lang="es visible">Tipos de gemas con valor real</div>
+        <div class="stat-lbl" data-lang="en">Gem types with real cash value</div>
       </div>
       <div class="stat">
         <div class="stat-num">10</div>
-        <div class="stat-lbl">episodios por cadena</div>
+        <div class="stat-lbl" data-lang="es visible">Episodios por cadena</div>
+        <div class="stat-lbl" data-lang="en">Episodes per chain</div>
       </div>
+    </div>
+
+    <div class="episode-free">
+      <div class="episode-free-title" data-lang="es visible">🎁 Episodio 10 gratis</div>
+      <div class="episode-free-title" data-lang="en">🎁 Episode 10 is free</div>
+      <div class="episode-free-desc" data-lang="es visible">Si participás en los 9 episodios anteriores de la misma cadena, el episodio final no tiene costo de entrada.</div>
+      <div class="episode-free-desc" data-lang="en">If you participate in the 9 previous episodes of the same chain, the final episode has no entry cost.</div>
     </div>
   </section>
 
-  <!-- ── Descargar ── -->
+  <!-- ── GEMAS Y PICOS ── -->
   <section>
-    <div class="section-label">Descargar la app</div>
-    <a href="DOWNLOAD_URL_PLACEHOLDER" class="download-btn soon" id="downloadBtn">
-      <div>
-        <span>⬇ Descargar APK</span>
-        <span class="download-sub">Android · disponible próximamente</span>
-      </div>
-    </a>
+    <div class="section-label" data-lang="es visible">Gemas y premios</div>
+    <div class="section-label" data-lang="en">Gems &amp; prizes</div>
+
+    <table class="gems-table">
+      <thead>
+        <tr>
+          <th data-lang="es visible">Gema</th>
+          <th data-lang="en">Gem</th>
+          <th data-lang="es visible">Premio</th>
+          <th data-lang="en">Prize</th>
+          <th data-lang="es visible">Cantidad / cubo</th>
+          <th data-lang="en">Qty / cube</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="gem-name">Diamante rojo</td>      <td class="gem-prize">$100,000</td><td class="gem-qty">×1</td></tr>
+        <tr><td class="gem-name">Painita</td>            <td class="gem-prize">$50,000</td> <td class="gem-qty">×1</td></tr>
+        <tr><td class="gem-name">Musgravita</td>         <td class="gem-prize">$10,000</td> <td class="gem-qty">×5</td></tr>
+        <tr><td class="gem-name">Jadeíta imperial</td>   <td class="gem-prize">$1,000</td>  <td class="gem-qty">×50</td></tr>
+        <tr><td class="gem-name">Alejandrita</td>        <td class="gem-prize">$500</td>    <td class="gem-qty">×100</td></tr>
+        <tr><td class="gem-name">Rubí sangre de paloma</td><td class="gem-prize">$100</td>  <td class="gem-qty">×500</td></tr>
+        <tr><td class="gem-name">Diamante azul</td>      <td class="gem-prize">$50</td>     <td class="gem-qty">×1,000</td></tr>
+        <tr><td class="gem-name">Diamante rosa</td>      <td class="gem-prize">$25</td>     <td class="gem-qty">×4,000</td></tr>
+        <tr><td class="gem-name">Esmeralda colombiana</td><td class="gem-prize">$15</td>    <td class="gem-qty">×10,000</td></tr>
+      </tbody>
+    </table>
+    <p class="gem-note" data-lang="es visible">⛏️ Además, el cubo contiene <strong>283,241 picos</strong> que dan acceso a turnos de minería adicionales.</p>
+    <p class="gem-note" data-lang="en">⛏️ The cube also contains <strong>283,241 picks</strong> that grant additional mining turns.</p>
+  </section>
+
+  <!-- ── DESCARGAR ── -->
+  <section>
+    <div class="section-label" data-lang="es visible">Descargar la app</div>
+    <div class="section-label" data-lang="en">Download the app</div>
+
+    <div class="dl-grid">
+      <a href="DOWNLOAD_URL_PLACEHOLDER" class="dl-btn soon" id="downloadAndroid">
+        <span class="dl-icon">🤖</span>
+        <span class="dl-info">
+          <span class="dl-title">Android</span>
+          <span class="dl-sub" data-lang="es visible">Disponible próximamente · APK</span>
+          <span class="dl-sub" data-lang="en">Coming soon · APK</span>
+        </span>
+      </a>
+    </div>
   </section>
 
 </main>
 
-<footer>Mining The Blocks · <a href="mailto:nachoo9106@gmail.com" style="color:#bbb">nachoo9106@gmail.com</a></footer>
+<footer>
+  Mining The Blocks &nbsp;·&nbsp;
+  <a href="mailto:nachoo9106@gmail.com">nachoo9106@gmail.com</a>
+</footer>
 
 <script>
   var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
+  var currentLang = 'es';
 
   var GEM_NAMES = {
-    1: 'Diamante rojo',
-    2: 'Painita',
-    3: 'Musgravita',
-    4: 'Jadeíta imperial',
-    5: 'Alejandrita',
-    6: 'Rubí sangre de paloma',
-    7: 'Diamante azul',
-    8: 'Diamante rosa',
-    9: 'Esmeralda colombiana',
+    1:'Diamante rojo', 2:'Painita', 3:'Musgravita', 4:'Jadeíta imperial',
+    5:'Alejandrita', 6:'Rubí sangre de paloma', 7:'Diamante azul',
+    8:'Diamante rosa', 9:'Esmeralda colombiana'
   };
   var GEM_PRIZES = { 1:'$100,000', 2:'$50,000', 3:'$10,000', 4:'$1,000', 5:'$500', 6:'$100', 7:'$50', 8:'$25', 9:'$15' };
 
   var ERRORS = {
-    not_found:       'Código no encontrado. Revisá que esté escrito correctamente.',
-    already_redeemed:'Este código ya fue canjeado por efectivo.',
-    already_minted:  'Este código ya fue reclamado como NFT.',
-    server_error:    'Error del servidor. Intentá de nuevo en unos minutos.',
-    invalid_email:   'El email ingresado no es válido.',
-    missing_fields:  'Completá todos los campos.',
-    missing_code:    'Ingresá tu código.',
+    es: {
+      not_found:       'Código no encontrado. Revisá que esté bien escrito.',
+      already_redeemed:'Este código ya fue canjeado por efectivo.',
+      already_minted:  'Este código ya fue reclamado como NFT.',
+      server_error:    'Error del servidor. Intentá de nuevo en unos minutos.',
+      invalid_email:   'El email ingresado no es válido.',
+      missing_fields:  'Completá todos los campos.',
+    },
+    en: {
+      not_found:       'Code not found. Check that it\'s written correctly.',
+      already_redeemed:'This code has already been redeemed for cash.',
+      already_minted:  'This code has already been claimed as an NFT.',
+      server_error:    'Server error. Please try again in a few minutes.',
+      invalid_email:   'The email address is not valid.',
+      missing_fields:  'Please fill in all fields.',
+    }
   };
+
+  function setLang(lang) {
+    currentLang = lang;
+    document.querySelectorAll('.lang-btn').forEach(function(b) {
+      b.classList.toggle('active', b.textContent.trim().toLowerCase() === lang);
+    });
+    document.querySelectorAll('[data-lang]').forEach(function(el) {
+      var l = el.getAttribute('data-lang').split(' ')[0];
+      el.classList.toggle('visible', l === lang);
+    });
+    document.querySelectorAll('[data-lang-inline]').forEach(function(el) {
+      var l = el.getAttribute('data-lang-inline').split(' ')[0];
+      el.classList.toggle('visible', l === lang);
+    });
+    document.documentElement.lang = lang;
+  }
 
   var verifiedCode = null;
 
-  function showError(id, msg) {
-    document.getElementById(id).textContent = msg || '';
-  }
+  function showError(id, msg) { document.getElementById(id).textContent = msg || ''; }
 
   function setLoading(btnId, loading) {
     var btn = document.getElementById(btnId);
     btn.disabled = loading;
-    btn.textContent = loading ? '...' : (btnId === 'btnVerify' ? 'Verificar' : 'Enviar');
+    if (!loading) return;
+    btn.textContent = '...';
   }
 
   async function verifyCode() {
@@ -304,15 +386,13 @@
     showError('codeError', '');
     document.getElementById('cardEmail').classList.remove('visible');
     document.getElementById('cardDone').classList.remove('visible');
-
-    if (!code) { showError('codeError', 'Ingresá tu código.'); return; }
-
+    if (!code) { showError('codeError', currentLang === 'es' ? 'Ingresá tu código.' : 'Enter your code.'); return; }
     setLoading('btnVerify', true);
     try {
       var res = await fetch(FUNCTIONS_BASE + '/verifyGemCode?code=' + encodeURIComponent(code));
       var data = await res.json();
       if (!res.ok || !data.valid) {
-        showError('codeError', ERRORS[data.error] || 'Código inválido.');
+        showError('codeError', (ERRORS[currentLang][data.error]) || (currentLang === 'es' ? 'Código inválido.' : 'Invalid code.'));
         return;
       }
       verifiedCode = code;
@@ -322,17 +402,17 @@
       document.getElementById('cardEmail').classList.add('visible');
       document.getElementById('emailInput').focus();
     } catch (e) {
-      showError('codeError', 'No se pudo conectar. Verificá tu conexión a internet.');
+      showError('codeError', currentLang === 'es' ? 'Sin conexión. Verificá tu internet.' : 'No connection. Check your internet.');
     } finally {
       setLoading('btnVerify', false);
+      setLang(currentLang); // restaurar textos del botón
     }
   }
 
   async function submitClaim() {
     var email = document.getElementById('emailInput').value.trim();
     showError('emailError', '');
-    if (!email) { showError('emailError', 'Ingresá tu email.'); return; }
-
+    if (!email) { showError('emailError', currentLang === 'es' ? 'Ingresá tu email.' : 'Enter your email.'); return; }
     setLoading('btnClaim', true);
     try {
       var res = await fetch(FUNCTIONS_BASE + '/submitGemClaim', {
@@ -342,19 +422,21 @@
       });
       var data = await res.json();
       if (!res.ok || !data.success) {
-        showError('emailError', ERRORS[data.error] || 'Error al enviar. Intentá de nuevo.');
+        showError('emailError', (ERRORS[currentLang][data.error]) || (currentLang === 'es' ? 'Error al enviar.' : 'Submit error.'));
         return;
       }
       document.getElementById('cardEmail').classList.remove('visible');
       document.getElementById('cardDone').classList.add('visible');
     } catch (e) {
-      showError('emailError', 'No se pudo conectar. Intentá más tarde.');
+      showError('emailError', currentLang === 'es' ? 'Sin conexión. Intentá más tarde.' : 'No connection. Try again later.');
     } finally {
       setLoading('btnClaim', false);
+      setLang(currentLang);
     }
   }
 
   document.addEventListener('DOMContentLoaded', function() {
+    setLang('es');
     document.getElementById('codeInput').addEventListener('keydown', function(e) {
       if (e.key === 'Enter') verifyCode();
     });
