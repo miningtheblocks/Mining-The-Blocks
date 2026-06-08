@@ -355,11 +355,11 @@ export default function ServerList() {
           </View>
         ) : (
           <TouchableOpacity
-            style={[styles.btn, styles.btnPrimary, styles.createTopBtn]}
-            onPress={() => setShowCreate(true)}
-            activeOpacity={0.85}
+            style={[styles.btn, styles.btnPrimary, styles.createTopBtn, styles.btnDisabled]}
+            disabled={true}
+            activeOpacity={1}
           >
-            <Text style={styles.btnTxt}>+ {t('serverList.create')}</Text>
+            <Text style={[styles.btnTxt, styles.btnTxtDisabled]}>+ {t('serverList.create')}</Text>
           </TouchableOpacity>
         )
       )}
@@ -455,7 +455,9 @@ const styles = StyleSheet.create({
   btn: { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 10, alignItems: 'center' },
   btnPrimary: { backgroundColor: '#2e7d32' },
   btnSecondary: { backgroundColor: '#333' },
+  btnDisabled: { backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2a2a2a', opacity: 0.45 },
   btnTxt: { color: '#fff', fontWeight: '700' },
+  btnTxtDisabled: { color: '#555' },
 
   // Cards
   empty: { color: '#555', textAlign: 'center', marginTop: 60, fontSize: 16 },
