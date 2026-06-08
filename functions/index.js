@@ -114,41 +114,66 @@ function getRewardForCube(serverId, K, cubeNumber) {
 // para que la recaudación cubra 100% el pool de premios de ese tier.
 function getGemForCube(serverId, K, cubeNumber, memberCount) {
   if (K >= 98) return null; // capas 1-3: solo picos, sin gemas
-  const norm = fnv1a(`GEM|${serverId}|${K}|${cubeNumber}`) / 0xffffffff;
-  const GEM_WIN_RATE = 0.002;
-  if (norm >= GEM_WIN_RATE) return null;
-  const r = norm / GEM_WIN_RATE;
+
   const members = memberCount || 0;
   const tierUnlocked = (tier) => members >= GEM_UNLOCK_THRESHOLDS[tier - 1];
 
-  // Zonas exclusivas para los 3 premios mayores (capa_usuario = 101 - K)
-  // Cada zona es única: en capa 96 solo puede aparecer $100K, no $50K ni $10K
-  if (K <= 6) {
-    // $100,000 — capas 95-101 (K 0-6)
-    if (r < 0.000065) return tierUnlocked(1) ? 1 : null;
-  } else if (K <= 16) {
-    // $50,000 — capas 85-95 (K 7-16)
-    if (r < 0.000130) return tierUnlocked(2) ? 2 : null;
-  } else if (K <= 26) {
-    // $10,000 — capas 75-85 (K 17-26)
-    if (r < 0.000452) return tierUnlocked(3) ? 3 : null;
+  // cumSum(n) = cubos totales en K=0 … K=n-1  →  2·n·(2n-1)·(2n+1)
+  function cumSum(n) { return 2 * n * (2 * n - 1) * (2 * n + 1); }
+
+  // Posición global de este cubo dentro de la zona que arranca en minK
+  function offsetInZone(minK) {
+    return cumSum(K) - cumSum(minK) + (cubeNumber - 1);
   }
 
-  // $1,000 y $500 — capas 55-101 (K <= 46), disponibles en todas las zonas anteriores también
-  if (K <= 46) {
-    if (r < 0.003667) return tierUnlocked(4) ? 4 : null;
-    if (r < 0.010115) return tierUnlocked(5) ? 5 : null;
+  // Verifica si este cubo es el portador del premio tier dado.
+  // Sistema de buckets: la zona se divide en 'count' tramos iguales;
+  // cada tramo tiene exactamente 1 premio en una posición determinista.
+  // Garantiza entrega de TODOS los premios y propiedad de descarte:
+  // si quedan N cubos en un tramo y todos menos uno fueron minados, ese uno tiene el premio.
+  function hasPrize(tier, count, minK, zoneSize) {
+    if (!tierUnlocked(tier)) return false;
+    const offset = offsetInZone(minK);
+    if (offset < 0 || offset >= zoneSize) return false;
+
+    const base = Math.floor(zoneSize / count);
+    const rem  = zoneSize % count;
+    let bucket, within, bSize;
+    if (offset < (base + 1) * rem) {
+      bucket = Math.floor(offset / (base + 1));
+      within = offset % (base + 1);
+      bSize  = base + 1;
+    } else {
+      const adj = offset - rem * (base + 1);
+      bucket = rem + Math.floor(adj / base);
+      within = adj % base;
+      bSize  = base;
+    }
+    return within === fnv1a(`PRIZE|${serverId}|${tier}|${bucket}`) % bSize;
   }
 
-  // $100 y $50 — capas 20-101 (K <= 81)
-  if (K <= 81) {
-    if (r < 0.043098) return tierUnlocked(6) ? 6 : null;
-    if (r < 0.107027) return tierUnlocked(7) ? 7 : null;
-  }
+  // ── Tamaños de zona pre-calculados (cumSum(maxK+1) − cumSum(minK)) ──
+  // Tier 1 ($100K, ×1):  K 0-6   → 2.730
+  // Tier 2 ($50K,  ×1):  K 7-16  → 36.540
+  // Tier 3 ($10K,  ×5):  K 17-26 → 118.140
+  // Tiers 4-5:           K 0-46  → 830.490
+  // Tiers 6-7:           K 0-81  → 4.410.780
+  // Tiers 8-9:           K 0-97  → 7.529.340
 
-  // $25 y $15 — todas las capas (4-101)
-  if (r < 0.362717) return tierUnlocked(8) ? 8 : null;
-  return tierUnlocked(9) ? 9 : null;
+  // Zonas exclusivas para los 3 premios mayores (sin solapamiento entre sí)
+  if      (K <=  6) { if (hasPrize(1,     1,  0,    2730)) return 1; }
+  else if (K <= 16) { if (hasPrize(2,     1,  7,   36540)) return 2; }
+  else if (K <= 26) { if (hasPrize(3,     5, 17,  118140)) return 3; }
+
+  // Premios acumulativos (disponibles en toda su zona, incluso en las zonas exclusivas de arriba)
+  if (K <= 46 && hasPrize(4,    50,  0,  830490)) return 4; // $1.000 — capas 55-101
+  if (K <= 46 && hasPrize(5,   100,  0,  830490)) return 5; // $500   — capas 55-101
+  if (K <= 81 && hasPrize(6,   500,  0, 4410780)) return 6; // $100   — capas 20-101
+  if (K <= 81 && hasPrize(7,  1000,  0, 4410780)) return 7; // $50    — capas 20-101
+  if (hasPrize(8,  4000,  0, 7529340)) return 8;            // $25    — capas 4-101
+  if (hasPrize(9, 10000,  0, 7529340)) return 9;            // $15    — capas 4-101
+
+  return null;
 }
 
 // Genera un código de canje único y verificable para una gema
