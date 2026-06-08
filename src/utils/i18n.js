@@ -14,6 +14,13 @@ const resources = {
       off: 'OFF',
       loading: 'Loading…',
       ready: 'Ready',
+      termsLink: 'Terms & Conditions',
+    },
+    update: {
+      title: 'Update available',
+      defaultBody: 'A new version of Mining The Blocks is available. Update to keep playing and access the latest features.',
+      download: '⬇ Download update',
+      later: 'Remind me later',
     },
     drawer: {
       home: 'Home',
@@ -27,6 +34,7 @@ const resources = {
       howToPlay: 'How to Play?',
       buyCredits: 'Buy Credits',
       signOut: 'Sign out',
+      terms: 'Terms & Conditions',
     },
     activity: {
       title: 'Live Activity',
@@ -76,6 +84,7 @@ const resources = {
       couldNotSendReset: 'Could not send reset email',
     },
     registration: {
+      viewTerms: 'Read Terms & Conditions',
       back: '← Back',
       title: 'Registration',
       avatar: 'Avatar',
@@ -259,6 +268,8 @@ const resources = {
       status_unclaimed: 'Unclaimed',
       status_minting: 'Minting…',
       status_minted: 'NFT ✓',
+      status_redeemed: 'Redeemed',
+      status_claim_submitted: 'Claim sent',
     },
     profile: {
       back: '← Back',
@@ -292,6 +303,7 @@ const resources = {
       referralInvalidCode: 'Invalid code.',
     },
     buyCredits: {
+      termsNote: 'By paying you accept our Terms & Conditions.',
       subtitle: 'Pay once, join a chain forever.',
       priceNote: '1 credit = 1 chain entry',
       generate: 'Generate payment',
@@ -391,6 +403,13 @@ const resources = {
       off: 'OFF',
       loading: 'Cargando…',
       ready: 'Listo',
+      termsLink: 'Términos y Condiciones',
+    },
+    update: {
+      title: 'Actualización disponible',
+      defaultBody: 'Hay una nueva versión de Mining The Blocks. Actualizá para seguir jugando y acceder a las últimas funciones.',
+      download: '⬇ Descargar actualización',
+      later: 'Recordarme más tarde',
     },
     drawer: {
       home: 'Inicio',
@@ -404,6 +423,7 @@ const resources = {
       howToPlay: '¿Cómo se juega?',
       buyCredits: 'Comprar Créditos',
       signOut: 'Cerrar sesión',
+      terms: 'Términos y Condiciones',
     },
     activity: {
       title: 'Actividad en Vivo',
@@ -453,6 +473,7 @@ const resources = {
       couldNotSendReset: 'No se pudo enviar el email de restablecimiento',
     },
     registration: {
+      viewTerms: 'Leer Términos y Condiciones',
       back: '← Volver',
       title: 'Registro',
       avatar: 'Avatar',
@@ -615,6 +636,7 @@ const resources = {
       referralInvalidCode: 'Código inválido.',
     },
     buyCredits: {
+      termsNote: 'Al pagar aceptás nuestros Términos y Condiciones.',
       subtitle: 'Pagás una vez y entrás a una cadena para siempre.',
       priceNote: '1 crédito = 1 entrada a cadena',
       generate: 'Generar pago',
@@ -685,6 +707,8 @@ const resources = {
       status_unclaimed: 'Sin canjear',
       status_minting: 'Minteando…',
       status_minted: 'NFT ✓',
+      status_redeemed: 'Canjeada',
+      status_claim_submitted: 'Solicitud enviada',
     },
     serverList: {
       title: 'Cadenas',

@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, Image, ActivityIndicator, Switch } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, Image, ActivityIndicator, Switch, Linking } from 'react-native';
+
+const TERMS_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/terms.html';
 import { auth, db, storage } from '../firebase/client';
 import { createUserWithEmailAndPassword, EmailAuthProvider, linkWithCredential, updateEmail, reauthenticateWithCredential } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
@@ -350,6 +352,10 @@ export default function Registration({ asModal = false, onClose }) {
           </View>
         )}
 
+        <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL).catch(() => {})} style={styles.termsLinkBtn}>
+          <Text style={styles.termsLinkTxt}>{t('registration.viewTerms')}</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity style={[styles.saveBtn, asModal && { backgroundColor: '#2a2a2a' }]} onPress={onSave} disabled={loading}>
           <Text style={[styles.saveTxt, asModal && { color: '#ddd' }]}>{loading ? t('registration.loading') : t('registration.save')}</Text>
         </TouchableOpacity>
@@ -368,7 +374,9 @@ const styles = StyleSheet.create({
   form: { padding: 16 },
   label: { fontSize: 13, fontWeight: '700', color: '#333', marginTop: 12 },
   input: { marginTop: 6, borderWidth: 1, borderColor: 'rgba(0,0,0,0.2)', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
-  saveBtn: { marginTop: 18, backgroundColor: '#333333', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  termsLinkBtn: { marginTop: 10, alignItems: 'center', paddingVertical: 6 },
+  termsLinkTxt: { color: '#4a9eff', fontSize: 13, fontWeight: '700', textDecorationLine: 'underline' },
+  saveBtn: { marginTop: 10, backgroundColor: '#333333', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   saveTxt: { color: '#ffffff', fontWeight: '800', fontSize: 15 },
   avatar: { width: 100, height: 100, borderRadius: 12, marginTop: 10, alignSelf: 'flex-start', borderWidth: 1, borderColor: 'rgba(0,0,0,0.15)' },
   avatarPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.06)' },

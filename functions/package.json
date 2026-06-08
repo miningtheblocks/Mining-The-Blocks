@@ -17,7 +17,8 @@
     "ethers": "^6.16.0",
     "firebase-admin": "^12.7.0",
     "firebase-functions": "^7.2.5",
-    "miningtheblocks": "file:.."
+    "miningtheblocks": "file:..",
+    "nodemailer": "^8.0.10"
   },
   "devDependencies": {
     "eslint": "^8.15.0",

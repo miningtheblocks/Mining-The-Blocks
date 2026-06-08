@@ -8,6 +8,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const functionsV1 = require("firebase-functions");
 const { ethers } = require("ethers");
 const admin = require("firebase-admin");
+const nodemailer = require("nodemailer");
 
 try {
   admin.initializeApp();
@@ -1335,6 +1336,59 @@ async function runCryptoPaymentProcessing() {
   return { processed };
 }
 
+// Envía push notification a todos los usuarios que tengan token registrado (solo admin)
+exports.notifyAllUsers = onCall(async (request) => {
+  if (!request.auth || !request.auth.token || !request.auth.token.admin) {
+    throw new HttpsError("permission-denied", "Admin only");
+  }
+
+  const title = String((request.data && request.data.title) || '').trim();
+  const body  = String((request.data && request.data.body)  || '').trim();
+  if (!title || !body) throw new HttpsError("invalid-argument", "title and body required");
+
+  // Recopilar todos los tokens (en lotes de 500 para no agotar memoria)
+  const BATCH = 500;
+  let tokens = [];
+  let lastDoc = null;
+
+  while (true) {
+    let q = db.collection("users").where("pushToken", "!=", null).limit(BATCH);
+    if (lastDoc) q = q.startAfter(lastDoc);
+    const snap = await q.get();
+    if (snap.empty) break;
+    snap.docs.forEach((d) => {
+      const token = d.data().pushToken;
+      if (token) tokens.push(token);
+    });
+    if (snap.size < BATCH) break;
+    lastDoc = snap.docs[snap.docs.length - 1];
+  }
+
+  if (tokens.length === 0) return { ok: true, sent: 0 };
+
+  // Expo Push API acepta hasta 100 por request
+  let sent = 0;
+  const CHUNK = 100;
+  for (let i = 0; i < tokens.length; i += CHUNK) {
+    const chunk = tokens.slice(i, i + CHUNK).map((to) => ({
+      to, title, body, sound: "default",
+    }));
+    try {
+      await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(chunk),
+      });
+      sent += chunk.length;
+    } catch (e) {
+      console.error("notifyAllUsers chunk error:", e.message);
+    }
+  }
+
+  console.log(`notifyAllUsers: sent=${sent} total_tokens=${tokens.length}`);
+  return { ok: true, sent, total: tokens.length };
+});
+
 exports.cryptoPaymentProcessorScheduled = onSchedule("every 5 minutes", async () => {
   const result = await runCryptoPaymentProcessing();
   console.log("cryptoPaymentProcessorScheduled:", JSON.stringify(result));
@@ -1364,17 +1418,20 @@ exports.verifyGemCode = functionsV1.https.onRequest(async (req, res) => {
     }
     const gem = snap.docs[0].data();
     if (gem.status !== "unclaimed") {
-      const errKey = gem.status === "redeemed" ? "already_redeemed" : "already_minted";
+      const errKey = gem.status === "redeemed" || gem.status === "claim_submitted" ? "already_redeemed" : "already_minted";
       return res.status(400).json({ error: errKey });
     }
-    return res.json({ valid: true, tier: gem.tier });
+    return res.json({ valid: true, tier: gem.gemTier || gem.tier });
   } catch (e) {
     console.error("verifyGemCode:", e.message);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
-exports.submitGemClaim = functionsV1.https.onRequest(async (req, res) => {
+const GEM_NAMES_ES = ["Diamante rojo", "Painita", "Musgravita", "Jadeíta imperial", "Alejandrita", "Rubí sangre de paloma", "Diamante azul", "Diamante rosa", "Esmeralda colombiana"];
+const NOTIFY_EMAIL = "miningtheblocks@gmail.com";
+
+exports.submitGemClaim = functionsV1.runWith({ secrets: ["GMAIL_APP_PASSWORD"] }).https.onRequest(async (req, res) => {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     return res.status(204).send("");
@@ -1406,20 +1463,62 @@ exports.submitGemClaim = functionsV1.https.onRequest(async (req, res) => {
     const gemDoc = snap.docs[0];
     const gem = gemDoc.data();
     if (gem.status !== "unclaimed") {
-      const errKey = gem.status === "redeemed" ? "already_redeemed" : "already_minted";
+      const errKey = gem.status === "redeemed" || gem.status === "claim_submitted" ? "already_redeemed" : "already_minted";
       return res.status(400).json({ error: errKey });
     }
+
+    const gemTier = gem.gemTier || gem.tier || null;
+    const gemName = gemTier ? (GEM_NAMES_ES[gemTier - 1] || `Tier ${gemTier}`) : "Desconocida";
+    const gemPrize = gemTier ? (`$${GEM_PRICES[gemTier - 1].toLocaleString()}`) : "-";
+
     await db.collection("gemClaims").add({
       code,
       name,
       email,
       phone,
       wallet,
-      tier: gem.tier,
+      gemTier,
       gemRef: gemDoc.ref.path,
       submittedAt: Date.now(),
       status: "pending",
     });
+
+    // Marcar la gema para prevenir doble envío
+    await gemDoc.ref.set({ status: "claim_submitted", claimSubmittedAt: Date.now() }, { merge: true });
+
+    // Enviar notificación al admin
+    try {
+      const appPassword = process.env.GMAIL_APP_PASSWORD;
+      if (appPassword) {
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: { user: NOTIFY_EMAIL, pass: appPassword },
+        });
+        const fecha = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+        await transporter.sendMail({
+          from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
+          to: NOTIFY_EMAIL,
+          subject: `🎉 Nuevo canje de gema — ${gemName} (${gemPrize})`,
+          html: `
+            <h2>Nuevo canje de gema recibido</h2>
+            <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Gema</td><td style="padding:6px 12px">${gemName} — Tier ${gemTier}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Premio</td><td style="padding:6px 12px;font-weight:bold;color:#000">${gemPrize}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Código</td><td style="padding:6px 12px;font-family:monospace">${code}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Nombre</td><td style="padding:6px 12px">${name}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Email</td><td style="padding:6px 12px">${email}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Teléfono</td><td style="padding:6px 12px">${phone}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Billetera</td><td style="padding:6px 12px;font-family:monospace;font-size:12px">${wallet}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Fecha</td><td style="padding:6px 12px">${fecha}</td></tr>
+            </table>
+            <p style="margin-top:16px;font-size:12px;color:#888">Mining The Blocks · Firestore: gemClaims</p>
+          `,
+        });
+      }
+    } catch (mailErr) {
+      console.error("submitGemClaim email error:", mailErr.message);
+    }
+
     return res.json({ success: true });
   } catch (e) {
     console.error("submitGemClaim:", e.message);
