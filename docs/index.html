@@ -261,6 +261,31 @@
     [data-lang].visible { display: block; }
     [data-lang-inline] { display: none; }
     [data-lang-inline].visible { display: inline; }
+
+    /* ── Referral banner ── */
+    .ref-banner {
+      display: none;
+      background: #f0fdf4; border-top: 3px solid #22c55e; border-bottom: 1px solid #bbf7d0;
+      padding: 18px 24px; text-align: center; width: 100%;
+    }
+    .ref-banner.visible { display: block; }
+    .ref-banner-title { font-size: 15px; font-weight: 700; color: #166534; margin-bottom: 10px; }
+    .ref-code-display {
+      display: inline-flex; align-items: center; gap: 10px;
+      background: #fff; border: 2px solid #22c55e; border-radius: 10px;
+      padding: 8px 16px; margin-bottom: 8px;
+    }
+    .ref-code-text {
+      font-family: 'Courier New', monospace;
+      font-size: 22px; font-weight: 900; letter-spacing: 4px; color: #111;
+    }
+    .ref-copy-btn {
+      padding: 6px 14px; background: #111; color: #fff;
+      border: none; border-radius: 8px; font-size: 12px; font-weight: 700;
+      cursor: pointer; transition: opacity 0.15s;
+    }
+    .ref-copy-btn:hover { opacity: 0.75; }
+    .ref-banner-hint { font-size: 12px; color: #166534; font-weight: 500; }
   </style>
 </head>
 <body>
@@ -275,6 +300,18 @@
 <div class="lang-bar">
   <button class="lang-btn" onclick="setLang('es')">ES</button>
   <button class="lang-btn active" onclick="setLang('en')">EN</button>
+</div>
+
+<!-- Referral banner — shown only when ?ref=CODE is in the URL -->
+<div class="ref-banner" id="refBanner">
+  <p class="ref-banner-title" data-lang="es">🎁 ¡Te invitaron a Mining The Blocks!</p>
+  <p class="ref-banner-title" data-lang="en visible">🎁 You were invited to Mining The Blocks!</p>
+  <div class="ref-code-display">
+    <span class="ref-code-text" id="refBannerCode"></span>
+    <button class="ref-copy-btn" id="refCopyBtn" onclick="copyRefCode()">Copy</button>
+  </div>
+  <p class="ref-banner-hint" data-lang="es">Descargá la app → abrí tu Perfil → Referidos → ingresá este código</p>
+  <p class="ref-banner-hint" data-lang="en visible">Download the app → open Profile → Referrals → enter this code</p>
 </div>
 
 <main>
@@ -611,6 +648,37 @@
       el.classList.toggle('visible', l === lang);
     });
     document.documentElement.lang = lang;
+    var copyBtn = document.getElementById('refCopyBtn');
+    if (copyBtn && copyBtn.textContent !== '✓') {
+      copyBtn.textContent = lang === 'es' ? 'Copiar' : 'Copy';
+    }
+  }
+
+  function detectReferral() {
+    var params = new URLSearchParams(window.location.search);
+    var ref = (params.get('ref') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!ref) ref = localStorage.getItem('mtb_ref') || '';
+    if (!ref) return;
+    localStorage.setItem('mtb_ref', ref);
+    document.getElementById('refBannerCode').textContent = ref;
+    document.getElementById('refBanner').classList.add('visible');
+  }
+
+  function copyRefCode() {
+    var code = document.getElementById('refBannerCode').textContent;
+    var btn = document.getElementById('refCopyBtn');
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(code).then(function() {
+        btn.textContent = '✓';
+        setTimeout(function() { btn.textContent = currentLang === 'es' ? 'Copiar' : 'Copy'; }, 2000);
+      });
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = code; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); btn.textContent = '✓'; setTimeout(function() { btn.textContent = currentLang === 'es' ? 'Copiar' : 'Copy'; }, 2000); } catch {}
+      document.body.removeChild(ta);
+    }
   }
 
   var verifiedCode = null;
@@ -700,6 +768,7 @@
 
   document.addEventListener('DOMContentLoaded', function() {
     setLang('en');
+    detectReferral();
     if (localStorage.getItem('mtb_age_ok') === '1') {
       document.getElementById('ageGate').style.display = 'none';
     }
