@@ -192,6 +192,26 @@
     }
     footer a { color: #aaa; }
 
+    /* ── Prize Pyramid ── */
+    .prize-pyramid { margin-bottom: 20px; text-align: center; }
+    .prize-pyramid-title { font-size: 11px; font-weight: 800; color: #555; text-transform: uppercase; letter-spacing: 1.4px; margin-bottom: 14px; }
+    .pyr-rows { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+    .pyr-row {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      border-radius: 7px; padding: 6px 14px;
+      font-size: 12.5px; font-weight: 700; color: #111;
+      border: 1.5px solid #e0e0e0; background: #fafafa;
+    }
+    .pyr-row:nth-child(1) { width: 38%; border-color: #f59e0b; background: #fffbeb; }
+    .pyr-row:nth-child(2) { width: 50%; border-color: #94a3b8; background: #f8fafc; }
+    .pyr-row:nth-child(3) { width: 62%; border-color: #cd7f32; background: #fdf6f0; }
+    .pyr-row:nth-child(4) { width: 74%; border-color: #a78bfa; background: #faf5ff; }
+    .pyr-row:nth-child(5) { width: 86%; border-color: #6ee7b7; background: #f0fdf4; }
+    .pyr-row:nth-child(6) { width: 100%; border-color: #93c5fd; background: #eff6ff; }
+    .pyr-val { font-weight: 900; }
+    .pyr-qty { font-size: 10px; color: #777; font-weight: 600; }
+    .pyr-caption { font-size: 11px; color: #888; margin-top: 10px; font-weight: 500; font-style: italic; }
+
     /* ── i18n: hidden by default ── */
     [data-lang] { display: none; }
     [data-lang].visible { display: block; }
@@ -204,8 +224,8 @@
 <header>
   <img src="icon.png" alt="Mining The Blocks" class="logo">
   <h1>Mining The Blocks</h1>
-  <p class="tagline" data-lang-inline="es">Excavá un cubo de 8 millones de celdas. Ganá premios reales en USDC.</p>
-  <p class="tagline" data-lang-inline="en visible">Mine a cube of 8 million cells. Win real prizes in USDC.</p>
+  <p class="tagline" data-lang-inline="es">¡Destruyamos el Cubo!</p>
+  <p class="tagline" data-lang-inline="en visible">Let's Destroy the Cube!</p>
 </header>
 
 <div class="lang-bar">
@@ -266,38 +286,38 @@
     <div class="section-label" data-lang="en visible">What is it?</div>
 
     <p class="desc" data-lang="es">
-      <strong>Mining The Blocks</strong> es un juego multijugador de minería. El mundo es un cubo masivo de <strong>201×201×201 bloques</strong> — más de 8 millones de celdas — que los jugadores excavan juntos en episodios de hasta <strong>100,000 participantes</strong>. Cada día recibís un pico gratis para minar; también podés conseguir más viendo anuncios o invitando amigos.
+      <strong>Mining The Blocks</strong> es un juego cooperativo de minería. El mundo es un cubo masivo de <strong>201×201×201 bloques</strong> y 100 capas — ¡más de 8 millones de bloques! Cada bloque puede tener premios, que van desde picos de regalo hasta <strong>$100,000</strong> en forma de gemas NFT, las cuales podés canjear en esta misma página por dinero real en USDC.
     </p>
     <p class="desc" data-lang="es">
-      Dentro del cubo hay <strong>9 tipos de gemas</strong> con valor real en USDC, desde $15 hasta $100,000. Las gemas más raras están enterradas en las capas más profundas: cuanto más adentro llegues, mayor es el premio. También hay <strong>283,241 picos</strong> escondidos que otorgan turnos adicionales de minería.
+      Todos los días recibís un pico de regalo. También podés conseguir <strong>2 más</strong> viendo anuncios o refiriendo amigos. Al registrarte por primera vez, recibís <strong>5 picos de regalo</strong>.
     </p>
     <p class="desc" data-lang="en visible">
-      <strong>Mining The Blocks</strong> is a multiplayer mining game. The world is a massive <strong>201×201×201-block cube</strong> — over 8 million cells — that players mine together in episodes of up to <strong>100,000 participants</strong>. Every day you receive a free pick to mine; you can earn more by watching ads or inviting friends.
+      <strong>Mining The Blocks</strong> is a cooperative mining game. The world is a massive <strong>201×201×201-block cube</strong> with 100 layers — over 8 million blocks! Every block can hold prizes, ranging from gift picks to <strong>$100,000</strong> in NFT gems, which you can redeem right on this page for real USDC.
     </p>
     <p class="desc" data-lang="en visible">
-      Inside the cube are <strong>9 gem types</strong> with real USDC value, ranging from $15 to $100,000. The rarest gems are buried in the deepest layers: the further you go, the bigger the prize. There are also <strong>283,241 picks</strong> hidden inside that grant additional mining turns.
+      Every day you receive a free gift pick. You can earn <strong>2 more</strong> by watching ads or referring friends. On your first sign-up, you receive <strong>5 gift picks</strong>.
     </p>
 
     <div class="stats-grid">
       <div class="stat">
-        <div class="stat-num">8.1M</div>
-        <div class="stat-lbl" data-lang="es">Cubos por servidor</div>
-        <div class="stat-lbl" data-lang="en visible">Cubes per server</div>
+        <div class="stat-num">1M</div>
+        <div class="stat-lbl" data-lang="es">Cubos por cadena</div>
+        <div class="stat-lbl" data-lang="en visible">Cubes per chain</div>
       </div>
       <div class="stat">
         <div class="stat-num">$211K</div>
-        <div class="stat-lbl" data-lang="es">En premios por cubo completo</div>
-        <div class="stat-lbl" data-lang="en visible">In prizes per completed cube</div>
+        <div class="stat-lbl" data-lang="es">En premios por cadena</div>
+        <div class="stat-lbl" data-lang="en visible">In prizes per chain</div>
       </div>
       <div class="stat">
-        <div class="stat-num">9</div>
-        <div class="stat-lbl" data-lang="es">Tipos de gemas con valor real</div>
-        <div class="stat-lbl" data-lang="en visible">Gem types with real cash value</div>
+        <div class="stat-num">100K</div>
+        <div class="stat-lbl" data-lang="es">Personas máx. por eslabón</div>
+        <div class="stat-lbl" data-lang="en visible">Max players per link</div>
       </div>
       <div class="stat">
-        <div class="stat-num">10</div>
-        <div class="stat-lbl" data-lang="es">Episodios por cadena</div>
-        <div class="stat-lbl" data-lang="en visible">Episodes per chain</div>
+        <div class="stat-num">5</div>
+        <div class="stat-lbl" data-lang="es">Picos al registrarte</div>
+        <div class="stat-lbl" data-lang="en visible">Picks on sign-up</div>
       </div>
     </div>
 
@@ -348,6 +368,22 @@
   <section>
     <div class="section-label" data-lang="es">Descargar la app</div>
     <div class="section-label" data-lang="en visible">Download the app</div>
+
+    <!-- Pirámide de premios -->
+    <div class="prize-pyramid">
+      <div class="prize-pyramid-title" data-lang="es">Pirámide de liberación de premios</div>
+      <div class="prize-pyramid-title" data-lang="en visible">Prize release pyramid</div>
+      <div class="pyr-rows">
+        <div class="pyr-row"><span class="pyr-val">$100,000</span><span class="pyr-qty">×1</span></div>
+        <div class="pyr-row"><span class="pyr-val">$50,000</span><span class="pyr-qty">×1</span></div>
+        <div class="pyr-row"><span class="pyr-val">$10,000</span><span class="pyr-qty">×5</span></div>
+        <div class="pyr-row"><span class="pyr-val">$1,000 · $500</span><span class="pyr-qty">×150</span></div>
+        <div class="pyr-row"><span class="pyr-val">$100 · $50</span><span class="pyr-qty">×1,500</span></div>
+        <div class="pyr-row"><span class="pyr-val">$25 · $15</span><span class="pyr-qty">×14,000</span></div>
+      </div>
+      <p class="pyr-caption" data-lang="es">Las capas más profundas guardan los premios más grandes</p>
+      <p class="pyr-caption" data-lang="en visible">Deeper layers hold the biggest prizes</p>
+    </div>
 
     <div class="dl-grid">
       <a href="https://github.com/miningtheblocks/Mining-The-Blocks/releases/download/v1.0/MiningTheBlocks.apk" class="dl-btn" id="downloadAndroid">
