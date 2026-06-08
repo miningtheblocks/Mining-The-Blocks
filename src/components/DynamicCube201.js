@@ -4327,6 +4327,15 @@ const handleZoomButton = useCallback((direction) => {
                     if (String(msg).startsWith('rate_limited:')) {
                       const secs = String(msg).split(':')[1] || '2';
                       showHudToast((t('cube.rateLimitToast') || 'Esperá {s}s').replace('{s}', secs));
+                    } else if (String(code).includes('permission-denied')) {
+                      Alert.alert(
+                        t('auth.registerRequired') || 'Registrate para jugar',
+                        t('auth.registerRequiredMsg') || 'Necesitás una cuenta para minar. ¡Es gratis registrarse!',
+                        [
+                          { text: t('auth.cancel') || 'Cancelar', style: 'cancel' },
+                          { text: t('auth.register') || 'Registrarse', onPress: () => { try { navigation.navigate('Registration'); } catch {} } },
+                        ],
+                      );
                     } else {
                       const human = code === 'timeout' ? (t('cube.timeoutBody') || 'Network timeout. Please try again.') : `${code}: ${msg}`;
                       Alert.alert(t('cube.serverErrorTitle'), human);
