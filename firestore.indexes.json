@@ -27,17 +27,12 @@
       ]
     },
     {
-      "collectionGroup": "users",
+      "collectionGroup": "mined",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "referralCode", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "gems",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "code", "order": "ASCENDING" }
+        { "fieldPath": "K",         "order": "ASCENDING" },
+        { "fieldPath": "faceIndex", "order": "ASCENDING" },
+        { "fieldPath": "gridIdx",   "order": "ASCENDING" }
       ]
     }
   ],

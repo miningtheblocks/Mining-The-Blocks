@@ -94,6 +94,12 @@ function fnv1a(str) {
   return h;
 }
 
+function requireRegistered(request) {
+  if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "Login required");
+  const provider = request.auth.token && request.auth.token.firebase && request.auth.token.firebase.sign_in_provider;
+  if (provider === "anonymous") throw new HttpsError("permission-denied", "Registro requerido para jugar");
+}
+
 // Deterministic reward for a cube — no pre-population needed
 // Returns 0 (no reward) or 1-5 (picks won)
 function getRewardForCube(serverId, K, cubeNumber) {
@@ -119,7 +125,9 @@ function getGemForCube(serverId, K, cubeNumber, memberCount) {
   const tierUnlocked = (tier) => members >= GEM_UNLOCK_THRESHOLDS[tier - 1];
 
   // cumSum(n) = cubos totales en K=0 … K=n-1  →  2·n·(2n-1)·(2n+1)
-  function cumSum(n) { return 2 * n * (2 * n - 1) * (2 * n + 1); }
+  function cumSum(n) {
+    return 2 * n * (2 * n - 1) * (2 * n + 1);
+  }
 
   // Posición global de este cubo dentro de la zona que arranca en minK
   function offsetInZone(minK) {
@@ -137,17 +145,17 @@ function getGemForCube(serverId, K, cubeNumber, memberCount) {
     if (offset < 0 || offset >= zoneSize) return false;
 
     const base = Math.floor(zoneSize / count);
-    const rem  = zoneSize % count;
-    let bucket, within, bSize;
+    const rem = zoneSize % count;
+    let bucket; let within; let bSize;
     if (offset < (base + 1) * rem) {
       bucket = Math.floor(offset / (base + 1));
       within = offset % (base + 1);
-      bSize  = base + 1;
+      bSize = base + 1;
     } else {
       const adj = offset - rem * (base + 1);
       bucket = rem + Math.floor(adj / base);
       within = adj % base;
-      bSize  = base;
+      bSize = base;
     }
     return within === fnv1a(`PRIZE|${serverId}|${tier}|${bucket}`) % bSize;
   }
@@ -161,17 +169,21 @@ function getGemForCube(serverId, K, cubeNumber, memberCount) {
   // Tiers 8-9:           K 0-97  → 7.529.340
 
   // Zonas exclusivas para los 3 premios mayores (sin solapamiento entre sí)
-  if      (K <=  6) { if (hasPrize(1,     1,  0,    2730)) return 1; }
-  else if (K <= 16) { if (hasPrize(2,     1,  7,   36540)) return 2; }
-  else if (K <= 26) { if (hasPrize(3,     5, 17,  118140)) return 3; }
+  if (K <= 6) {
+    if (hasPrize(1, 1, 0, 2730)) return 1;
+  } else if (K <= 16) {
+    if (hasPrize(2, 1, 7, 36540)) return 2;
+  } else if (K <= 26) {
+    if (hasPrize(3, 5, 17, 118140)) return 3;
+  }
 
   // Premios acumulativos (disponibles en toda su zona, incluso en las zonas exclusivas de arriba)
-  if (K <= 46 && hasPrize(4,    50,  0,  830490)) return 4; // $1.000 — capas 55-101
-  if (K <= 46 && hasPrize(5,   100,  0,  830490)) return 5; // $500   — capas 55-101
-  if (K <= 81 && hasPrize(6,   500,  0, 4410780)) return 6; // $100   — capas 20-101
-  if (K <= 81 && hasPrize(7,  1000,  0, 4410780)) return 7; // $50    — capas 20-101
-  if (hasPrize(8,  4000,  0, 7529340)) return 8;            // $25    — capas 4-101
-  if (hasPrize(9, 10000,  0, 7529340)) return 9;            // $15    — capas 4-101
+  if (K <= 46 && hasPrize(4, 50, 0, 830490)) return 4; // $1.000 — capas 55-101
+  if (K <= 46 && hasPrize(5, 100, 0, 830490)) return 5; // $500   — capas 55-101
+  if (K <= 81 && hasPrize(6, 500, 0, 4410780)) return 6; // $100   — capas 20-101
+  if (K <= 81 && hasPrize(7, 1000, 0, 4410780)) return 7; // $50    — capas 20-101
+  if (hasPrize(8, 4000, 0, 7529340)) return 8; // $25    — capas 4-101
+  if (hasPrize(9, 10000, 0, 7529340)) return 9; // $15    — capas 4-101
 
   return null;
 }
@@ -327,8 +339,8 @@ exports.addServerCredit = onCall(async (request) => {
 
 // Crear servidor (crea también el chain si no existe)
 exports.createServer = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  requireRegistered(request);
+  const uid = request.auth.uid;
 
   const name = String((request.data && request.data.name) || '').trim().slice(0, 40);
   if (!name) throw new HttpsError("invalid-argument", "Server name required");
@@ -399,8 +411,8 @@ exports.createServer = onCall(async (request) => {
 
 // Unirse a un server existente (consume 1 crédito)
 exports.joinServer = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  requireRegistered(request);
+  const uid = request.auth.uid;
 
   const serverId = String((request.data && request.data.serverId) || '');
   if (!serverId) throw new HttpsError("invalid-argument", "serverId required");
@@ -633,8 +645,8 @@ exports.claimGemNFT = onCall(async (request) => {
 // ─── Mining ──────────────────────────────────────────────────────────────────
 
 exports.mineCube = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  requireRegistered(request);
+  const uid = request.auth.uid;
 
   const cubeNumber = String((request.data && request.data.cubeNumber) || '');
   const serverId = String((request.data && request.data.serverId) || '');
@@ -893,8 +905,8 @@ exports.getPeaksStatus = onCall(async (request) => {
 });
 
 exports.claimDailyPick = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  requireRegistered(request);
+  const uid = request.auth.uid;
   const nowMs = Date.now();
   const userRef = db.collection("users").doc(uid);
   const result = await db.runTransaction(async (tx) => {
@@ -911,8 +923,8 @@ exports.claimDailyPick = onCall(async (request) => {
 });
 
 exports.claimAdPick = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  requireRegistered(request);
+  const uid = request.auth.uid;
   const index = Number(request.data && request.data.index);
   if (index !== 1 && index !== 2) throw new HttpsError("invalid-argument", "index must be 1 or 2");
   const nowMs = Date.now();
