@@ -3,9 +3,9 @@
 /* eslint-disable max-len */
 /* eslint-disable quotes */
 /* eslint-disable object-curly-spacing */
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const functionsV1 = require("firebase-functions");
+const { defineSecret } = require("firebase-functions/params");
 const { ethers } = require("ethers");
 const admin = require("firebase-admin");
 const nodemailer = require("nodemailer");
@@ -680,9 +680,8 @@ exports.mineCube = onCall(async (request) => {
 
     let picks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
     if (!userSnap.exists) {
-      picks = 5;
       const refCode = fnv1a(uid + "REF").toString(36).toUpperCase().slice(0, 7);
-      tx.set(userRef, { picks: 5, createdAt: Date.now(), referralCode: refCode }, { merge: true });
+      tx.set(userRef, { picks: 0, createdAt: Date.now(), referralCode: refCode }, { merge: true });
     }
 
     // Reset lazy de picos: si el servidor inició un nuevo episodio y el usuario no fue reseteado aún
@@ -899,8 +898,8 @@ exports.getPeaksStatus = onCall(async (request) => {
   const userRef = db.collection("users").doc(uid);
   const snap = await userRef.get();
   if (!snap.exists) {
-    await userRef.set({ picks: 5, createdAt: nowMs }, { merge: true });
-    return buildStatus({ picks: 5, createdAt: nowMs }, nowMs);
+    await userRef.set({ picks: 0, createdAt: nowMs }, { merge: true });
+    return buildStatus({ picks: 0, createdAt: nowMs }, nowMs);
   }
   return buildStatus(snap.data() || {}, nowMs);
 });
@@ -912,7 +911,7 @@ exports.claimDailyPick = onCall(async (request) => {
   const userRef = db.collection("users").doc(uid);
   const result = await db.runTransaction(async (tx) => {
     const snap = await tx.get(userRef);
-    const data = snap.exists ? (snap.data() || {}) : { picks: 5, createdAt: nowMs };
+    const data = snap.exists ? (snap.data() || {}) : { picks: 0, createdAt: nowMs };
     if (!snap.exists) tx.set(userRef, data, { merge: true });
     const status = buildStatus(data, nowMs);
     if (nowMs < status.nextDailyAt) throw new HttpsError("failed-precondition", "Daily not ready");
@@ -932,7 +931,7 @@ exports.claimAdPick = onCall(async (request) => {
   const userRef = db.collection("users").doc(uid);
   const result = await db.runTransaction(async (tx) => {
     const snap = await tx.get(userRef);
-    const data = snap.exists ? (snap.data() || {}) : { picks: 5, createdAt: nowMs };
+    const data = snap.exists ? (snap.data() || {}) : { picks: 0, createdAt: nowMs };
     if (!snap.exists) tx.set(userRef, data, { merge: true });
     const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
     const lastVal = toMillis(data[lastKey]) || 0;
@@ -942,6 +941,85 @@ exports.claimAdPick = onCall(async (request) => {
     return buildStatus(updated, nowMs);
   });
   return result;
+});
+
+// ─── Ad timer page (web interstitial) ────────────────────────────────────────
+// Crea una sesión para la página de anuncios web (timer de 45s).
+// La página llama a claimAdSession vía HTTP para acreditar el pick.
+exports.createAdSession = onCall(async (request) => {
+  requireRegistered(request);
+  const uid = request.auth.uid;
+  const index = Number(request.data && request.data.index);
+  if (index !== 1 && index !== 2) throw new HttpsError("invalid-argument", "index must be 1 or 2");
+
+  // Verificar límite diario antes de crear la sesión
+  const userRef = db.collection("users").doc(uid);
+  const userSnap = await userRef.get();
+  if (userSnap.exists) {
+    const data = userSnap.data() || {};
+    const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
+    const lastVal = toMillis(data[lastKey]) || 0;
+    if (Date.now() < lastVal + DAY_MS) throw new HttpsError("failed-precondition", `Ad ${index} not ready`);
+  }
+
+  const crypto = require("crypto");
+  const token = crypto.randomBytes(24).toString("hex");
+  const sessionId = crypto.randomBytes(16).toString("hex");
+  await db.collection("adSessions").doc(sessionId).set({
+    uid, index, token, createdAt: Date.now(), used: false,
+  });
+  return { sessionId, token };
+});
+
+// Endpoint HTTP llamado desde la página web después del timer.
+// No requiere auth de Firebase — la seguridad la da el token de un solo uso.
+exports.claimAdSession = onRequest(async (req, res) => {
+  res.set("Access-Control-Allow-Origin", "https://miningtheblocks.github.io");
+  res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
+    return;
+  }
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "method_not_allowed" });
+    return;
+  }
+
+  const { sessionId, token } = req.body || {};
+  if (!sessionId || !token) {
+    res.status(400).json({ error: "missing_params" });
+    return;
+  }
+
+  const sessionRef = db.collection("adSessions").doc(String(sessionId));
+  const nowMs = Date.now();
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const sessionSnap = await tx.get(sessionRef);
+      if (!sessionSnap.exists) throw new Error("not_found");
+      const session = sessionSnap.data();
+      if (session.token !== token) throw new Error("invalid_token");
+      if (session.used) throw new Error("already_used");
+      if (nowMs - session.createdAt > 12 * 60 * 1000) throw new Error("expired"); // 12 min
+
+      const uid = session.uid;
+      const index = session.index;
+      const userRef = db.collection("users").doc(uid);
+      const userSnap = await tx.get(userRef);
+      const data = userSnap.exists ? (userSnap.data() || {}) : { picks: 0 };
+      const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
+      const lastVal = toMillis(data[lastKey]) || 0;
+      if (nowMs < lastVal + DAY_MS) throw new Error("not_ready");
+
+      tx.set(sessionRef, { used: true, claimedAt: nowMs }, { merge: true });
+      tx.set(userRef, { picks: admin.firestore.FieldValue.increment(1), [lastKey]: nowMs }, { merge: true });
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // ─── Admin helpers ───────────────────────────────────────────────────────────
@@ -1295,10 +1373,34 @@ async function runCryptoPaymentProcessing() {
           }, { merge: true });
         });
 
-        // Push notification al usuario
+        // Bonus de referido: si el comprador fue referido y aún no se pagó el bonus
         try {
-          const userSnap = await db.collection("users").doc(uid).get();
-          const pushToken = userSnap.exists ? userSnap.data().pushToken : null;
+          await db.runTransaction(async (tx) => {
+            const userRef = db.collection("users").doc(uid);
+            const userSnap = await tx.get(userRef);
+            const userData = userSnap.exists ? (userSnap.data() || {}) : {};
+            const referredBy = userData.referredBy || null;
+            const referralBonusPaid = userData.referralBonusPaid || false;
+            if (referredBy && !referralBonusPaid) {
+              const referrerRef = db.collection("users").doc(referredBy);
+              tx.set(referrerRef, { picks: admin.firestore.FieldValue.increment(10) }, { merge: true });
+              tx.set(userRef, { referralBonusPaid: true }, { merge: true });
+            }
+          });
+          // Notificar al referidor
+          const userSnap2 = await db.collection("users").doc(uid).get();
+          const referredBy = userSnap2.exists ? (userSnap2.data().referredBy || null) : null;
+          if (referredBy) {
+            await sendPushToUser(referredBy, "¡Tu referido compró un crédito! 🎉", "Ganaste 10 picos. ¡Seguí invitando amigos!");
+          }
+        } catch (refErr) {
+          console.warn("Referral bonus error:", refErr.message);
+        }
+
+        // Push notification al comprador
+        try {
+          const buyerSnap = await db.collection("users").doc(uid).get();
+          const pushToken = buyerSnap.exists ? buyerSnap.data().pushToken : null;
           if (pushToken) {
             await fetch("https://exp.host/--/api/v2/push/send", {
               method: "POST",
@@ -1343,15 +1445,15 @@ exports.notifyAllUsers = onCall(async (request) => {
   }
 
   const title = String((request.data && request.data.title) || '').trim();
-  const body  = String((request.data && request.data.body)  || '').trim();
+  const body = String((request.data && request.data.body) || '').trim();
   if (!title || !body) throw new HttpsError("invalid-argument", "title and body required");
 
   // Recopilar todos los tokens (en lotes de 500 para no agotar memoria)
   const BATCH = 500;
-  let tokens = [];
+  const tokens = [];
   let lastDoc = null;
 
-  while (true) {
+  for (;;) {
     let q = db.collection("users").where("pushToken", "!=", null).limit(BATCH);
     if (lastDoc) q = q.startAfter(lastDoc);
     const snap = await q.get();
@@ -1402,7 +1504,7 @@ function setCorsHeaders(res) {
   res.set("Access-Control-Allow-Headers", "Content-Type");
 }
 
-exports.verifyGemCode = functionsV1.https.onRequest(async (req, res) => {
+exports.verifyGemCode = onRequest(async (req, res) => {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     return res.status(204).send("");
@@ -1430,8 +1532,103 @@ exports.verifyGemCode = functionsV1.https.onRequest(async (req, res) => {
 
 const GEM_NAMES_ES = ["Diamante rojo", "Painita", "Musgravita", "Jadeíta imperial", "Alejandrita", "Rubí sangre de paloma", "Diamante azul", "Diamante rosa", "Esmeralda colombiana"];
 const NOTIFY_EMAIL = "miningtheblocks@gmail.com";
+const gmailAppPassword = defineSecret("GMAIL_APP_PASSWORD");
 
-exports.submitGemClaim = functionsV1.runWith({ secrets: ["GMAIL_APP_PASSWORD"] }).https.onRequest(async (req, res) => {
+// Envía un email de verificación personalizado al usuario recién registrado
+exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (request) => {
+  const uid = request.auth && request.auth.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+
+  const user = await admin.auth().getUser(uid);
+  const email = user.email;
+  if (!email) throw new HttpsError("failed-precondition", "No email on account");
+  if (user.emailVerified) return { ok: true, alreadyVerified: true };
+
+  const actionCodeSettings = {
+    url: "https://miningtheblocks-669f6.web.app/verify",
+    handleCodeInApp: false,
+  };
+  let verificationLink = await admin.auth().generateEmailVerificationLink(email, actionCodeSettings);
+  // Redirect directly to our custom page instead of Firebase's default action handler
+  verificationLink = verificationLink.replace(
+      /^https:\/\/[^?]+\/__\/auth\/action/,
+      "https://miningtheblocks-669f6.web.app/verify",
+  );
+
+  const appPassword = gmailAppPassword.value();
+  if (!appPassword) throw new HttpsError("internal", "Email service not configured");
+
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: NOTIFY_EMAIL, pass: appPassword },
+  });
+
+  const displayName = user.displayName || email.split("@")[0];
+
+  await transporter.sendMail({
+    from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
+    to: email,
+    subject: "⛏ Verificá tu cuenta — Mining The Blocks",
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+      <body style="margin:0;padding:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0a0a;padding:40px 20px">
+          <tr><td align="center">
+            <table width="100%" style="max-width:480px;background:#141414;border-radius:16px;overflow:hidden;border:1px solid #2a2a2a">
+              <!-- Header -->
+              <tr>
+                <td style="background:linear-gradient(135deg,#1a1a1a 0%,#222 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #2a2a2a">
+                  <div style="font-size:36px;margin-bottom:8px">⛏</div>
+                  <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:900;letter-spacing:-0.5px">Mining The Blocks</h1>
+                  <p style="margin:6px 0 0;color:#666;font-size:13px">Verificación de cuenta</p>
+                </td>
+              </tr>
+              <!-- Body -->
+              <tr>
+                <td style="padding:32px">
+                  <p style="margin:0 0 8px;color:#999;font-size:13px;text-transform:uppercase;letter-spacing:1px;font-weight:700">Hola, ${displayName}</p>
+                  <h2 style="margin:0 0 16px;color:#ffffff;font-size:20px;font-weight:800">Ya casi estás adentro</h2>
+                  <p style="margin:0 0 24px;color:#aaa;font-size:15px;line-height:1.6">
+                    Hacé click en el botón para verificar tu email y acceder al juego. El link es válido por <strong style="color:#fff">24 horas</strong>.
+                  </p>
+                  <!-- CTA Button -->
+                  <table width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td align="center" style="padding:8px 0 24px">
+                        <a href="${verificationLink}"
+                           style="display:inline-block;background:#ffffff;color:#000000;text-decoration:none;font-weight:900;font-size:15px;padding:16px 40px;border-radius:10px;letter-spacing:0.3px">
+                          ✅ Verificar mi cuenta
+                        </a>
+                      </td>
+                    </tr>
+                  </table>
+                  <p style="margin:0 0 8px;color:#555;font-size:12px;text-align:center">Si el botón no funciona, copiá este link:</p>
+                  <p style="margin:0;background:#1e1e1e;border-radius:8px;padding:10px 12px;word-break:break-all;font-size:11px;color:#4a9eff;font-family:monospace">
+                    ${verificationLink}
+                  </p>
+                </td>
+              </tr>
+              <!-- Footer -->
+              <tr>
+                <td style="padding:16px 32px 24px;border-top:1px solid #1e1e1e;text-align:center">
+                  <p style="margin:0;color:#444;font-size:11px">Si no creaste esta cuenta, ignorá este email.</p>
+                  <p style="margin:6px 0 0;color:#333;font-size:11px">© 2025 Mining The Blocks</p>
+                </td>
+              </tr>
+            </table>
+          </td></tr>
+        </table>
+      </body>
+      </html>
+    `,
+  });
+
+  return { ok: true };
+});
+
+exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, res) => {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     return res.status(204).send("");
@@ -1452,7 +1649,7 @@ exports.submitGemClaim = functionsV1.runWith({ secrets: ["GMAIL_APP_PASSWORD"] }
   if (!emailRegex.test(email)) {
     return res.status(400).json({ error: "invalid_email" });
   }
-  if (!wallet.startsWith("0x") || wallet.length < 40) {
+  if (!/^0x[a-fA-F0-9]{40}$/.test(wallet)) {
     return res.status(400).json({ error: "invalid_wallet" });
   }
   try {
@@ -1488,28 +1685,29 @@ exports.submitGemClaim = functionsV1.runWith({ secrets: ["GMAIL_APP_PASSWORD"] }
 
     // Enviar notificación al admin
     try {
-      const appPassword = process.env.GMAIL_APP_PASSWORD;
+      const appPassword = gmailAppPassword.value();
       if (appPassword) {
         const transporter = nodemailer.createTransport({
           service: "gmail",
           auth: { user: NOTIFY_EMAIL, pass: appPassword },
         });
         const fecha = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+        const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         await transporter.sendMail({
           from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
           to: NOTIFY_EMAIL,
-          subject: `🎉 Nuevo canje de gema — ${gemName} (${gemPrize})`,
+          subject: `🎉 Nuevo canje de gema — ${esc(gemName)} (${esc(gemPrize)})`,
           html: `
             <h2>Nuevo canje de gema recibido</h2>
             <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Gema</td><td style="padding:6px 12px">${gemName} — Tier ${gemTier}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Premio</td><td style="padding:6px 12px;font-weight:bold;color:#000">${gemPrize}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Código</td><td style="padding:6px 12px;font-family:monospace">${code}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Nombre</td><td style="padding:6px 12px">${name}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Email</td><td style="padding:6px 12px">${email}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Teléfono</td><td style="padding:6px 12px">${phone}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Billetera</td><td style="padding:6px 12px;font-family:monospace;font-size:12px">${wallet}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Fecha</td><td style="padding:6px 12px">${fecha}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Gema</td><td style="padding:6px 12px">${esc(gemName)} — Tier ${esc(String(gemTier))}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Premio</td><td style="padding:6px 12px;font-weight:bold;color:#000">${esc(gemPrize)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Código</td><td style="padding:6px 12px;font-family:monospace">${esc(code)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Nombre</td><td style="padding:6px 12px">${esc(name)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Email</td><td style="padding:6px 12px">${esc(email)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Teléfono</td><td style="padding:6px 12px">${esc(phone)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Billetera</td><td style="padding:6px 12px;font-family:monospace;font-size:12px">${esc(wallet)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Fecha</td><td style="padding:6px 12px">${esc(fecha)}</td></tr>
             </table>
             <p style="margin-top:16px;font-size:12px;color:#888">Mining The Blocks · Firestore: gemClaims</p>
           `,
@@ -1524,4 +1722,86 @@ exports.submitGemClaim = functionsV1.runWith({ secrets: ["GMAIL_APP_PASSWORD"] }
     console.error("submitGemClaim:", e.message);
     return res.status(500).json({ error: "server_error" });
   }
+});
+
+exports.reportProblem = onCall({ secrets: [gmailAppPassword] }, async (request) => {
+  const data = request.data || {};
+  const description = (data.description || "").toString().trim();
+  if (!description || description.length < 5) {
+    throw new HttpsError("invalid-argument", "Description too short");
+  }
+
+  const userType = (data.userType || "unknown").toString().slice(0, 20);
+  const reportType = (data.reportType || "bug").toString().slice(0, 20);
+  const reporterEmail = (data.email || "").toString().trim().slice(0, 200) || null;
+  const uid = (request.auth && request.auth.uid) || null;
+
+  const appPassword = gmailAppPassword.value();
+  if (!appPassword) throw new HttpsError("internal", "Email service not configured");
+
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: NOTIFY_EMAIL, pass: appPassword },
+  });
+
+  const uidLine = uid ? `<b>UID:</b> ${uid}` : "<b>UID:</b> no auth";
+  const emailLine = reporterEmail ? `<b>Email del usuario:</b> ${reporterEmail}` : "<b>Email del usuario:</b> no indicado";
+
+  await transporter.sendMail({
+    from: `"MTB Reports" <${NOTIFY_EMAIL}>`,
+    to: NOTIFY_EMAIL,
+    replyTo: reporterEmail || NOTIFY_EMAIL,
+    subject: `[MTB] ${reportType.toUpperCase()} · ${userType} · ${uid ? uid.slice(0, 8) : "anon"}`,
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head><meta charset="utf-8"></head>
+      <body style="background:#0a0a0a;font-family:Arial,sans-serif;padding:32px 20px">
+        <table style="max-width:520px;width:100%;background:#141414;border-radius:12px;border:1px solid #2a2a2a;overflow:hidden">
+          <tr>
+            <td style="background:#1a1a1a;padding:20px 24px;border-bottom:1px solid #2a2a2a">
+              <p style="margin:0;color:#666;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px">Mining The Blocks</p>
+              <h2 style="margin:6px 0 0;color:#fff;font-size:18px;font-weight:900">⚠️ Reporte de problema</h2>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px">
+              <table style="width:100%;border-collapse:collapse">
+                <tr>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#888;font-size:13px;width:40%">Tipo de usuario</td>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#fff;font-size:13px;font-weight:700">${userType}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#888;font-size:13px">Tipo de reporte</td>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#f87171;font-size:13px;font-weight:700">${reportType.toUpperCase()}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#888;font-size:13px">${uidLine.replace(/<[^>]+>/g, "")}</td>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#4a9eff;font-size:12px;font-family:monospace">${uid || "—"}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;color:#888;font-size:13px">${emailLine.replace(/<[^>]+>/g, "")}</td>
+                  <td style="padding:8px 0;color:#22c55e;font-size:13px">${reporterEmail || "—"}</td>
+                </tr>
+              </table>
+              <div style="margin-top:20px">
+                <p style="margin:0 0 8px;color:#888;font-size:12px;text-transform:uppercase;letter-spacing:1px;font-weight:700">Descripción</p>
+                <div style="background:#1a1a1a;border-radius:8px;padding:14px 16px;border:1px solid #2a2a2a">
+                  <p style="margin:0;color:#ddd;font-size:14px;line-height:1.6;white-space:pre-wrap">${description.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>
+                </div>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:12px 24px;border-top:1px solid #1e1e1e;text-align:center">
+              <p style="margin:0;color:#333;font-size:11px">Mining The Blocks · Reporte automático</p>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `,
+  });
+
+  return { ok: true };
 });

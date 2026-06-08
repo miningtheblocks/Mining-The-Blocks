@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>Mining The Blocks — Get a Pick</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0a; color: #eee;
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: flex-start;
+    }
+
+    header {
+      width: 100%; text-align: center;
+      padding: 28px 24px 16px;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    .logo { width: 64px; height: 64px; border-radius: 14px; margin: 0 auto 10px; display: block; }
+    .header-title { font-size: 18px; font-weight: 900; color: #fff; }
+    .header-sub { font-size: 13px; color: #555; margin-top: 3px; }
+
+    main {
+      flex: 1; width: 100%; max-width: 480px;
+      padding: 32px 24px; display: flex; flex-direction: column;
+      align-items: center; gap: 28px;
+    }
+
+    /* ── Instrucciones ── */
+    .instructions {
+      background: #111; border: 1px solid #1e1e1e; border-radius: 14px;
+      padding: 16px 18px; width: 100%; text-align: center;
+    }
+    .instructions-title { font-size: 15px; font-weight: 800; color: #ffd700; margin-bottom: 6px; }
+    .instructions-body { font-size: 13px; color: #888; line-height: 1.6; }
+
+    /* ── Slot de anuncio ── */
+    .ad-slot {
+      width: 100%; min-height: 100px;
+      display: flex; align-items: center; justify-content: center;
+      background: #111; border: 1px dashed #2a2a2a; border-radius: 10px;
+      color: #333; font-size: 12px;
+    }
+
+    /* ── Timer ── */
+    .timer-wrap {
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+    }
+    .timer-circle-svg { width: 130px; height: 130px; transform: rotate(-90deg); }
+    .timer-track { fill: none; stroke: #1e1e1e; stroke-width: 10; }
+    .timer-arc {
+      fill: none; stroke: #ffd700; stroke-width: 10;
+      stroke-linecap: round;
+      stroke-dasharray: 339.3; /* 2π × 54 */
+      stroke-dashoffset: 0;
+      transition: stroke-dashoffset 1s linear;
+    }
+    .timer-label {
+      position: relative; width: 130px; height: 130px;
+      margin-top: -130px;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+    }
+    .timer-num { font-size: 36px; font-weight: 900; color: #ffd700; line-height: 1; }
+    .timer-sec { font-size: 11px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+    .timer-msg { font-size: 13px; color: #666; text-align: center; max-width: 260px; }
+
+    /* ── Botón claim ── */
+    .claim-btn {
+      width: 100%; max-width: 320px;
+      padding: 18px; border-radius: 14px;
+      background: #1a2a0a; border: 1.5px solid #2e7d32;
+      color: #5cb85c; font-size: 18px; font-weight: 900;
+      cursor: pointer; transition: opacity 0.15s;
+      display: none;
+    }
+    .claim-btn.visible { display: block; }
+    .claim-btn:hover { opacity: 0.85; }
+    .claim-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* ── Estado resultado ── */
+    .result-box {
+      display: none; width: 100%; max-width: 320px;
+      padding: 20px; border-radius: 14px; text-align: center;
+    }
+    .result-box.visible { display: block; }
+    .result-ok { background: #0d2010; border: 1.5px solid #2e7d32; }
+    .result-err { background: #1a0808; border: 1.5px solid #5c1212; }
+    .result-icon { font-size: 40px; }
+    .result-title { font-size: 16px; font-weight: 900; margin-top: 8px; }
+    .result-ok .result-title { color: #5cb85c; }
+    .result-err .result-title { color: #e57373; }
+    .result-body { font-size: 13px; color: #888; margin-top: 6px; line-height: 1.6; }
+    .back-btn {
+      display: inline-block; margin-top: 14px;
+      padding: 10px 20px; border-radius: 10px;
+      background: #111; border: 1px solid #333;
+      color: #888; font-size: 13px; font-weight: 700;
+      cursor: pointer; text-decoration: none;
+    }
+
+    /* ── i18n ── */
+    [data-lang] { display: none; }
+    [data-lang].visible { display: block; }
+    [data-lang-inline] { display: none; }
+    [data-lang-inline].visible { display: inline; }
+  </style>
+</head>
+<body>
+
+<header>
+  <img src="icon.png" alt="MTB" class="logo">
+  <div class="header-title">Mining The Blocks</div>
+  <div class="header-sub" data-lang-inline="es">Obtener un pico ⛏</div>
+  <div class="header-sub" data-lang-inline="en visible">Get a pick ⛏</div>
+</header>
+
+<main>
+
+  <!-- Instrucciones -->
+  <div class="instructions">
+    <div class="instructions-title" data-lang="es">⏳ Esperá 45 segundos</div>
+    <div class="instructions-title" data-lang="en visible">⏳ Wait 45 seconds</div>
+    <p class="instructions-body" data-lang="es">Cuando termine el contador, tocá el botón para recibir tu pico. Después volvé a la app.</p>
+    <p class="instructions-body" data-lang="en visible">When the countdown ends, tap the button to receive your pick. Then go back to the app.</p>
+  </div>
+
+  <!-- Slot de anuncio superior -->
+  <div class="ad-slot" id="adSlotTop">
+    <!--
+      ═══════════════════════════════════════════════════════
+      ESPACIO PARA ANUNCIO — AD SLOT
+      ═══════════════════════════════════════════════════════
+      Registrate en https://adsterra.com o https://propellerads.com
+      como Publisher, creá una unidad "Banner 300×100" o "Social Bar"
+      y pegá el código del script aquí.
+      ═══════════════════════════════════════════════════════
+    -->
+  </div>
+
+  <!-- Timer circular -->
+  <div class="timer-wrap" id="timerWrap">
+    <svg class="timer-circle-svg" viewBox="0 0 120 120">
+      <circle class="timer-track" cx="60" cy="60" r="54"/>
+      <circle class="timer-arc" id="timerArc" cx="60" cy="60" r="54"/>
+    </svg>
+    <div class="timer-label">
+      <span class="timer-num" id="timerNum">45</span>
+      <span class="timer-sec" data-lang-inline="es visible">seg</span>
+      <span class="timer-sec" data-lang-inline="en">sec</span>
+    </div>
+    <p class="timer-msg" data-lang="es">Mirá el anuncio mientras esperás 🙏</p>
+    <p class="timer-msg" data-lang="en visible">Watch the ad while you wait 🙏</p>
+  </div>
+
+  <!-- Slot de anuncio inferior -->
+  <div class="ad-slot" id="adSlotBottom">
+    <!--
+      ═══════════════════════════════════════════════════════
+      ESPACIO PARA ANUNCIO — AD SLOT
+      Pegá aquí el segundo script de anuncio (opcional).
+      ═══════════════════════════════════════════════════════
+    -->
+  </div>
+
+  <!-- Botón claim (aparece al terminar el timer) -->
+  <button class="claim-btn" id="claimBtn" onclick="claimPick()" disabled>
+    <span data-lang-inline="es">⛏ Recibir mi pico</span>
+    <span data-lang-inline="en visible">⛏ Claim my pick</span>
+  </button>
+
+  <!-- Resultado OK -->
+  <div class="result-box result-ok" id="resultOk">
+    <div class="result-icon">⛏</div>
+    <div class="result-title" data-lang="es">¡Pico acreditado!</div>
+    <div class="result-title" data-lang="en visible">Pick credited!</div>
+    <p class="result-body" data-lang="es">Volvé a la app para usar tu pico. ¡Gracias por apoyar el juego!</p>
+    <p class="result-body" data-lang="en visible">Go back to the app to use your pick. Thanks for supporting the game!</p>
+    <a class="back-btn" onclick="window.history.back()">
+      <span data-lang-inline="es">← Volver a la app</span>
+      <span data-lang-inline="en visible">← Back to app</span>
+    </a>
+  </div>
+
+  <!-- Resultado Error -->
+  <div class="result-box result-err" id="resultErr">
+    <div class="result-icon">❌</div>
+    <div class="result-title" data-lang="es">No se pudo acreditar</div>
+    <div class="result-title" data-lang="en visible">Could not credit pick</div>
+    <p class="result-body" id="errMsg"></p>
+    <a class="back-btn" onclick="window.history.back()">
+      <span data-lang-inline="es">← Volver a la app</span>
+      <span data-lang-inline="en visible">← Back to app</span>
+    </a>
+  </div>
+
+</main>
+
+<script>
+  var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
+  var TIMER_SECONDS = 45;
+  var params = new URLSearchParams(window.location.search);
+  var SESSION_ID = params.get('sid') || '';
+  var TOKEN = params.get('t') || '';
+  var currentLang = (navigator.language || 'en').startsWith('es') ? 'es' : 'en';
+
+  var timerInterval = null;
+  var remaining = TIMER_SECONDS;
+
+  var CIRCUMFERENCE = 2 * Math.PI * 54; // 339.3
+
+  function setLang(lang) {
+    currentLang = lang;
+    document.querySelectorAll('[data-lang]').forEach(function(el) {
+      el.classList.toggle('visible', el.getAttribute('data-lang').split(' ')[0] === lang);
+    });
+    document.querySelectorAll('[data-lang-inline]').forEach(function(el) {
+      el.classList.toggle('visible', el.getAttribute('data-lang-inline').split(' ')[0] === lang);
+    });
+    document.documentElement.lang = lang;
+  }
+
+  function startTimer() {
+    if (!SESSION_ID || !TOKEN) {
+      showError(currentLang === 'es' ? 'Sesión inválida. Volvé a la app e intentá de nuevo.' : 'Invalid session. Go back to the app and try again.');
+      return;
+    }
+
+    var arc = document.getElementById('timerArc');
+    var numEl = document.getElementById('timerNum');
+
+    timerInterval = setInterval(function() {
+      remaining -= 1;
+      numEl.textContent = remaining;
+      var offset = CIRCUMFERENCE * (remaining / TIMER_SECONDS);
+      arc.style.strokeDashoffset = offset;
+
+      if (remaining <= 0) {
+        clearInterval(timerInterval);
+        numEl.textContent = '0';
+        arc.style.stroke = '#5cb85c';
+        showClaimBtn();
+      }
+    }, 1000);
+  }
+
+  function showClaimBtn() {
+    document.getElementById('timerWrap').style.opacity = '0.4';
+    var btn = document.getElementById('claimBtn');
+    btn.classList.add('visible');
+    btn.disabled = false;
+  }
+
+  function showError(msg) {
+    document.getElementById('claimBtn').classList.remove('visible');
+    document.getElementById('timerWrap').style.display = 'none';
+    var errBox = document.getElementById('resultErr');
+    var errMsg = document.getElementById('errMsg');
+    errMsg.textContent = msg;
+    errBox.classList.add('visible');
+    setLang(currentLang);
+  }
+
+  async function claimPick() {
+    var btn = document.getElementById('claimBtn');
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+      var res = await fetch(FUNCTIONS_BASE + '/claimAdSession', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: SESSION_ID, token: TOKEN }),
+      });
+      var data = await res.json();
+      if (!res.ok || !data.ok) {
+        var errMsgs = {
+          es: {
+            not_found: 'Sesión no encontrada. Volvé a la app e intentá de nuevo.',
+            invalid_token: 'Token inválido.',
+            already_used: 'Este pico ya fue reclamado.',
+            expired: 'La sesión expiró. Volvé a la app para generar una nueva.',
+            not_ready: 'El anuncio todavía no está disponible. Esperá unas horas.',
+          },
+          en: {
+            not_found: 'Session not found. Go back to the app and try again.',
+            invalid_token: 'Invalid token.',
+            already_used: 'This pick was already claimed.',
+            expired: 'Session expired. Go back to the app to generate a new one.',
+            not_ready: 'Ad not ready yet. Wait a few hours.',
+          }
+        };
+        var msg = (errMsgs[currentLang] && errMsgs[currentLang][data.error]) ||
+          (currentLang === 'es' ? 'Error desconocido.' : 'Unknown error.');
+        showError(msg);
+        return;
+      }
+      // Éxito
+      btn.classList.remove('visible');
+      document.getElementById('timerWrap').style.display = 'none';
+      document.getElementById('resultOk').classList.add('visible');
+      setLang(currentLang);
+    } catch (e) {
+      showError(currentLang === 'es' ? 'Sin conexión. Revisá tu internet e intentá de nuevo.' : 'No connection. Check your internet and try again.');
+      btn.disabled = false;
+      setLang(currentLang);
+      btn.innerHTML = currentLang === 'es'
+        ? '<span>⛏ Recibir mi pico</span>'
+        : '<span>⛏ Claim my pick</span>';
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    setLang(currentLang);
+    startTimer();
+  });
+</script>
+
+</body>
+</html>
