@@ -222,10 +222,11 @@
       border: none; cursor: pointer; margin-top: 10px; opacity: 0.4; transition: opacity 0.2s;
     }
     .legal-btn.active { opacity: 1; }
-    .tc-content { max-height: 340px; overflow-y: auto; margin-bottom: 16px; }
-    .tc-content h3 { font-size: 13px; font-weight: 800; color: #111; margin: 14px 0 4px; }
-    .tc-content p, .tc-content li { font-size: 12px; color: #555; line-height: 1.6; }
-    .tc-close { background: none; border: 1px solid #ccc; border-radius: 8px; padding: 8px 18px; font-size: 13px; font-weight: 700; color: #333; cursor: pointer; margin-top: 10px; }
+    .wallet-warning { background: #fef9c3; border: 1.5px solid #fde047; border-radius: 10px; padding: 12px 14px; margin: 12px 0 4px; font-size: 12px; color: #713f12; font-weight: 600; line-height: 1.5; }
+    .claim-grid { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+    .claim-grid input { border: 1.5px solid #ddd; border-radius: 8px; padding: 10px 12px; font-size: 14px; width: 100%; }
+    .claim-grid input:focus { outline: none; border-color: #1e293b; }
+    .claim-label { font-size: 11px; font-weight: 700; color: #666; margin-bottom: 2px; }
 
     /* ── Prize Pyramid ── */
     .prize-pyramid { margin-bottom: 20px; text-align: center; }
@@ -297,20 +298,37 @@
     <div class="card" id="cardEmail">
       <span class="gem-badge" id="gemBadge"></span>
       <p class="card-title">
-        <span data-lang-inline="es">🎉 ¡Código válido!</span>
-        <span data-lang-inline="en visible">🎉 Valid code!</span>
+        <span data-lang-inline="es">🎉 ¡Código válido! Completá tus datos para cobrar el premio.</span>
+        <span data-lang-inline="en visible">🎉 Valid code! Fill in your details to claim your prize.</span>
       </p>
-      <p class="card-sub">
-        <span data-lang-inline="es">Ingresá tu email para recibir las instrucciones de cobro de tu premio.</span>
-        <span data-lang-inline="en visible">Enter your email to receive prize claim instructions.</span>
-      </p>
-      <div class="input-row">
-        <input type="email" id="emailInput" placeholder="email@ejemplo.com">
-        <button class="btn" onclick="submitClaim()" id="btnClaim">
-          <span data-lang-inline="es">Enviar</span>
-          <span data-lang-inline="en visible">Send</span>
-        </button>
+
+      <div class="claim-grid">
+        <div>
+          <p class="claim-label"><span data-lang-inline="es">Nombre completo</span><span data-lang-inline="en visible">Full name</span></p>
+          <input type="text" id="nameInput" placeholder="Juan García / John Smith">
+        </div>
+        <div>
+          <p class="claim-label">Email</p>
+          <input type="email" id="emailInput" placeholder="email@ejemplo.com">
+        </div>
+        <div>
+          <p class="claim-label"><span data-lang-inline="es">Teléfono / WhatsApp</span><span data-lang-inline="en visible">Phone / WhatsApp</span></p>
+          <input type="tel" id="phoneInput" placeholder="+54 9 11 1234-5678">
+        </div>
+        <div>
+          <p class="claim-label"><span data-lang-inline="es">Billetera USDC (Polygon)</span><span data-lang-inline="en visible">USDC Wallet (Polygon)</span></p>
+          <input type="text" id="walletInput" placeholder="0x..." autocomplete="off" spellcheck="false">
+          <div class="wallet-warning">
+            <span data-lang-inline="es">⚠️ Verificá dos veces tu dirección de billetera. Los fondos enviados a una dirección incorrecta no pueden recuperarse. Asegurate de que sea una billetera Polygon (MATIC) compatible con USDC.</span>
+            <span data-lang-inline="en visible">⚠️ Double-check your wallet address. Funds sent to an incorrect address cannot be recovered. Make sure it is a Polygon (MATIC) wallet compatible with USDC.</span>
+          </div>
+        </div>
       </div>
+
+      <button class="btn" onclick="submitClaim()" id="btnClaim" style="width:100%;margin-top:8px">
+        <span data-lang-inline="es">Enviar solicitud</span>
+        <span data-lang-inline="en visible">Submit claim</span>
+      </button>
       <p class="msg-error" id="emailError"></p>
     </div>
 
@@ -505,16 +523,16 @@
 <div class="disclaimer-bar">
   ⚠️ <span data-lang="es">Juego de azar · Solo mayores de 18 · No disponible en EE.UU., UK, Australia ni otros países con restricciones ·</span>
   <span data-lang="en visible">Game of chance · 18+ only · Not available in the US, UK, Australia or other restricted countries ·</span>
-  <a onclick="showTC()" data-lang="es">Términos y Condiciones</a>
-  <a onclick="showTC()" data-lang="en visible">Terms &amp; Conditions</a>
+  <a href="terms.html" target="_blank" data-lang="es">Términos y Condiciones</a>
+  <a href="terms.html" target="_blank" data-lang="en visible">Terms &amp; Conditions</a>
 </div>
 
 <footer>
   Mining The Blocks &nbsp;·&nbsp;
   <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>
   &nbsp;·&nbsp;
-  <a onclick="showTC()" style="cursor:pointer" data-lang="es">Términos y Condiciones</a>
-  <a onclick="showTC()" style="cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>
+  <a href="terms.html" target="_blank" style="cursor:pointer" data-lang="es">Términos y Condiciones</a>
+  <a href="terms.html" target="_blank" style="cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>
 </footer>
 
 <!-- Age gate modal -->
@@ -534,8 +552,8 @@
       <span>
         <span data-lang="es">He leído y acepto los </span>
         <span data-lang="en visible">I have read and accept the </span>
-        <a onclick="showTC()" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="es">Términos y Condiciones</a>
-        <a onclick="showTC()" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>.
+        <a href="terms.html" target="_blank" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="es">Términos y Condiciones</a>
+        <a href="terms.html" target="_blank" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>.
       </span>
     </label>
     <button class="legal-btn" id="ageBtn" onclick="acceptAge()" disabled>
@@ -545,56 +563,6 @@
   </div>
 </div>
 
-<!-- T&C modal -->
-<div class="legal-overlay" id="tcModal" style="display:none">
-  <div class="legal-box">
-    <h2>Mining The Blocks — <span data-lang="es">Términos y Condiciones</span><span data-lang="en visible">Terms &amp; Conditions</span></h2>
-    <div class="tc-content">
-      <h3 data-lang="es">1. Naturaleza del servicio</h3>
-      <h3 data-lang="en visible">1. Nature of the service</h3>
-      <p data-lang="es">Mining The Blocks es un juego de azar en línea. Los premios se distribuyen de forma aleatoria dentro de zonas predefinidas. La participación no garantiza ningún premio.</p>
-      <p data-lang="en visible">Mining The Blocks is an online game of chance. Prizes are distributed randomly within predefined zones. Participation does not guarantee any prize.</p>
-
-      <h3 data-lang="es">2. Restricción de edad</h3>
-      <h3 data-lang="en visible">2. Age restriction</h3>
-      <p data-lang="es">El acceso está estrictamente prohibido a menores de 18 años. Al registrarte confirmás tener la edad legal requerida.</p>
-      <p data-lang="en visible">Access is strictly prohibited to persons under 18 years of age. By registering you confirm you meet the legal age requirement.</p>
-
-      <h3 data-lang="es">3. Restricciones geográficas</h3>
-      <h3 data-lang="en visible">3. Geographic restrictions</h3>
-      <p data-lang="es">El servicio no está disponible para residentes de: Estados Unidos, Reino Unido, Australia, Francia, Países Bajos, Bélgica, Alemania, Italia, Suecia, Dinamarca, España, Portugal, Singapur ni ninguna otra jurisdicción donde el juego de azar en línea esté prohibido. Es responsabilidad del usuario verificar la legalidad en su jurisdicción.</p>
-      <p data-lang="en visible">The service is not available to residents of: United States, United Kingdom, Australia, France, Netherlands, Belgium, Germany, Italy, Sweden, Denmark, Spain, Portugal, Singapore, or any other jurisdiction where online gambling is prohibited. It is the user's responsibility to verify legality in their jurisdiction.</p>
-
-      <h3 data-lang="es">4. Pago de entrada</h3>
-      <h3 data-lang="en visible">4. Entry fee</h3>
-      <p data-lang="es">El pago de $15 USDC es el costo de participación por episodio. El pago es no reembolsable. La sola participación no garantiza ninguna ganancia.</p>
-      <p data-lang="en visible">The $15 USDC fee is the cost of participation per episode. The fee is non-refundable. Participation alone does not guarantee any winnings.</p>
-
-      <h3 data-lang="es">5. Distribución de premios</h3>
-      <h3 data-lang="en visible">5. Prize distribution</h3>
-      <p data-lang="es">Los premios se distribuyen según un sistema determinista pero impredecible para el jugador, documentado públicamente. Los premios en gemas NFT se desbloquean progresivamente según el número de participantes activos. Los premios mayores requieren un mínimo de participantes para activarse.</p>
-      <p data-lang="en visible">Prizes are distributed according to a system that is deterministic but unpredictable to the player, publicly documented. NFT gem prizes unlock progressively based on the number of active participants. Major prizes require a minimum number of participants to activate.</p>
-
-      <h3 data-lang="es">6. Riesgo financiero</h3>
-      <h3 data-lang="en visible">6. Financial risk</h3>
-      <p data-lang="es">Participar implica riesgo de pérdida económica. Solo participá con dinero que podés permitirte perder. Si el juego afecta negativamente tu vida, buscá ayuda profesional.</p>
-      <p data-lang="en visible">Participation involves risk of financial loss. Only participate with money you can afford to lose. If gambling is negatively affecting your life, seek professional help.</p>
-
-      <h3 data-lang="es">7. Modificaciones</h3>
-      <h3 data-lang="en visible">7. Modifications</h3>
-      <p data-lang="es">Nos reservamos el derecho de modificar estos términos con un aviso previo de 30 días.</p>
-      <p data-lang="en visible">We reserve the right to modify these terms with 30 days' prior notice.</p>
-
-      <h3 data-lang="es">8. Contacto</h3>
-      <h3 data-lang="en visible">8. Contact</h3>
-      <p>MiningTheBlocks@gmail.com</p>
-    </div>
-    <button class="tc-close" onclick="hideTC()">
-      <span data-lang="es">Cerrar</span>
-      <span data-lang="en visible">Close</span>
-    </button>
-  </div>
-</div>
 
 <script>
   var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
@@ -685,15 +653,22 @@
   }
 
   async function submitClaim() {
-    var email = document.getElementById('emailInput').value.trim();
+    var name   = document.getElementById('nameInput').value.trim();
+    var email  = document.getElementById('emailInput').value.trim();
+    var phone  = document.getElementById('phoneInput').value.trim();
+    var wallet = document.getElementById('walletInput').value.trim();
     showError('emailError', '');
-    if (!email) { showError('emailError', currentLang === 'es' ? 'Ingresá tu email.' : 'Enter your email.'); return; }
+    var err = currentLang === 'es';
+    if (!name)   { showError('emailError', err ? 'Ingresá tu nombre completo.' : 'Enter your full name.'); return; }
+    if (!email)  { showError('emailError', err ? 'Ingresá tu email.' : 'Enter your email.'); return; }
+    if (!phone)  { showError('emailError', err ? 'Ingresá tu teléfono.' : 'Enter your phone number.'); return; }
+    if (!wallet || !wallet.startsWith('0x') || wallet.length < 40) { showError('emailError', err ? 'Ingresá una dirección de billetera válida (empieza con 0x).' : 'Enter a valid wallet address (starts with 0x).'); return; }
     setLoading('btnClaim', true);
     try {
       var res = await fetch(FUNCTIONS_BASE + '/submitGemClaim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: verifiedCode, email: email }),
+        body: JSON.stringify({ code: verifiedCode, name: name, email: email, phone: phone, wallet: wallet }),
       });
       var data = await res.json();
       if (!res.ok || !data.success) {
@@ -721,14 +696,6 @@
     if (!document.getElementById('check18').checked || !document.getElementById('checkTC').checked) return;
     localStorage.setItem('mtb_age_ok', '1');
     document.getElementById('ageGate').style.display = 'none';
-  }
-
-  function showTC() {
-    document.getElementById('tcModal').style.display = 'flex';
-  }
-
-  function hideTC() {
-    document.getElementById('tcModal').style.display = 'none';
   }
 
   document.addEventListener('DOMContentLoaded', function() {

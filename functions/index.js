@@ -1385,12 +1385,18 @@ exports.submitGemClaim = functionsV1.https.onRequest(async (req, res) => {
   const body = req.body || {};
   const code = (body.code || "").toString().trim().toUpperCase();
   const email = (body.email || "").toString().trim().toLowerCase();
-  if (!code || !email) {
+  const name = (body.name || "").toString().trim();
+  const phone = (body.phone || "").toString().trim();
+  const wallet = (body.wallet || "").toString().trim();
+  if (!code || !email || !name || !phone || !wallet) {
     return res.status(400).json({ error: "missing_fields" });
   }
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
     return res.status(400).json({ error: "invalid_email" });
+  }
+  if (!wallet.startsWith("0x") || wallet.length < 40) {
+    return res.status(400).json({ error: "invalid_wallet" });
   }
   try {
     const snap = await db.collectionGroup("gems").where("code", "==", code).limit(1).get();
@@ -1405,7 +1411,10 @@ exports.submitGemClaim = functionsV1.https.onRequest(async (req, res) => {
     }
     await db.collection("gemClaims").add({
       code,
+      name,
       email,
+      phone,
+      wallet,
       tier: gem.tier,
       gemRef: gemDoc.ref.path,
       submittedAt: Date.now(),
