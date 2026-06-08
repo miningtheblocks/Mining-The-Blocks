@@ -113,35 +113,40 @@ function getRewardForCube(serverId, K, cubeNumber) {
 // Tiers más raros solo se desbloquean en capas más profundas Y cuando hay suficientes jugadores
 // para que la recaudación cubra 100% el pool de premios de ese tier.
 function getGemForCube(serverId, K, cubeNumber, memberCount) {
-  if (K >= 98) return null;
+  if (K >= 98) return null; // capas 1-3: solo picos, sin gemas
   const norm = fnv1a(`GEM|${serverId}|${K}|${cubeNumber}`) / 0xffffffff;
   const GEM_WIN_RATE = 0.002;
   if (norm >= GEM_WIN_RATE) return null;
   const r = norm / GEM_WIN_RATE;
   const members = memberCount || 0;
-
-  // Calcula el tier máximo desbloqueado según jugadores actuales
-  // Si no hay suficientes jugadores para un tier, ese tier no existe aún
   const tierUnlocked = (tier) => members >= GEM_UNLOCK_THRESHOLDS[tier - 1];
 
-  if (K <= 30) {
+  // Zonas exclusivas para los 3 premios mayores (capa_usuario = 101 - K)
+  // Cada zona es única: en capa 96 solo puede aparecer $100K, no $50K ni $10K
+  if (K <= 6) {
+    // $100,000 — capas 95-101 (K 0-6)
     if (r < 0.000065) return tierUnlocked(1) ? 1 : null;
+  } else if (K <= 16) {
+    // $50,000 — capas 85-95 (K 7-16)
     if (r < 0.000130) return tierUnlocked(2) ? 2 : null;
+  } else if (K <= 26) {
+    // $10,000 — capas 75-85 (K 17-26)
     if (r < 0.000452) return tierUnlocked(3) ? 3 : null;
-    if (r < 0.003667) return tierUnlocked(4) ? 4 : null;
-  } else if (K <= 50) {
-    if (r < 0.000130) return tierUnlocked(2) ? 2 : null;
-    if (r < 0.000452) return tierUnlocked(3) ? 3 : null;
-    if (r < 0.003667) return tierUnlocked(4) ? 4 : null;
-  } else if (K <= 60) {
-    if (r < 0.000452) return tierUnlocked(3) ? 3 : null;
-    if (r < 0.003667) return tierUnlocked(4) ? 4 : null;
-  } else if (K <= 80) {
-    if (r < 0.003667) return tierUnlocked(4) ? 4 : null;
   }
-  if (r < 0.010115) return tierUnlocked(5) ? 5 : null;
-  if (r < 0.043098) return tierUnlocked(6) ? 6 : null;
-  if (r < 0.107027) return tierUnlocked(7) ? 7 : null;
+
+  // $1,000 y $500 — capas 55-101 (K <= 46), disponibles en todas las zonas anteriores también
+  if (K <= 46) {
+    if (r < 0.003667) return tierUnlocked(4) ? 4 : null;
+    if (r < 0.010115) return tierUnlocked(5) ? 5 : null;
+  }
+
+  // $100 y $50 — capas 20-101 (K <= 81)
+  if (K <= 81) {
+    if (r < 0.043098) return tierUnlocked(6) ? 6 : null;
+    if (r < 0.107027) return tierUnlocked(7) ? 7 : null;
+  }
+
+  // $25 y $15 — todas las capas (4-101)
   if (r < 0.362717) return tierUnlocked(8) ? 8 : null;
   return tierUnlocked(9) ? 9 : null;
 }
