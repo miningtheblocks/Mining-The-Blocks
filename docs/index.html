@@ -197,19 +197,20 @@
     .prize-pyramid-title { font-size: 11px; font-weight: 800; color: #555; text-transform: uppercase; letter-spacing: 1.4px; margin-bottom: 14px; }
     .pyr-rows { display: flex; flex-direction: column; align-items: center; gap: 4px; }
     .pyr-row {
-      display: flex; align-items: center; justify-content: center; gap: 8px;
-      border-radius: 7px; padding: 6px 14px;
-      font-size: 12.5px; font-weight: 700; color: #111;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      border-radius: 7px; padding: 6px 12px;
+      font-size: 12px; font-weight: 700; color: #111;
       border: 1.5px solid #e0e0e0; background: #fafafa;
     }
-    .pyr-row:nth-child(1) { width: 38%; border-color: #f59e0b; background: #fffbeb; }
-    .pyr-row:nth-child(2) { width: 50%; border-color: #94a3b8; background: #f8fafc; }
-    .pyr-row:nth-child(3) { width: 62%; border-color: #cd7f32; background: #fdf6f0; }
-    .pyr-row:nth-child(4) { width: 74%; border-color: #a78bfa; background: #faf5ff; }
-    .pyr-row:nth-child(5) { width: 86%; border-color: #6ee7b7; background: #f0fdf4; }
-    .pyr-row:nth-child(6) { width: 100%; border-color: #93c5fd; background: #eff6ff; }
-    .pyr-val { font-weight: 900; }
-    .pyr-qty { font-size: 10px; color: #777; font-weight: 600; }
+    .pyr-row:nth-child(1) { width: 100%; border-color: #93c5fd; background: #eff6ff; }
+    .pyr-row:nth-child(2) { width: 88%;  border-color: #6ee7b7; background: #f0fdf4; }
+    .pyr-row:nth-child(3) { width: 76%;  border-color: #a78bfa; background: #faf5ff; }
+    .pyr-row:nth-child(4) { width: 62%;  border-color: #cd7f32; background: #fdf6f0; }
+    .pyr-row:nth-child(5) { width: 48%;  border-color: #94a3b8; background: #f8fafc; }
+    .pyr-row:nth-child(6) { width: 34%;  border-color: #f59e0b; background: #fffbeb; }
+    .pyr-val { font-weight: 900; white-space: nowrap; }
+    .pyr-layers { font-size: 10px; color: #666; font-weight: 600; white-space: nowrap; }
+    .pyr-qty { font-size: 10px; color: #999; font-weight: 600; white-space: nowrap; }
     .pyr-caption { font-size: 11px; color: #888; margin-top: 10px; font-weight: 500; font-style: italic; }
 
     /* ── i18n: hidden by default ── */
@@ -310,6 +311,16 @@
         <div class="stat-lbl" data-lang="en visible">In prizes per chain</div>
       </div>
       <div class="stat">
+        <div class="stat-num">9</div>
+        <div class="stat-lbl" data-lang="es">Tipos de gemas con valor real</div>
+        <div class="stat-lbl" data-lang="en visible">Gem types with real cash value</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num">10</div>
+        <div class="stat-lbl" data-lang="es">Episodios por cadena</div>
+        <div class="stat-lbl" data-lang="en visible">Episodes per chain</div>
+      </div>
+      <div class="stat">
         <div class="stat-num">100K</div>
         <div class="stat-lbl" data-lang="es">Personas máx. por eslabón</div>
         <div class="stat-lbl" data-lang="en visible">Max players per link</div>
@@ -374,12 +385,42 @@
       <div class="prize-pyramid-title" data-lang="es">Pirámide de liberación de premios</div>
       <div class="prize-pyramid-title" data-lang="en visible">Prize release pyramid</div>
       <div class="pyr-rows">
-        <div class="pyr-row"><span class="pyr-val">$100,000</span><span class="pyr-qty">×1</span></div>
-        <div class="pyr-row"><span class="pyr-val">$50,000</span><span class="pyr-qty">×1</span></div>
-        <div class="pyr-row"><span class="pyr-val">$10,000</span><span class="pyr-qty">×5</span></div>
-        <div class="pyr-row"><span class="pyr-val">$1,000 · $500</span><span class="pyr-qty">×150</span></div>
-        <div class="pyr-row"><span class="pyr-val">$100 · $50</span><span class="pyr-qty">×1,500</span></div>
-        <div class="pyr-row"><span class="pyr-val">$25 · $15</span><span class="pyr-qty">×14,000</span></div>
+        <div class="pyr-row">
+          <span class="pyr-val">$15 · $25</span>
+          <span class="pyr-layers" data-lang-inline="es visible">Capas 1–100</span>
+          <span class="pyr-layers" data-lang-inline="en">Layers 1–100</span>
+          <span class="pyr-qty">×14,000</span>
+        </div>
+        <div class="pyr-row">
+          <span class="pyr-val">$50 · $100</span>
+          <span class="pyr-layers" data-lang-inline="es visible">Capas 20–100</span>
+          <span class="pyr-layers" data-lang-inline="en">Layers 20–100</span>
+          <span class="pyr-qty">×1,500</span>
+        </div>
+        <div class="pyr-row">
+          <span class="pyr-val">$500 · $1,000</span>
+          <span class="pyr-layers" data-lang-inline="es visible">Capas 55–100</span>
+          <span class="pyr-layers" data-lang-inline="en">Layers 55–100</span>
+          <span class="pyr-qty">×150</span>
+        </div>
+        <div class="pyr-row">
+          <span class="pyr-val">$10,000</span>
+          <span class="pyr-layers" data-lang-inline="es visible">Capas 80–100</span>
+          <span class="pyr-layers" data-lang-inline="en">Layers 80–100</span>
+          <span class="pyr-qty">×5</span>
+        </div>
+        <div class="pyr-row">
+          <span class="pyr-val">$50,000</span>
+          <span class="pyr-layers" data-lang-inline="es visible">Capas 95–100</span>
+          <span class="pyr-layers" data-lang-inline="en">Layers 95–100</span>
+          <span class="pyr-qty">×1</span>
+        </div>
+        <div class="pyr-row">
+          <span class="pyr-val">$100,000</span>
+          <span class="pyr-layers" data-lang-inline="es visible">Capa 100</span>
+          <span class="pyr-layers" data-lang-inline="en">Layer 100</span>
+          <span class="pyr-qty">×1</span>
+        </div>
       </div>
       <p class="pyr-caption" data-lang="es">Las capas más profundas guardan los premios más grandes</p>
       <p class="pyr-caption" data-lang="en visible">Deeper layers hold the biggest prizes</p>
