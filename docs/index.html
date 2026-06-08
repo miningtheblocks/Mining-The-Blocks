@@ -192,6 +192,41 @@
     }
     footer a { color: #333; }
 
+    /* ── Disclaimer bar ── */
+    .disclaimer-bar {
+      width: 100%; background: #1e293b; color: #cbd5e1;
+      font-size: 11px; font-weight: 600; text-align: center;
+      padding: 8px 16px; letter-spacing: 0.3px;
+    }
+    .disclaimer-bar a { color: #94a3b8; text-decoration: underline; cursor: pointer; }
+
+    /* ── Age gate & T&C modal ── */
+    .legal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999; padding: 16px;
+    }
+    .legal-box {
+      background: #fff; border-radius: 16px; padding: 32px 28px;
+      max-width: 480px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    .legal-box h2 { font-size: 18px; font-weight: 900; color: #111; margin-bottom: 12px; }
+    .legal-box p { font-size: 13px; color: #444; line-height: 1.6; margin-bottom: 10px; }
+    .legal-box ul { font-size: 13px; color: #444; line-height: 1.7; padding-left: 18px; margin-bottom: 12px; }
+    .legal-check { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0; cursor: pointer; }
+    .legal-check input { margin-top: 3px; width: 16px; height: 16px; flex-shrink: 0; cursor: pointer; }
+    .legal-check span { font-size: 13px; color: #222; font-weight: 600; line-height: 1.5; }
+    .legal-btn {
+      width: 100%; padding: 14px; border-radius: 10px;
+      background: #1e293b; color: #fff; font-size: 15px; font-weight: 800;
+      border: none; cursor: pointer; margin-top: 10px; opacity: 0.4; transition: opacity 0.2s;
+    }
+    .legal-btn.active { opacity: 1; }
+    .tc-content { max-height: 340px; overflow-y: auto; margin-bottom: 16px; }
+    .tc-content h3 { font-size: 13px; font-weight: 800; color: #111; margin: 14px 0 4px; }
+    .tc-content p, .tc-content li { font-size: 12px; color: #555; line-height: 1.6; }
+    .tc-close { background: none; border: 1px solid #ccc; border-radius: 8px; padding: 8px 18px; font-size: 13px; font-weight: 700; color: #333; cursor: pointer; margin-top: 10px; }
+
     /* ── Prize Pyramid ── */
     .prize-pyramid { margin-bottom: 20px; text-align: center; }
     .prize-pyramid-title { font-size: 11px; font-weight: 800; color: #555; text-transform: uppercase; letter-spacing: 1.4px; margin-bottom: 14px; }
@@ -466,10 +501,100 @@
 
 </main>
 
+<!-- Disclaimer bar -->
+<div class="disclaimer-bar">
+  ⚠️ <span data-lang="es">Juego de azar · Solo mayores de 18 · No disponible en EE.UU., UK, Australia ni otros países con restricciones ·</span>
+  <span data-lang="en visible">Game of chance · 18+ only · Not available in the US, UK, Australia or other restricted countries ·</span>
+  <a onclick="showTC()" data-lang="es">Términos y Condiciones</a>
+  <a onclick="showTC()" data-lang="en visible">Terms &amp; Conditions</a>
+</div>
+
 <footer>
   Mining The Blocks &nbsp;·&nbsp;
   <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>
+  &nbsp;·&nbsp;
+  <a onclick="showTC()" style="cursor:pointer" data-lang="es">Términos y Condiciones</a>
+  <a onclick="showTC()" style="cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>
 </footer>
+
+<!-- Age gate modal -->
+<div class="legal-overlay" id="ageGate">
+  <div class="legal-box">
+    <h2 data-lang="es">Verificación de edad</h2>
+    <h2 data-lang="en visible">Age Verification</h2>
+    <p data-lang="es">Mining The Blocks es un <strong>juego de azar</strong> con premios en dinero real. Para continuar debés confirmar lo siguiente:</p>
+    <p data-lang="en visible">Mining The Blocks is a <strong>game of chance</strong> with real money prizes. To continue you must confirm:</p>
+    <label class="legal-check">
+      <input type="checkbox" id="check18" onchange="updateAgeBtn()">
+      <span data-lang="es">Tengo 18 años o más y el juego de azar es legal en mi país/región.</span>
+      <span data-lang="en visible">I am 18 or older and online gambling is legal in my country/region.</span>
+    </label>
+    <label class="legal-check">
+      <input type="checkbox" id="checkTC" onchange="updateAgeBtn()">
+      <span>
+        <span data-lang="es">He leído y acepto los </span>
+        <span data-lang="en visible">I have read and accept the </span>
+        <a onclick="showTC()" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="es">Términos y Condiciones</a>
+        <a onclick="showTC()" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>.
+      </span>
+    </label>
+    <button class="legal-btn" id="ageBtn" onclick="acceptAge()" disabled>
+      <span data-lang="es">Confirmar y continuar</span>
+      <span data-lang="en visible">Confirm and continue</span>
+    </button>
+  </div>
+</div>
+
+<!-- T&C modal -->
+<div class="legal-overlay" id="tcModal" style="display:none">
+  <div class="legal-box">
+    <h2>Mining The Blocks — <span data-lang="es">Términos y Condiciones</span><span data-lang="en visible">Terms &amp; Conditions</span></h2>
+    <div class="tc-content">
+      <h3 data-lang="es">1. Naturaleza del servicio</h3>
+      <h3 data-lang="en visible">1. Nature of the service</h3>
+      <p data-lang="es">Mining The Blocks es un juego de azar en línea. Los premios se distribuyen de forma aleatoria dentro de zonas predefinidas. La participación no garantiza ningún premio.</p>
+      <p data-lang="en visible">Mining The Blocks is an online game of chance. Prizes are distributed randomly within predefined zones. Participation does not guarantee any prize.</p>
+
+      <h3 data-lang="es">2. Restricción de edad</h3>
+      <h3 data-lang="en visible">2. Age restriction</h3>
+      <p data-lang="es">El acceso está estrictamente prohibido a menores de 18 años. Al registrarte confirmás tener la edad legal requerida.</p>
+      <p data-lang="en visible">Access is strictly prohibited to persons under 18 years of age. By registering you confirm you meet the legal age requirement.</p>
+
+      <h3 data-lang="es">3. Restricciones geográficas</h3>
+      <h3 data-lang="en visible">3. Geographic restrictions</h3>
+      <p data-lang="es">El servicio no está disponible para residentes de: Estados Unidos, Reino Unido, Australia, Francia, Países Bajos, Bélgica, Alemania, Italia, Suecia, Dinamarca, España, Portugal, Singapur ni ninguna otra jurisdicción donde el juego de azar en línea esté prohibido. Es responsabilidad del usuario verificar la legalidad en su jurisdicción.</p>
+      <p data-lang="en visible">The service is not available to residents of: United States, United Kingdom, Australia, France, Netherlands, Belgium, Germany, Italy, Sweden, Denmark, Spain, Portugal, Singapore, or any other jurisdiction where online gambling is prohibited. It is the user's responsibility to verify legality in their jurisdiction.</p>
+
+      <h3 data-lang="es">4. Pago de entrada</h3>
+      <h3 data-lang="en visible">4. Entry fee</h3>
+      <p data-lang="es">El pago de $15 USDC es el costo de participación por episodio. El pago es no reembolsable. La sola participación no garantiza ninguna ganancia.</p>
+      <p data-lang="en visible">The $15 USDC fee is the cost of participation per episode. The fee is non-refundable. Participation alone does not guarantee any winnings.</p>
+
+      <h3 data-lang="es">5. Distribución de premios</h3>
+      <h3 data-lang="en visible">5. Prize distribution</h3>
+      <p data-lang="es">Los premios se distribuyen según un sistema determinista pero impredecible para el jugador, documentado públicamente. Los premios en gemas NFT se desbloquean progresivamente según el número de participantes activos. Los premios mayores requieren un mínimo de participantes para activarse.</p>
+      <p data-lang="en visible">Prizes are distributed according to a system that is deterministic but unpredictable to the player, publicly documented. NFT gem prizes unlock progressively based on the number of active participants. Major prizes require a minimum number of participants to activate.</p>
+
+      <h3 data-lang="es">6. Riesgo financiero</h3>
+      <h3 data-lang="en visible">6. Financial risk</h3>
+      <p data-lang="es">Participar implica riesgo de pérdida económica. Solo participá con dinero que podés permitirte perder. Si el juego afecta negativamente tu vida, buscá ayuda profesional.</p>
+      <p data-lang="en visible">Participation involves risk of financial loss. Only participate with money you can afford to lose. If gambling is negatively affecting your life, seek professional help.</p>
+
+      <h3 data-lang="es">7. Modificaciones</h3>
+      <h3 data-lang="en visible">7. Modifications</h3>
+      <p data-lang="es">Nos reservamos el derecho de modificar estos términos con un aviso previo de 30 días.</p>
+      <p data-lang="en visible">We reserve the right to modify these terms with 30 days' prior notice.</p>
+
+      <h3 data-lang="es">8. Contacto</h3>
+      <h3 data-lang="en visible">8. Contact</h3>
+      <p>MiningTheBlocks@gmail.com</p>
+    </div>
+    <button class="tc-close" onclick="hideTC()">
+      <span data-lang="es">Cerrar</span>
+      <span data-lang="en visible">Close</span>
+    </button>
+  </div>
+</div>
 
 <script>
   var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
@@ -585,8 +710,32 @@
     }
   }
 
+  function updateAgeBtn() {
+    var ok = document.getElementById('check18').checked && document.getElementById('checkTC').checked;
+    var btn = document.getElementById('ageBtn');
+    btn.disabled = !ok;
+    btn.classList.toggle('active', ok);
+  }
+
+  function acceptAge() {
+    if (!document.getElementById('check18').checked || !document.getElementById('checkTC').checked) return;
+    localStorage.setItem('mtb_age_ok', '1');
+    document.getElementById('ageGate').style.display = 'none';
+  }
+
+  function showTC() {
+    document.getElementById('tcModal').style.display = 'flex';
+  }
+
+  function hideTC() {
+    document.getElementById('tcModal').style.display = 'none';
+  }
+
   document.addEventListener('DOMContentLoaded', function() {
     setLang('en');
+    if (localStorage.getItem('mtb_age_ok') === '1') {
+      document.getElementById('ageGate').style.display = 'none';
+    }
     document.getElementById('codeInput').addEventListener('keydown', function(e) {
       if (e.key === 'Enter') verifyCode();
     });
