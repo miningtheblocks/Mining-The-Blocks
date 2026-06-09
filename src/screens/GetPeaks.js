@@ -16,6 +16,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
   const [ad2NextAt, setAd2NextAt] = useState(0);
   const tickRef = useRef(null);
   const dailyAutoClaimingRef = useRef(false);
+  const adStateSubRef = useRef(null);
   const [claimingDaily, setClaimingDaily] = useState(false);
   const [claimingAd1, setClaimingAd1] = useState(false);
   const [claimingAd2, setClaimingAd2] = useState(false);
@@ -107,8 +108,6 @@ export default function GetPeaks({ asModal = false, onClose }) {
       setClaimingDaily(false);
     }
   };
-
-  const adStateSubRef = useRef(null);
 
   const onClaimAd = async (index) => {
     if (index === 1 && claimingAd1) return;

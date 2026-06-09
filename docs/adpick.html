@@ -227,13 +227,15 @@
     timerInterval = setInterval(function() {
       remaining -= 1;
       numEl.textContent = remaining;
-      var offset = CIRCUMFERENCE * (remaining / TIMER_SECONDS);
+      // Fórmula correcta: empieza lleno (offset=0) y se vacía conforme pasa el tiempo
+      var offset = CIRCUMFERENCE * (1 - remaining / TIMER_SECONDS);
       arc.style.strokeDashoffset = offset;
 
       if (remaining <= 0) {
         clearInterval(timerInterval);
-        numEl.textContent = '0';
+        numEl.textContent = '✓';
         arc.style.stroke = '#5cb85c';
+        arc.style.strokeDashoffset = 0; // círculo completo en verde
         showClaimBtn();
       }
     }, 1000);
