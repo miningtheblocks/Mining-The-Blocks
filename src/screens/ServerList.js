@@ -43,6 +43,7 @@ export default function ServerList() {
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
   const [serverCredits, setServerCredits] = useState(null);
   const [updateInfo, setUpdateInfo] = useState(null);
+  const [showWelcomePicks, setShowWelcomePicks] = useState(false);
 
   const currentUid = currentUser?.uid;
 
@@ -132,7 +133,7 @@ export default function ServerList() {
         }
         const joinResult = await callJoinServer(server.id);
         if (joinResult?.welcomePicks) {
-          Alert.alert(t('serverList.welcomePicksTitle'), t('serverList.welcomePicksMsg'));
+          setShowWelcomePicks(true);
         }
       }
       return true;
@@ -184,7 +185,7 @@ export default function ServerList() {
     try {
       const result = await callCreateServer(name);
       if (result?.welcomePicks) {
-        Alert.alert(t('serverList.welcomePicksTitle'), t('serverList.welcomePicksMsg'));
+        setShowWelcomePicks(true);
       }
       const newServer = {
         id: result.serverId,
@@ -456,9 +457,55 @@ export default function ServerList() {
         />
       )}
 
+      {/* Welcome picks modal */}
+      <Modal visible={showWelcomePicks} transparent animationType="fade" onRequestClose={() => setShowWelcomePicks(false)}>
+        <View style={wpStyles.overlay}>
+          <View style={wpStyles.box}>
+            <Text style={wpStyles.icon}>⛏️</Text>
+            <Text style={wpStyles.title}>{t('serverList.welcomePicksTitle')}</Text>
+            <Text style={wpStyles.msg}>{t('serverList.welcomePicksMsg')}</Text>
+            <TouchableOpacity style={wpStyles.btn} onPress={() => setShowWelcomePicks(false)} activeOpacity={0.85}>
+              <Text style={wpStyles.btnTxt}>¡A minar! ⛏</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
+
+const wpStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.88)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  box: {
+    backgroundColor: '#111',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#2e7d32',
+    padding: 32,
+    width: '100%',
+    maxWidth: 340,
+    alignItems: 'center',
+  },
+  icon: { fontSize: 48, marginBottom: 14 },
+  title: { color: '#fff', fontSize: 22, fontWeight: '900', textAlign: 'center', marginBottom: 10 },
+  msg: { color: '#aaa', fontSize: 15, textAlign: 'center', lineHeight: 22, marginBottom: 28 },
+  btn: {
+    backgroundColor: '#2e7d32',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 36,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+  },
+  btnTxt: { color: '#fff', fontWeight: '900', fontSize: 16 },
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', paddingTop: 60, paddingHorizontal: 16 },
