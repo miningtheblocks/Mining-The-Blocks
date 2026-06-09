@@ -245,17 +245,24 @@ export default function ServerList() {
             <Text style={styles.historyTxt}>📋</Text>
           </TouchableOpacity>
         ) : null}
-        <TouchableOpacity
-          style={[styles.joinBtn, joining === item.id && styles.joinBtnDisabled]}
-          onPress={() => joinServer(item)}
-          activeOpacity={0.8}
-          disabled={joining === item.id}
-        >
-          {joining === item.id
-            ? <ActivityIndicator size="small" color="#fff" />
-            : <Text style={styles.joinTxt}>{t('serverList.join')}</Text>
-          }
-        </TouchableOpacity>
+        {(() => {
+          const needsUnlock = serverCredits === 0;
+          return (
+            <TouchableOpacity
+              style={[needsUnlock ? styles.unlockBtn : styles.joinBtn, joining === item.id && styles.joinBtnDisabled]}
+              onPress={() => joinServer(item)}
+              activeOpacity={0.8}
+              disabled={joining === item.id}
+            >
+              {joining === item.id
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Text style={needsUnlock ? styles.unlockTxt : styles.joinTxt}>
+                    {needsUnlock ? t('serverList.unlock') : t('serverList.join')}
+                  </Text>
+              }
+            </TouchableOpacity>
+          );
+        })()}
       </View>
     </View>
   );
@@ -615,8 +622,19 @@ const styles = StyleSheet.create({
     minWidth: 70,
     alignItems: 'center',
   },
+  unlockBtn: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    minWidth: 70,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#444',
+  },
   joinBtnDisabled: { backgroundColor: '#0d3a70' },
   joinTxt: { color: '#fff', fontWeight: '700' },
+  unlockTxt: { color: '#888', fontWeight: '700', fontSize: 13 },
 
   // Name rows
   nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
