@@ -10,13 +10,27 @@ import { signOut, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { callCreateServer, callJoinServer, callCheckServerAccess } from '../firebase/functions';
 import { useServer } from '../utils/serverContext';
 import { useI18n } from '../utils/i18n';
+import { useAuth } from '../utils/authContext';
 import { useOverlayModals } from '../components/OverlayModalsProvider';
 import audioManager from '../utils/audioManager';
+import UpdateModal from '../components/UpdateModal';
+
+const APP_VERSION = '1.0.4';
+function compareVersions(v1, v2) {
+  const a = (v1 || '0').split('.').map(Number);
+  const b = (v2 || '0').split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] || 0) < (b[i] || 0)) return -1;
+    if ((a[i] || 0) > (b[i] || 0)) return 1;
+  }
+  return 0;
+}
 
 export default function ServerList() {
   const navigation = useNavigation();
   const { t } = useI18n();
   const { openModal } = useOverlayModals();
+  const { isGuest } = useAuth();
   const [menuVisible, setMenuVisible] = useState(false);
   const { setActiveServer } = useServer();
   const [servers, setServers] = useState([]);
@@ -28,11 +42,29 @@ export default function ServerList() {
   const [joining, setJoining] = useState(null); // serverId que está procesando
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
   const [serverCredits, setServerCredits] = useState(null);
+  const [updateInfo, setUpdateInfo] = useState(null);
 
   const currentUid = currentUser?.uid;
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setCurrentUser(u));
+    return () => unsub();
+  }, []);
+
+  // Real-time version check — blocks access if a newer version exists
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'config', 'app'), (snap) => {
+      if (!snap.exists()) return;
+      const cfg = snap.data();
+      const { minVersion, latestVersion, downloadUrl, forceUpdate, updateMessageEn, updateMessageEs } = cfg;
+      const needsForce = minVersion && compareVersions(APP_VERSION, minVersion) < 0;
+      const needsSoft  = latestVersion && compareVersions(APP_VERSION, latestVersion) < 0;
+      if (needsForce || needsSoft) {
+        setUpdateInfo({ forceUpdate: needsForce || !!forceUpdate, latestVersion, downloadUrl, messageEn: updateMessageEn, messageEs: updateMessageEs });
+      } else {
+        setUpdateInfo(null);
+      }
+    }, () => {});
     return () => unsub();
   }, []);
 
@@ -80,39 +112,62 @@ export default function ServerList() {
     }
   };
 
-  const goToRegister = () => {
-    Alert.alert(
-      t('auth.registerRequired') || 'Registrate para jugar',
-      t('auth.registerRequiredMsg') || 'Necesitás una cuenta para jugar. ¡Es gratis registrarse!',
-      [
-        { text: t('auth.cancel') || 'Cancelar', style: 'cancel' },
-        { text: t('auth.register') || 'Registrarse', onPress: () => navigation.navigate('Registration') },
-      ],
-    );
-  };
+  const goToRegister = () => openModal('registration');
 
   const joinServer = async (server) => {
+    if (isGuest) {
+      // Guests can view the cube but not mine — let them in directly
+      setActiveServer(server);
+      navigation.navigate('GameDrawer');
+      return;
+    }
     if (currentUser?.isAnonymous) { goToRegister(); return; }
     setJoining(server.id);
-    try {
-      await refreshAuth();
+    const doJoin = async () => {
       const { hasAccess, serverCredits } = await callCheckServerAccess(server.id);
       if (!hasAccess) {
         if (serverCredits < 1) {
           Alert.alert(t('serverList.noCreditsTitle'), t('serverList.noCreditsMsg'));
-          return;
+          return false;
         }
         const joinResult = await callJoinServer(server.id);
         if (joinResult?.welcomePicks) {
           Alert.alert(t('serverList.welcomePicksTitle'), t('serverList.welcomePicksMsg'));
         }
       }
-      setActiveServer(server);
-      navigation.navigate('GameDrawer');
+      return true;
+    };
+
+    try {
+      await refreshAuth();
+      let ok = false;
+      try {
+        ok = await doJoin();
+      } catch (firstErr) {
+        if (firstErr?.code === 'functions/unauthenticated') {
+          try { await auth.currentUser?.getIdToken(true); } catch {}
+          ok = await doJoin();
+        } else {
+          throw firstErr;
+        }
+      }
+      if (ok) {
+        setActiveServer(server);
+        navigation.navigate('GameDrawer');
+      }
     } catch (e) {
       const msg = e?.message || '';
+      const code = e?.code || '';
       if (msg.includes('server_full')) {
         Alert.alert(t('serverList.serverFullTitle'), t('serverList.serverFullMsg'));
+      } else if (code === 'functions/unauthenticated') {
+        Alert.alert(
+          t('serverList.sessionExpiredTitle'),
+          t('serverList.sessionExpiredMsg'),
+          [{ text: 'OK', onPress: async () => { try { await signOut(auth); } catch {} } }],
+        );
+      } else if (code === 'functions/permission-denied') {
+        Alert.alert(t('serverList.noCreditsTitle'), msg || t('serverList.errorJoin'));
       } else {
         Alert.alert('Error', msg || t('serverList.errorJoin'));
       }
@@ -122,7 +177,7 @@ export default function ServerList() {
   };
 
   const handleCreate = async () => {
-    if (currentUser?.isAnonymous) { goToRegister(); return; }
+    if (isGuest || currentUser?.isAnonymous) { goToRegister(); return; }
     const name = serverName.trim();
     if (!name) return;
     setCreating(true);
@@ -244,12 +299,23 @@ export default function ServerList() {
 
   const openItem = (key) => {
     setMenuVisible(false);
-    if (key === 'buyCredits' && currentUser?.isAnonymous) { goToRegister(); return; }
+    if (key === 'buyCredits' && (isGuest || currentUser?.isAnonymous)) { goToRegister(); return; }
     openModal(key);
   };
 
   return (
     <View style={styles.container}>
+
+      {/* Blocking update modal */}
+      <UpdateModal
+        visible={!!updateInfo}
+        forceUpdate={true}
+        latestVersion={updateInfo?.latestVersion}
+        downloadUrl={updateInfo?.downloadUrl}
+        messageEn={updateInfo?.messageEn}
+        messageEs={updateInfo?.messageEs}
+        onDismiss={() => {}}
+      />
 
       {/* Header */}
       <View style={styles.header}>
@@ -295,6 +361,10 @@ export default function ServerList() {
                 <Text style={styles.menuItemTxt}>{item.label}</Text>
               </TouchableOpacity>
             ))}
+            <View style={styles.menuSep} />
+            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); openModal('report'); }} activeOpacity={0.8}>
+              <Text style={[styles.menuItemTxt, { color: '#888' }]}>⚠ {t('login.report')}</Text>
+            </TouchableOpacity>
             {currentUser && !currentUser.isAnonymous && (
               <>
                 <View style={styles.menuSep} />
