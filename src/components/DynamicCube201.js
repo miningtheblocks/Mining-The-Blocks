@@ -3238,19 +3238,23 @@ const handleZoomButton = useCallback((direction) => {
               const numbersPerCol = Math.ceil(visibleHeight / step);
               const maxNumbers = Math.min(2000, numbersPerRow * numbersPerCol + 50); // +50 margen de seguridad
 
-              // OPTIMIZACIÓN: Saltar reconstrucción si viewport no cambió O si hay gesto activo
+              // OPTIMIZACIÓN: Saltar reconstrucción si viewport no cambió
+              // Durante gesto activo, throttlear a 80ms para no reconstruir 60 veces/seg
               const minedCount = minedCubes ? minedCubes.size : 0;
               const vpKey = `${minX}_${maxX}_${minY}_${maxY}_${step}_${minedCount}`;
-              const skipRebuild = isGesturingRef.current ||
-                (faceGroup.userData.lastVpKey === vpKey && faceGroup.userData.numberMeshes.length > 0);
-              if (skipRebuild) {
-                // Viewport idéntico o gesto activo — reusar números cacheados
+              const vpSame = faceGroup.userData.lastVpKey === vpKey && faceGroup.userData.numberMeshes.length > 0;
+              const nowMs = Date.now();
+              const lastRebuild = faceGroup.userData.lastRebuildTime || 0;
+              const gesturePause = isGesturingRef.current && (nowMs - lastRebuild) < 80 && faceGroup.userData.numberMeshes.length > 0;
+              if (vpSame || gesturePause) {
+                // Reusar números cacheados
                 if (faceGroup.userData.cachedVisibleNumbers) {
                   for (const n of faceGroup.userData.cachedVisibleNumbers) currentVisibleNumbers.push(n);
                 }
               } else {
               const faceNumbers = [];
               faceGroup.userData.lastVpKey = vpKey;
+              faceGroup.userData.lastRebuildTime = nowMs;
               // Limpiar meshes anteriores antes de reconstruir (pool: sin dispose)
               faceGroup.userData.numberMeshes.forEach(mesh => _numMeshPool.release(mesh));
               faceGroup.userData.numberMeshes = [];
@@ -3674,12 +3678,12 @@ const handleZoomButton = useCallback((direction) => {
         }
       };
 
-      // Diferir buildLayer al siguiente frame para no bloquear el primer paint
+      // Construir capa inicial
+      buildLayer(currentLayer);
       buildLayerRef.current = buildLayer;
-      requestAnimationFrame(() => {
-        buildLayer(currentLayer);
-        try { recomputeFaceRanges(); } catch {}
-      });
+
+      // Calcular y cachear rangos descendentes por cara de la capa actual
+      try { recomputeFaceRanges(); } catch {}
 
       // Obtener rango descendente por cara (usar cache real si estÃƒÂ¡ disponible; si no, fallback fijo por cara externa)
       const CUBES_PER_FACE = 40401;
