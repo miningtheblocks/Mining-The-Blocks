@@ -14,6 +14,7 @@ import { signOut, onAuthStateChanged } from 'firebase/auth';
 import { useI18n } from '../utils/i18n';
 import { useOverlayModals } from './OverlayModalsProvider';
 import { useServer } from '../utils/serverContext';
+import { useAuth } from '../utils/authContext';
 import { GEMS, GEM_SHAPE } from '../utils/gems';
 import GemPixelArt from './GemPixelArt';
 import { createRewardIndicatorSprite, MinedCubesRewardStore } from './MinedCellIndicators';
@@ -1236,7 +1237,7 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
   try {
     const faceGroupEntry = faceGroupsRef.current?.[faceIndex];
     if (!faceGroupEntry) {
-      return; // normal: la escena aún no está lista cuando Firestore carga cubos minados
+      return false; // escena aún no lista, el caller no debe marcar la key como aplicada
     }
     const cubeSize = 0.88;
     const zOffsetCubes = 0.4;
@@ -1324,8 +1325,10 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
         }
       }
     } catch {}
+    return true;
   } catch (e) {
     console.warn('addDarkPatch failed', e);
+    return false;
   }
 }
 
@@ -1334,6 +1337,7 @@ export default function DynamicCube201() {
   const { t, language } = useI18n();
   const { openModal } = useOverlayModals ? useOverlayModals() : { openModal: () => {} };
   const { activeServer } = useServer ? useServer() : { activeServer: null };
+  const { isGuest } = useAuth();
   const serverId = activeServer?.id || null;
   const glRef = useRef(null);
   const rendererRef = useRef(null);
@@ -1398,36 +1402,46 @@ const gridExitTimerRef = useRef(null);
 const handleZoomButton = useCallback((direction) => {
   const isZoomOut = direction === -1;
   if (isZoomOut && cameraModeRef.current === 'grid') {
-    const now = Date.now();
-    if (now - gridExitPressRef.current < 1500) {
-      // Segundo press: salir de modo grid
-      gridExitPressRef.current = 0;
-      if (gridExitTimerRef.current) {
-        clearTimeout(gridExitTimerRef.current);
-        gridExitTimerRef.current = null;
-      }
-      setShowGridExitHint(false);
-      cameraModeRef.current = 'cube';
-      setCameraMode('cube');
-      setRequestedFace(null);
-      requestedFaceRef.current = null;
-      resetFaceDetection();
-      setCamState((prev) => {
-        const jumpOut = Math.max(prev.distance + 100, 350);
-        return { ...prev, distance: THREE.MathUtils.clamp(jumpOut, 106.6, 3000) };
-      });
-    } else {
-      // Primer press: mostrar hint
-      gridExitPressRef.current = now;
-      setShowGridExitHint(true);
-      if (gridExitTimerRef.current) clearTimeout(gridExitTimerRef.current);
-      gridExitTimerRef.current = setTimeout(() => {
+    // Umbral donde termina el modo grilla (tempDist=dist-100 <= 255.2 → dist <= 355.2)
+    const GRID_EXIT_THRESHOLD = 355.2;
+    const currentDist = camStateRef.current?.distance ?? 300;
+    const step = currentDist < 150 ? 5 : 25;
+    const nextDist = currentDist + step;
+
+    if (nextDist >= GRID_EXIT_THRESHOLD) {
+      // En el límite exterior del pan: activar mecanismo de salida (doble press)
+      const now = Date.now();
+      if (now - gridExitPressRef.current < 1500) {
+        // Segundo press: salir a modo cubo
         gridExitPressRef.current = 0;
+        if (gridExitTimerRef.current) {
+          clearTimeout(gridExitTimerRef.current);
+          gridExitTimerRef.current = null;
+        }
         setShowGridExitHint(false);
-        gridExitTimerRef.current = null;
-      }, 1500);
+        cameraModeRef.current = 'cube';
+        setCameraMode('cube');
+        setRequestedFace(null);
+        requestedFaceRef.current = null;
+        resetFaceDetection();
+        setCamState((prev) => {
+          const jumpOut = Math.max(prev.distance + 100, 350);
+          return { ...prev, distance: THREE.MathUtils.clamp(jumpOut, 106.6, 3000) };
+        });
+      } else {
+        // Primer press: mostrar hint
+        gridExitPressRef.current = now;
+        setShowGridExitHint(true);
+        if (gridExitTimerRef.current) clearTimeout(gridExitTimerRef.current);
+        gridExitTimerRef.current = setTimeout(() => {
+          gridExitPressRef.current = 0;
+          setShowGridExitHint(false);
+          gridExitTimerRef.current = null;
+        }, 1500);
+      }
+      return;
     }
-    return;
+    // No está en el límite → zoom out normal (continúa abajo)
   }
   setCamState((prev) => {
     const minDist = 106.6;
@@ -1673,8 +1687,8 @@ const handleZoomButton = useCallback((direction) => {
       const key = `${currentLayer}:${faceIndex}:${gridX}:${gridY}`;
       if (minedAppliedRef.current.has(key)) return;
       const K = currentLayer;
-      addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks);
-      // setMinedCubeColor DESPUÉS oscurece el cubo subyacente
+      const patched = addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks);
+      if (!patched) return; // escena no lista aún, no marcar como aplicada para poder reintentar
       setMinedCubeColor(faceIndex, gridX, gridY, faceGroupsRef);
       minedAppliedRef.current.add(key);
     } catch (e) {
@@ -2119,7 +2133,11 @@ const handleZoomButton = useCallback((direction) => {
         unsubUser = onSnapshot(ref, (snap) => {
           const data = snap.exists() ? snap.data() : {};
           setPicks(data?.picks ?? 0);
-          setCash(Number(data?.wallet?.balance || 0));
+          const walletData = data && data.wallet;
+          if (snap.exists() && (!walletData || walletData.balance === undefined)) {
+            setDoc(ref, { wallet: { balance: 0 } }, { merge: true }).catch(() => {});
+          }
+          setCash(Number((walletData && walletData.balance) || 0));
           const settings = data?.settings || {};
           const music = settings.musicEnabled ?? true;
           const sound = settings.soundEnabled ?? true;
@@ -2244,11 +2262,12 @@ const handleZoomButton = useCallback((direction) => {
       }
       
       // FASE 3: Aplicar parche y explotar simultáneamente
-      const cellKey = `${currentLayer}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
+      const K = currentLayerRef.current; // usar ref para evitar closure estale
+      const cellKey = `${K}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
       try {
         if (typeof addDarkPatch === 'function') {
-          minedRewardsStore.set(currentLayer, modalData.faceIndex, modalData.gridX, modalData.gridY, reward);
-          addDarkPatch(modalData.faceIndex, modalData.gridX, modalData.gridY, faceGroupsRef, currentLayer, reward);
+          minedRewardsStore.set(K, modalData.faceIndex, modalData.gridX, modalData.gridY, reward);
+          addDarkPatch(modalData.faceIndex, modalData.gridX, modalData.gridY, faceGroupsRef, K, reward);
           if (typeof setMinedCubeColor === 'function') {
             setMinedCubeColor(modalData.faceIndex, modalData.gridX, modalData.gridY, faceGroupsRef);
           }
@@ -4044,6 +4063,10 @@ const handleZoomButton = useCallback((direction) => {
                   return;
                 }
                 
+                if (isGuest) {
+                  openModal('registration');
+                  return;
+                }
                 if (!authReady) {
                   Alert.alert(t('cube.waitTitle'), t('cube.connectingBody'));
                   showHudToast(t('cube.toastConnecting'));
@@ -4164,6 +4187,13 @@ const handleZoomButton = useCallback((direction) => {
                     // Esperar un momento para que las grietas sean visibles antes de la explosión
                     await new Promise((r) => setTimeout(r, 250));
                     await startMining(modalData, finalReward, finalGem);
+                    // Liberar pendingAnimCells para que Firestore pueda aplicar el parche si startMining falló
+                    try {
+                      if (modalData && typeof modalData.faceIndex === 'number') {
+                        const ck = `${currentLayer}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
+                        pendingAnimCellsRef.current.delete(ck);
+                      }
+                    } catch {}
                     // Guardar en Firestore: stats del usuario, registro del minado y recompensas
                     try {
                       const uid = auth?.currentUser?.uid;
@@ -4328,14 +4358,7 @@ const handleZoomButton = useCallback((direction) => {
                       const secs = String(msg).split(':')[1] || '2';
                       showHudToast((t('cube.rateLimitToast') || 'Esperá {s}s').replace('{s}', secs));
                     } else if (String(code).includes('permission-denied')) {
-                      Alert.alert(
-                        t('auth.registerRequired') || 'Registrate para jugar',
-                        t('auth.registerRequiredMsg') || 'Necesitás una cuenta para minar. ¡Es gratis registrarse!',
-                        [
-                          { text: t('auth.cancel') || 'Cancelar', style: 'cancel' },
-                          { text: t('auth.register') || 'Registrarse', onPress: () => { try { navigation.navigate('Registration'); } catch {} } },
-                        ],
-                      );
+                      openModal('registration');
                     } else {
                       const human = code === 'timeout' ? (t('cube.timeoutBody') || 'Network timeout. Please try again.') : `${code}: ${msg}`;
                       Alert.alert(t('cube.serverErrorTitle'), human);
@@ -4363,10 +4386,7 @@ const handleZoomButton = useCallback((direction) => {
                     clearInterval(miningProgressTimerRef.current);
                     miningProgressTimerRef.current = null;
                   }
-                  // NO eliminamos pendingAnimCellsRef en caso exitoso porque:
-                  // 1. El listener de Firebase necesita ver esta protección hasta que minedAppliedRef se actualice
-                  // 2. startMining marca en minedAppliedRef, entonces el listener quedará bloqueado permanentemente
-                  // 3. Solo eliminamos en caso de ERROR para permitir reintentos
+                  // pendingAnimCellsRef se elimina tras startMining (caso exitoso) o aquí (caso error)
                 }
               }}
               activeOpacity={0.85}
