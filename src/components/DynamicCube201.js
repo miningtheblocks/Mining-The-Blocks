@@ -1530,6 +1530,8 @@ const handleZoomButton = useCallback((direction) => {
   const lastTouchPosRef = useRef(null);
   // Flag: si durante el gesto hubo 2 dedos (zoom), deshabilitar minado
   const gestureZoomingRef = useRef(false);
+  // Flag: hay un gesto activo — suspende reconstrucción de número meshes
+  const isGesturingRef = useRef(false);
   const minedByLayerRef = useRef(new Map()); // K -> Set of 'ix,iy,iz'
   const minedAppliedRef = useRef(new Set()); // keys: `${faceIndex}:${gridX}:${gridY}` para evitar duplicados
   // Celdas con animaciÃƒÂ³n local en curso para no aplicar parche por realtime antes de tiempo
@@ -1710,6 +1712,7 @@ const handleZoomButton = useCallback((direction) => {
         where('K', '==', currentLayer)
       );
       unsub = onSnapshot(q, (snap) => {
+        const idsToAdd = [];
         snap.docChanges().forEach((ch) => {
           if (ch.type !== 'added') return; // en primera carga llegan todos como added
           const id = ch.doc.id;
@@ -1722,19 +1725,27 @@ const handleZoomButton = useCallback((direction) => {
           try {
             const key = `${currentLayer}:${faceIndex}:${gridX}:${gridY}`;
             if (pendingAnimCellsRef.current.has(key)) return;
-            
+
             const rewardPicks = minedRewardsStore.has(currentLayer, faceIndex, gridX, gridY)
               ? minedRewardsStore.get(currentLayer, faceIndex, gridX, gridY)
               : rewardPicksFromDB;
-            
+
             if (!minedRewardsStore.has(currentLayer, faceIndex, gridX, gridY)) {
               minedRewardsStore.set(currentLayer, faceIndex, gridX, gridY, rewardPicks);
             }
-            
+
             applyMinedCell(faceIndex, gridX, gridY, rewardPicks);
-            setMinedCubes(prev => { const s = new Set(prev); s.add(id); return s; });
+            idsToAdd.push(id);
           } catch {}
         });
+        // Un solo re-render para todos los cubos del snapshot
+        if (idsToAdd.length > 0) {
+          setMinedCubes(prev => {
+            const s = new Set(prev);
+            for (const id of idsToAdd) s.add(id);
+            return s;
+          });
+        }
       });
     } catch (e) {
       console.warn('mined realtime subscribe error', e);
@@ -2359,6 +2370,7 @@ const handleZoomButton = useCallback((direction) => {
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: (evt) => evt.nativeEvent.touches.length <= 2,
         onPanResponderGrant: (evt) => {
+          isGesturingRef.current = true;
           const t = evt.nativeEvent.touches;
           if (t.length === 2) {
             // ZOOM: Guardar distancia inicial entre dedos
@@ -2768,6 +2780,7 @@ const handleZoomButton = useCallback((direction) => {
         onPanResponderRelease: (evt) => {
           // Siempre cancelar timers de long press y modal diferido al soltar
           // Resetear indicadores de gesto y conteo de dedos activos
+          isGesturingRef.current = false;
           try { gestureZoomingRef.current = false; } catch {}
           try { activeTouchesRef.current = 0; } catch {}
           if (longPressTimer.current) {
@@ -2838,6 +2851,7 @@ const handleZoomButton = useCallback((direction) => {
           }
         },
         onPanResponderTerminate: () => {
+          isGesturingRef.current = false;
           if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
           try { activeTouchesRef.current = 0; } catch {}
           if (longPressTimer.current) {
@@ -3224,11 +3238,13 @@ const handleZoomButton = useCallback((direction) => {
               const numbersPerCol = Math.ceil(visibleHeight / step);
               const maxNumbers = Math.min(2000, numbersPerRow * numbersPerCol + 50); // +50 margen de seguridad
 
-              // OPTIMIZACIÓN: Saltar reconstrucción si viewport no cambió
+              // OPTIMIZACIÓN: Saltar reconstrucción si viewport no cambió O si hay gesto activo
               const minedCount = minedCubes ? minedCubes.size : 0;
               const vpKey = `${minX}_${maxX}_${minY}_${maxY}_${step}_${minedCount}`;
-              if (faceGroup.userData.lastVpKey === vpKey && faceGroup.userData.numberMeshes.length > 0) {
-                // Viewport idéntico y ya hay meshes — no reconstruir, pero reusar números cacheados
+              const skipRebuild = isGesturingRef.current ||
+                (faceGroup.userData.lastVpKey === vpKey && faceGroup.userData.numberMeshes.length > 0);
+              if (skipRebuild) {
+                // Viewport idéntico o gesto activo — reusar números cacheados
                 if (faceGroup.userData.cachedVisibleNumbers) {
                   for (const n of faceGroup.userData.cachedVisibleNumbers) currentVisibleNumbers.push(n);
                 }
@@ -3658,12 +3674,12 @@ const handleZoomButton = useCallback((direction) => {
         }
       };
 
-      // Construir capa inicial
-      buildLayer(currentLayer);
+      // Diferir buildLayer al siguiente frame para no bloquear el primer paint
       buildLayerRef.current = buildLayer;
-
-      // Calcular y cachear rangos descendentes por cara de la capa actual
-      try { recomputeFaceRanges(); } catch {}
+      requestAnimationFrame(() => {
+        buildLayer(currentLayer);
+        try { recomputeFaceRanges(); } catch {}
+      });
 
       // Obtener rango descendente por cara (usar cache real si estÃƒÂ¡ disponible; si no, fallback fijo por cara externa)
       const CUBES_PER_FACE = 40401;
