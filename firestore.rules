@@ -8,6 +8,17 @@ service cloud.firestore {
       match /mines/{doc} {
         allow read: if request.auth != null && request.auth.uid == uid;
       }
+      // serverAccess: tracks which servers the user has paid to join
+      match /serverAccess/{serverId} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false; // only Cloud Functions (admin)
+      }
+      // notifications: in-app notifications (referral bonus, etc.)
+      match /notifications/{notifId} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow delete: if request.auth != null && request.auth.uid == uid;
+        allow create, update: if false; // only Cloud Functions (admin)
+      }
     }
 
     // Servers: any authenticated user can list and read servers

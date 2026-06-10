@@ -408,6 +408,8 @@ const resources = {
       episodeBadge: 'Episode',
       referralBonusTitle: 'Your referral bought a credit! 🎉',
       referralBonusMsg: 'You received 5 bonus picks because your friend joined the game.',
+      referralBonusSelfTitle: 'Referral bonus! 🎁',
+      referralBonusSelfMsg: 'You received 5 extra picks for joining with a referral code.',
       referralBonusOk: 'Awesome! ⛏',
     },
     chainHistory: {
@@ -856,6 +858,8 @@ const resources = {
       episodeBadge: 'Episodio',
       referralBonusTitle: '¡Tu referido compró un crédito! 🎉',
       referralBonusMsg: 'Recibiste 5 picos extra porque tu amigo se sumó al juego.',
+      referralBonusSelfTitle: '¡Bonus por referido! 🎁',
+      referralBonusSelfMsg: 'Recibiste 5 picos extra por unirte con un código de referido.',
       referralBonusOk: '¡Genial! ⛏',
     },
     chainHistory: {

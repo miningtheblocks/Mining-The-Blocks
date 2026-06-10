@@ -44,7 +44,8 @@ export default function ServerList() {
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
   const [serverCredits, setServerCredits] = useState(null);
   const [joinedServerIds, setJoinedServerIds] = useState(new Set());
-  const [referralBonusNotif, setReferralBonusNotif] = useState(null); // { id } pending notification
+  const [referralBonusNotif, setReferralBonusNotif] = useState(null); // { id } referrer bonus
+  const [referralBonusSelfNotif, setReferralBonusSelfNotif] = useState(null); // { id } buyer bonus
   const [updateInfo, setUpdateInfo] = useState(null);
   const [showWelcomePicks, setShowWelcomePicks] = useState(false);
   const [pendingServer, setPendingServer] = useState(null); // server to navigate to after welcome modal
@@ -97,8 +98,10 @@ export default function ServerList() {
     const unsub = onSnapshot(
       collection(db, 'users', currentUid, 'notifications'),
       (snap) => {
-        const notif = snap.docs.find(d => d.data().type === 'referral_bonus');
-        if (notif) setReferralBonusNotif({ id: notif.id });
+        const referrerNotif = snap.docs.find(d => d.data().type === 'referral_bonus');
+        if (referrerNotif) setReferralBonusNotif({ id: referrerNotif.id });
+        const selfNotif = snap.docs.find(d => d.data().type === 'referral_bonus_self');
+        if (selfNotif) setReferralBonusSelfNotif({ id: selfNotif.id });
       },
       () => {},
     );
@@ -154,17 +157,19 @@ export default function ServerList() {
     setJoining(server.id);
     const doJoin = async () => {
       const { hasAccess, serverCredits } = await callCheckServerAccess(server.id);
-      if (!hasAccess) {
-        if (serverCredits < 1) {
-          showAlert(t('serverList.noCreditsTitle'), t('serverList.noCreditsMsg'));
-          return false;
-        }
-        const joinResult = await callJoinServer(server.id);
-        // Optimistic: add access immediately so button shows Mine without waiting for listener
+      if (hasAccess) {
+        // Already paid — update local state in case the listener missed it
         setJoinedServerIds(prev => new Set([...prev, server.id]));
-        if (joinResult?.welcomePicks) {
-          return 'welcome';
-        }
+        return true;
+      }
+      if (serverCredits < 1) {
+        showAlert(t('serverList.noCreditsTitle'), t('serverList.noCreditsMsg'));
+        return false;
+      }
+      const joinResult = await callJoinServer(server.id);
+      setJoinedServerIds(prev => new Set([...prev, server.id]));
+      if (joinResult?.welcomePicks) {
+        return 'welcome';
       }
       return true;
     };
@@ -535,6 +540,30 @@ export default function ServerList() {
               onPress={async () => {
                 const notifId = referralBonusNotif?.id;
                 setReferralBonusNotif(null);
+                if (notifId && currentUid) {
+                  try { await deleteDoc(doc(db, 'users', currentUid, 'notifications', notifId)); } catch {}
+                }
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={wpStyles.btnTxt}>{t('serverList.referralBonusOk')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Referral bonus self — shown to the buyer who used a referral code */}
+      <Modal visible={!!referralBonusSelfNotif} transparent animationType="fade" onRequestClose={() => {}}>
+        <View style={wpStyles.overlay}>
+          <View style={wpStyles.box}>
+            <Text style={wpStyles.icon}>🎁</Text>
+            <Text style={wpStyles.title}>{t('serverList.referralBonusSelfTitle')}</Text>
+            <Text style={wpStyles.msg}>{t('serverList.referralBonusSelfMsg')}</Text>
+            <TouchableOpacity
+              style={wpStyles.btn}
+              onPress={async () => {
+                const notifId = referralBonusSelfNotif?.id;
+                setReferralBonusSelfNotif(null);
                 if (notifId && currentUid) {
                   try { await deleteDoc(doc(db, 'users', currentUid, 'notifications', notifId)); } catch {}
                 }
