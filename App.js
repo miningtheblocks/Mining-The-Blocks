@@ -214,6 +214,7 @@ function RootApp() {
         onDismiss={() => {}}
       />
       <OverlayModalsProvider>
+        <DeepLinkHandler />
         <NavigationContainer ref={navigationRef}>
           <RNStatusBar translucent={true} backgroundColor="transparent" barStyle="light-content" />
           {(user || isGuest) ? (
@@ -334,4 +335,21 @@ function DrawerItem({ label, onPress, dim = false }) {
       <Text style={{ color: dim ? '#555' : '#ccc', fontWeight: '700' }}>{label}</Text>
     </TouchableOpacity>
   );
+}
+
+function DeepLinkHandler() {
+  const { openModal } = useOverlayModals();
+
+  useEffect(() => {
+    const handle = ({ url }) => {
+      if (url && url.startsWith('exp+miningtheblocks://peaks')) {
+        openModal('peaks');
+      }
+    };
+    Linking.getInitialURL().then(url => { if (url) handle({ url }); }).catch(() => {});
+    const sub = Linking.addEventListener('url', handle);
+    return () => sub.remove();
+  }, [openModal]);
+
+  return null;
 }

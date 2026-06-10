@@ -204,9 +204,10 @@
 
   var CIRCUMFERENCE = 2 * Math.PI * 54; // 339.3
 
-  // Intent URL for returning to the app.
-  // S.browser_fallback_url points to Play Store only as last resort (app IS installed since we launched from it).
-  var APP_INTENT = 'intent://open/#Intent;package=com.bissi.miningtheblocks;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;S.browser_fallback_url=https%3A%2F%2Fminingtheblocks.github.io%2FMining-The-Blocks%2F;end';
+  // Custom scheme registered in AndroidManifest — primary return mechanism.
+  var APP_SCHEME_URL = 'exp+miningtheblocks://peaks';
+  // Intent URL as fallback for Chrome when scheme navigation is intercepted.
+  var APP_INTENT_URL = 'intent://peaks/#Intent;scheme=exp%2Bminingtheblocks;package=com.bissi.miningtheblocks;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.bissi.miningtheblocks;end';
 
   function setLang(lang) {
     currentLang = lang;
@@ -220,7 +221,14 @@
   }
 
   function goBackToApp() {
-    window.location.href = APP_INTENT;
+    // Primary: custom scheme — opens app directly if installed
+    window.location.href = APP_SCHEME_URL;
+    // Fallback: intent URL after 1.5s in case the scheme didn't trigger
+    setTimeout(function() {
+      if (!document.hidden) {
+        window.location.href = APP_INTENT_URL;
+      }
+    }, 1500);
   }
 
   function startTimer() {
@@ -255,16 +263,15 @@
     barWrap.classList.add('visible');
     setLang(currentLang);
 
-    // Double rAF ensures the browser paints the initial width:0 state before animating to 100%
-    requestAnimationFrame(function() {
-      requestAnimationFrame(function() {
-        document.getElementById('claimBarFill').style.width = '100%';
-      });
-    });
+    // setTimeout(50) is more reliable than double-rAF on mobile Chrome
+    // to ensure the browser renders display:flex before starting the CSS transition
+    setTimeout(function() {
+      document.getElementById('claimBarFill').style.width = '100%';
+    }, 50);
 
     setTimeout(function() {
       claimPick();
-    }, 1200);
+    }, 1300);
   }
 
   function showError(msg) {
@@ -326,8 +333,8 @@
     setLang(currentLang);
 
     // Wire up back buttons
-    document.getElementById('backBtnOk').href = APP_INTENT;
-    document.getElementById('backBtnErr').href = APP_INTENT;
+    document.getElementById('backBtnOk').href = APP_SCHEME_URL;
+    document.getElementById('backBtnErr').href = APP_SCHEME_URL;
 
     startTimer();
   });
