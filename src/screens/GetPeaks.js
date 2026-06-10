@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking, AppState, Share } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking, AppState, Share, Modal } from 'react-native';
 import { useAppAlert } from '../components/AppAlert';
 import { ensureAnonLogin, auth, db } from '../firebase/client';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -25,6 +25,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
   const [tick, setTick] = useState(0); // eslint-disable-line no-unused-vars
   const [userData, setUserData] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [showExamples, setShowExamples] = useState(false);
   const { showAlert, AlertComponent } = useAppAlert();
 
   const nowMs = () => serverNow + (Date.now() - baseLocalTs);
@@ -198,10 +199,35 @@ export default function GetPeaks({ asModal = false, onClose }) {
 
       {/* Aviso ads externos */}
       <View style={styles.adWarningBox}>
-        <Text style={styles.adWarningTxt}>
-          {t('peaks.adBrowserWarning')}
-        </Text>
+        <Text style={styles.adWarningTxt}>{t('peaks.adBrowserWarning')}</Text>
+        <TouchableOpacity onPress={() => setShowExamples(true)} activeOpacity={0.8}>
+          <Text style={styles.adExamplesLink}>{t('peaks.adExamplesBtn')}</Text>
+        </TouchableOpacity>
       </View>
+
+      {/* Modal ejemplos de publicidad engañosa */}
+      <Modal visible={showExamples} transparent animationType="fade" onRequestClose={() => setShowExamples(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.examplesBox}>
+            <Text style={styles.examplesTitle}>{t('peaks.adExamplesTitle')}</Text>
+            <Text style={styles.examplesTxt}>
+              {'• "¡Ganaste un iPhone 15!" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
+              {'• "Sos el visitante Nº 1.000.000" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
+              {'• "¡Tu número fue seleccionado!" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
+              {'• "Completá una encuesta y ganá $500" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
+              {'• "Canje de puntos, reclamá $1000" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
+              {'• "Ganaste un auto, hacé clic aquí" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
+              {'• "Tu teléfono tiene un virus" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
+              {'• Páginas que piden tu número de teléfono → '}<Text style={styles.fakeTag}>NO ingreses</Text>{'\n'}
+              {'• Botones "Descargar" o "Instalar" → '}<Text style={styles.fakeTag}>NO toques</Text>{'\n'}
+              {'• Botón "X" que abre más anuncios → '}<Text style={styles.cautionTag}>CUIDADO</Text>
+            </Text>
+            <TouchableOpacity style={styles.examplesCloseBtn} onPress={() => setShowExamples(false)} activeOpacity={0.85}>
+              <Text style={styles.examplesCloseTxt}>{t('peaks.adExamplesClose')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Daily */}
       <View style={styles.cardRow}>
@@ -393,7 +419,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     marginBottom: 8,
   },
-  adWarningTxt: { fontSize: 12, color: '#aa8800', lineHeight: 18, textAlign: 'center' },
+  adWarningTxt: { fontSize: 12, color: '#aa8800', lineHeight: 18, textAlign: 'center', fontWeight: '700' },
+  adExamplesLink: { fontSize: 12, color: '#4a9eff', fontWeight: '700', textAlign: 'center', marginTop: 6 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.88)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  examplesBox: { backgroundColor: '#111', borderWidth: 1, borderColor: '#333', borderRadius: 14, padding: 22, width: '100%', maxWidth: 380 },
+  examplesTitle: { fontSize: 14, fontWeight: '900', color: '#ff6600', marginBottom: 14, textAlign: 'center' },
+  examplesTxt: { fontSize: 13, color: '#ccc', lineHeight: 26 },
+  fakeTag: { color: '#ff4444', fontWeight: '900' },
+  cautionTag: { color: '#ff9900', fontWeight: '900' },
+  examplesCloseBtn: { backgroundColor: '#1a3a1a', borderWidth: 1, borderColor: '#2e7d32', borderRadius: 10, paddingVertical: 11, paddingHorizontal: 32, alignItems: 'center', marginTop: 18 },
+  examplesCloseTxt: { color: '#5cb85c', fontSize: 14, fontWeight: '800' },
 
   // Referral card
   referralCard: {

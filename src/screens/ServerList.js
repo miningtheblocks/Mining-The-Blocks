@@ -160,6 +160,8 @@ export default function ServerList() {
           return false;
         }
         const joinResult = await callJoinServer(server.id);
+        // Optimistic: add access immediately so button shows Mine without waiting for listener
+        setJoinedServerIds(prev => new Set([...prev, server.id]));
         if (joinResult?.welcomePicks) {
           return 'welcome';
         }

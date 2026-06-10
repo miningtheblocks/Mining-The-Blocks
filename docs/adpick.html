@@ -29,14 +29,6 @@
       align-items: center; gap: 28px;
     }
 
-    /* ── Slot de anuncio ── */
-    .ad-slot {
-      width: 100%; min-height: 100px;
-      display: flex; align-items: center; justify-content: center;
-      background: #111; border: 1px dashed #2a2a2a; border-radius: 10px;
-      color: #333; font-size: 12px;
-    }
-
     /* ── Timer ── */
     .timer-wrap {
       display: flex; flex-direction: column; align-items: center; gap: 12px;
@@ -131,16 +123,26 @@
         <span data-lang="es">
           • "¡Ganaste un iPhone 15!" → <strong style="color:#ff4444;">FALSO</strong><br>
           • "Sos el visitante Nº 1.000.000" → <strong style="color:#ff4444;">FALSO</strong><br>
+          • "¡Tu número fue seleccionado!" → <strong style="color:#ff4444;">FALSO</strong><br>
           • "Completá una encuesta y ganá $500" → <strong style="color:#ff4444;">FALSO</strong><br>
+          • "Canje de puntos, reclamá $1000" → <strong style="color:#ff4444;">FALSO</strong><br>
+          • "Ganaste un auto, hacé clic aquí" → <strong style="color:#ff4444;">FALSO</strong><br>
           • "Tu teléfono tiene un virus, descargá esto" → <strong style="color:#ff4444;">FALSO</strong><br>
-          • Botones de "Descargar" o "Instalar" → <strong style="color:#ff4444;">NO toques</strong>
+          • Páginas que piden tu número de teléfono → <strong style="color:#ff4444;">NO ingreses</strong><br>
+          • Botones de "Descargar" o "Instalar" → <strong style="color:#ff4444;">NO toques</strong><br>
+          • Botón "X" para cerrar que abre más anuncios → <strong style="color:#ff9900;">CUIDADO</strong>
         </span>
         <span data-lang="en visible">
           • "You won an iPhone 15!" → <strong style="color:#ff4444;">FAKE</strong><br>
           • "You are visitor #1,000,000" → <strong style="color:#ff4444;">FAKE</strong><br>
+          • "Your number was selected!" → <strong style="color:#ff4444;">FAKE</strong><br>
           • "Complete a survey and win $500" → <strong style="color:#ff4444;">FAKE</strong><br>
+          • "Redeem points, claim $1000" → <strong style="color:#ff4444;">FAKE</strong><br>
+          • "You won a car, click here" → <strong style="color:#ff4444;">FAKE</strong><br>
           • "Your phone has a virus, download this" → <strong style="color:#ff4444;">FAKE</strong><br>
-          • "Download" or "Install" buttons → <strong style="color:#ff4444;">DO NOT tap</strong>
+          • Pages asking for your phone number → <strong style="color:#ff4444;">DO NOT enter</strong><br>
+          • "Download" or "Install" buttons → <strong style="color:#ff4444;">DO NOT tap</strong><br>
+          • "X" close button that opens more ads → <strong style="color:#ff9900;">BEWARE</strong>
         </span>
       </div>
       <div style="margin-top:18px;text-align:center;">
@@ -150,11 +152,6 @@
         </button>
       </div>
     </div>
-  </div>
-
-  <!-- Slot de anuncio superior -->
-  <div class="ad-slot" id="adSlotTop">
-    <script src="https://pl29683393.effectivecpmnetwork.com/13/ce/c2/13cec2cd2d7b5f2302ef1e88a79a03f1.js"></script>
   </div>
 
   <!-- Timer circular -->
@@ -170,16 +167,6 @@
     </div>
     <p class="timer-msg" data-lang="es">Mirá el anuncio mientras esperás 🙏</p>
     <p class="timer-msg" data-lang="en visible">Watch the ad while you wait 🙏</p>
-  </div>
-
-  <!-- Slot de anuncio inferior -->
-  <div class="ad-slot" id="adSlotBottom">
-    <!--
-      ═══════════════════════════════════════════════════════
-      ESPACIO PARA ANUNCIO — AD SLOT
-      Pegá aquí el segundo script de anuncio (opcional).
-      ═══════════════════════════════════════════════════════
-    -->
   </div>
 
   <!-- Barra de auto-claim (aparece cuando termina el timer) -->
@@ -261,6 +248,11 @@
         window.location.href = APP_INTENT_URL;
       }
     }, 1500);
+  }
+
+  // Auto-return (after claim): scheme only, no Play Store fallback
+  function goBackToAppAuto() {
+    window.location.href = APP_SCHEME_URL;
   }
 
   function startTimer() {
@@ -352,8 +344,8 @@
       document.getElementById('resultOk').classList.add('visible');
       setLang(currentLang);
 
-      // Auto-return to app after short delay
-      setTimeout(function() { goBackToApp(); }, 800);
+      // Auto-return to app after short delay (scheme only, no Play Store fallback)
+      setTimeout(function() { goBackToAppAuto(); }, 800);
 
     } catch (e) {
       showError(currentLang === 'es' ? 'Sin conexión. Revisá tu internet e intentá de nuevo.' : 'No connection. Check your internet and try again.');

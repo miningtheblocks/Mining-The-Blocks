@@ -79,7 +79,8 @@ export default function BuyCredits({ onClose }) {
   };
 
   if (status === 'completed') {
-    const gotReferralBonus = userData?.referralBonusPaid && userData?.referredBy;
+    // Show bonus on first purchase: referredBy set and bonus not yet processed (will fire in background)
+    const gotReferralBonus = userData?.referredBy && !userData?.referralBonusPaid;
     return (
       <View style={s.container}>
         <View style={s.successBox}>
