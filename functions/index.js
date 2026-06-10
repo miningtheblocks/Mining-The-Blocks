@@ -1083,15 +1083,37 @@ exports.sendTestPush = onCall(async (request) => {
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
   const userRef = db.collection("users").doc(uid);
   const snap = await userRef.get();
-  const token = snap.exists ? (snap.data().pushToken || null) : null;
+  const data = snap.exists ? snap.data() : {};
+  const token = data.pushToken || null;
+  const tokenType = data.pushTokenType || 'expo';
   if (!token) throw new HttpsError("failed-precondition", "No push token on user");
   try {
-    const res = await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: token, title: "Mining The Blocks", body: "Test notification", sound: "default" }),
-    });
-    return { ok: true, data: await res.json() };
+    if (tokenType === 'fcm') {
+      // Native FCM token — send via Firebase Admin SDK directly
+      await admin.messaging().send({
+        token,
+        notification: { title: "Mining The Blocks", body: "Test notification ⛏" },
+        android: {
+          priority: "high",
+          notification: {
+            sound: "default",
+            channelId: "default",
+            priority: "high",
+            defaultSound: true,
+          },
+        },
+        data: { type: "test" },
+      });
+      return { ok: true, method: 'fcm' };
+    } else {
+      // Legacy Expo push token
+      const res = await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: token, title: "Mining The Blocks", body: "Test notification ⛏", sound: "default" }),
+      });
+      return { ok: true, method: 'expo', data: await res.json() };
+    }
   } catch (e) {
     throw new HttpsError("internal", String(e && e.message || e));
   }
@@ -1113,13 +1135,23 @@ const MTBGEMS_ABI = [
 async function sendPushToUser(uid, title, body) {
   try {
     const snap = await db.collection("users").doc(uid).get();
-    const token = snap.exists ? snap.data().pushToken : null;
+    const data = snap.exists ? snap.data() : {};
+    const token = data.pushToken || null;
+    const tokenType = data.pushTokenType || 'expo';
     if (!token) return;
-    await fetch("https://exp.host/--/api/v2/push/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: token, title, body, sound: "default" }),
-    });
+    if (tokenType === 'fcm') {
+      await admin.messaging().send({
+        token,
+        notification: { title, body },
+        android: { priority: "high", notification: { sound: "default" } },
+      });
+    } else {
+      await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: token, title, body, sound: "default" }),
+      });
+    }
   } catch (e) {
     console.error("sendPushToUser error:", e.message);
   }
@@ -1234,6 +1266,13 @@ exports.mintProcessorScheduled = onSchedule(
 
 // ─── Referidos ────────────────────────────────────────────────────────────────
 
+exports.checkReferralCode = onCall(async (request) => {
+  const code = String((request.data && request.data.code) || '').trim().toUpperCase();
+  if (!code) return { valid: false };
+  const q = await db.collection("users").where("referralCode", "==", code).limit(1).get();
+  return { valid: !q.empty };
+});
+
 exports.applyReferral = onCall(async (request) => {
   const uid = request.auth && request.auth.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
@@ -1253,13 +1292,12 @@ exports.applyReferral = onCall(async (request) => {
   const referrerDoc = referrerQuery.docs[0];
   if (referrerDoc.id === uid) throw new HttpsError("invalid-argument", "Cannot use your own code");
 
-  // Acreditar 5 picos al referidor y marcar al usuario actual
+  // Solo marcar referredBy — los picos se acreditan cuando el referido compra un crédito
   await db.runTransaction(async (tx) => {
-    tx.set(referrerDoc.ref, { picks: admin.firestore.FieldValue.increment(5) }, { merge: true });
     tx.set(userRef, { referredBy: referrerDoc.id, referralAppliedAt: Date.now() }, { merge: true });
   });
 
-  return { ok: true, referrerPicks: 5 };
+  return { ok: true };
 });
 
 // ─── Pagos crypto ─────────────────────────────────────────────────────────────
@@ -1373,8 +1411,9 @@ async function runCryptoPaymentProcessing() {
           }, { merge: true });
         });
 
-        // Bonus de referido: si el comprador fue referido y aún no se pagó el bonus
+        // Bonus de referido: 5 picos para el referidor Y 5 picos para el referido al primer crédito
         try {
+          let bonusReferredBy = null;
           await db.runTransaction(async (tx) => {
             const userRef = db.collection("users").doc(uid);
             const userSnap = await tx.get(userRef);
@@ -1382,16 +1421,17 @@ async function runCryptoPaymentProcessing() {
             const referredBy = userData.referredBy || null;
             const referralBonusPaid = userData.referralBonusPaid || false;
             if (referredBy && !referralBonusPaid) {
+              bonusReferredBy = referredBy;
               const referrerRef = db.collection("users").doc(referredBy);
-              tx.set(referrerRef, { picks: admin.firestore.FieldValue.increment(10) }, { merge: true });
-              tx.set(userRef, { referralBonusPaid: true }, { merge: true });
+              tx.set(referrerRef, { picks: admin.firestore.FieldValue.increment(5) }, { merge: true });
+              tx.set(userRef, {
+                picks: admin.firestore.FieldValue.increment(5),
+                referralBonusPaid: true,
+              }, { merge: true });
             }
           });
-          // Notificar al referidor
-          const userSnap2 = await db.collection("users").doc(uid).get();
-          const referredBy = userSnap2.exists ? (userSnap2.data().referredBy || null) : null;
-          if (referredBy) {
-            await sendPushToUser(referredBy, "¡Tu referido compró un crédito! 🎉", "Ganaste 10 picos. ¡Seguí invitando amigos!");
+          if (bonusReferredBy) {
+            await sendPushToUser(bonusReferredBy, "¡Tu referido compró un crédito! 🎉", "¡Ambos recibieron 5 picos! ¡Seguí invitando amigos!");
           }
         } catch (refErr) {
           console.warn("Referral bonus error:", refErr.message);

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image, ScrollView, TextInput, Alert, Share } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Image, ScrollView, TextInput, Share } from 'react-native';
+import { useAppAlert } from '../components/AppAlert';
 import { auth, db } from '../firebase/client';
 import { navigate } from '../utils/navigationRef';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
@@ -12,6 +13,7 @@ const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 export default function Profile({ asModal = false, onClose }) {
   const { t } = useI18n();
   const { openModal } = useOverlayModals();
+  const { showAlert, AlertComponent } = useAppAlert();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
   const [walletInput, setWalletInput] = useState('');
@@ -48,7 +50,7 @@ export default function Profile({ asModal = false, onClose }) {
     setApplyingReferral(true);
     try {
       await callApplyReferral(code);
-      Alert.alert(t('profile.referralAppliedTitle'), t('profile.referralAppliedMsg'));
+      showAlert(t('profile.referralAppliedTitle'), t('profile.referralAppliedMsg'));
       setReferralInput('');
     } catch (e) {
       const msg = e?.code === 'already-exists'
@@ -56,7 +58,7 @@ export default function Profile({ asModal = false, onClose }) {
         : e?.code === 'not-found'
           ? t('profile.referralInvalidCode')
           : e?.message;
-      Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setApplyingReferral(false);
     }
@@ -65,16 +67,16 @@ export default function Profile({ asModal = false, onClose }) {
   const saveWallet = async () => {
     const addr = walletInput.trim();
     if (addr && !ETH_ADDRESS_RE.test(addr)) {
-      Alert.alert(t('profile.walletInvalidTitle'), t('profile.walletInvalidMsg'));
+      showAlert(t('profile.walletInvalidTitle'), t('profile.walletInvalidMsg'));
       return;
     }
     setSavingWallet(true);
     try {
       const u = auth.currentUser;
       await setDoc(doc(db, 'users', u.uid), { walletAddress: addr || null }, { merge: true });
-      Alert.alert('', addr ? t('profile.walletSaved') : t('profile.walletRemoved'));
+      showAlert('', addr ? t('profile.walletSaved') : t('profile.walletRemoved'));
     } catch (e) {
-      Alert.alert('Error', e?.message);
+      showAlert('Error', e?.message);
     } finally {
       setSavingWallet(false);
     }
@@ -202,6 +204,7 @@ export default function Profile({ asModal = false, onClose }) {
         </TouchableOpacity>
 
       </ScrollView>
+      {AlertComponent}
     </View>
   );
 }

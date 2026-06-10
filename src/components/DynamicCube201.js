@@ -1,7 +1,8 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { createRealisticPickaxeTexture, getHighDefinitionPickaxeTexture } from './PickaxeFromPNG';
 import { findClosestFaceFixed, resetFaceDetection, setForcedFace } from './FaceDetection';
-import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, Alert, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform } from 'react-native';
+import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform } from 'react-native';
+import { useAppAlert } from './AppAlert';
 import { GLView } from 'expo-gl';
 import { Renderer } from 'expo-three';
 import * as THREE from 'three';
@@ -1338,6 +1339,7 @@ export default function DynamicCube201() {
   const { openModal } = useOverlayModals ? useOverlayModals() : { openModal: () => {} };
   const { activeServer } = useServer ? useServer() : { activeServer: null };
   const { isGuest } = useAuth();
+  const { showAlert, AlertComponent } = useAppAlert();
   const serverId = activeServer?.id || null;
   const glRef = useRef(null);
   const rendererRef = useRef(null);
@@ -3860,7 +3862,7 @@ const handleZoomButton = useCallback((direction) => {
                   style={styles.menuItem}
                   onPress={() => {
                     setMenuOpen(false);
-                    try { openModal('profile'); } catch { Alert.alert(t('cube.errorTitle'), t('cube.menuProfile')); }
+                    try { openModal('profile'); } catch { showAlert(t('cube.errorTitle'), t('cube.menuProfile')); }
                   }}
                   activeOpacity={0.8}
                 >
@@ -3870,7 +3872,7 @@ const handleZoomButton = useCallback((direction) => {
                   style={styles.menuItem}
                   onPress={() => {
                     setMenuOpen(false);
-                    try { openModal('peaks'); } catch { Alert.alert(t('cube.errorTitle'), t('cube.menuPeaks')); }
+                    try { openModal('peaks'); } catch { showAlert(t('cube.errorTitle'), t('cube.menuPeaks')); }
                   }}
                   activeOpacity={0.8}
                 >
@@ -3890,7 +3892,7 @@ const handleZoomButton = useCallback((direction) => {
                   style={styles.menuItem}
                   onPress={() => {
                     setMenuOpen(false);
-                    try { openModal('config'); } catch { Alert.alert(t('cube.errorTitle'), t('cube.menuConfig')); }
+                    try { openModal('config'); } catch { showAlert(t('cube.errorTitle'), t('cube.menuConfig')); }
                   }}
                   activeOpacity={0.8}
                 >
@@ -3903,7 +3905,7 @@ const handleZoomButton = useCallback((direction) => {
                       setMenuOpen(false);
                       await signOut(auth);
                     } catch (e) {
-                      Alert.alert(t('cube.signOutErrorTitle'), t('cube.signOutErrorBody'));
+                      showAlert(t('cube.signOutErrorTitle'), t('cube.signOutErrorBody'));
                     }
                   }}
                   activeOpacity={0.8}
@@ -4088,12 +4090,12 @@ const handleZoomButton = useCallback((direction) => {
                   return;
                 }
                 if (!authReady) {
-                  Alert.alert(t('cube.waitTitle'), t('cube.connectingBody'));
+                  showAlert(t('cube.waitTitle'), t('cube.connectingBody'));
                   showHudToast(t('cube.toastConnecting'));
                   return;
                 }
                 if (typeof picks === 'number' && picks <= 0) {
-                  Alert.alert(t('cube.noPicksTitle'), t('cube.noPicksBody'));
+                  showAlert(t('cube.noPicksTitle'), t('cube.noPicksBody'));
                   showHudToast(t('cube.toastNoPicks'));
                   return;
                 }
@@ -4361,7 +4363,7 @@ const handleZoomButton = useCallback((direction) => {
                   } else {
                     console.warn('mineCube returned not ok', resp);
                     const msg = (t('cube.invalidResponse') || '').replace('{msg}', JSON.stringify(resp));
-                    Alert.alert(t('cube.errorTitle'), msg);
+                    showAlert(t('cube.errorTitle'), msg);
                     showHudToast(t('cube.serverErrorToast'));
                   }
                 } catch (e) {
@@ -4381,7 +4383,7 @@ const handleZoomButton = useCallback((direction) => {
                       openModal('registration');
                     } else {
                       const human = code === 'timeout' ? (t('cube.timeoutBody') || 'Network timeout. Please try again.') : `${code}: ${msg}`;
-                      Alert.alert(t('cube.serverErrorTitle'), human);
+                      showAlert(t('cube.serverErrorTitle'), human);
                       if (String(code).includes('No picks')) {
                         showHudToast(t('cube.toastNoPicks'));
                       } else if (code === 'timeout') {
@@ -4391,7 +4393,7 @@ const handleZoomButton = useCallback((direction) => {
                       }
                     }
                   } catch {
-                    Alert.alert(t('cube.serverErrorTitle'), t('cube.serverErrorToast'));
+                    showAlert(t('cube.serverErrorTitle'), t('cube.serverErrorToast'));
                     showHudToast(t('cube.serverErrorToast'));
                   }
                   // Solo liberar pendingAnimCellsRef en caso de ERROR (para permitir reintentos)
@@ -4534,7 +4536,7 @@ const handleZoomButton = useCallback((direction) => {
           <Text style={styles.zoomButtonText}>+</Text>
         </TouchableOpacity>
       </View>
-      
+      {AlertComponent}
     </View>
   );
 }

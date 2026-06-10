@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Linking, AppState } from 'react-native';
-import { ensureAnonLogin } from '../firebase/client';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking, AppState, Share } from 'react-native';
+import { useAppAlert } from '../components/AppAlert';
+import { ensureAnonLogin, auth, db } from '../firebase/client';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { callGetPeaksStatus, callClaimDailyPick, callCreateAdSession } from '../firebase/functions';
 import { useI18n } from '../utils/i18n';
 
@@ -21,6 +23,9 @@ export default function GetPeaks({ asModal = false, onClose }) {
   const [claimingAd1, setClaimingAd1] = useState(false);
   const [claimingAd2, setClaimingAd2] = useState(false);
   const [tick, setTick] = useState(0); // eslint-disable-line no-unused-vars
+  const [userData, setUserData] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const { showAlert, AlertComponent } = useAppAlert();
 
   const nowMs = () => serverNow + (Date.now() - baseLocalTs);
 
@@ -49,7 +54,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
       setAd1NextAt(Number(data?.ad1NextAt || 0));
       setAd2NextAt(Number(data?.ad2NextAt || 0));
     } catch (e) {
-      Alert.alert(t('peaks.errorTitle'), t('peaks.errorStatus'));
+      showAlert(t('peaks.errorTitle'), t('peaks.errorStatus'));
     } finally {
       setLoading(false);
     }
@@ -61,6 +66,21 @@ export default function GetPeaks({ asModal = false, onClose }) {
       if (tickRef.current) clearInterval(tickRef.current);
       if (adStateSubRef.current) { adStateSubRef.current.remove(); adStateSubRef.current = null; }
     };
+  }, []);
+
+  useEffect(() => {
+    let unsub = null;
+    (async () => {
+      try {
+        await ensureAnonLogin();
+        const u = auth.currentUser;
+        if (!u) return;
+        unsub = onSnapshot(doc(db, 'users', u.uid), (snap) => {
+          setUserData(snap.exists() ? snap.data() : null);
+        }, () => {});
+      } catch {}
+    })();
+    return () => { if (unsub) unsub(); };
   }, []);
 
   useEffect(() => {
@@ -103,7 +123,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
       setAd1NextAt(Number(res?.ad1NextAt || 0));
       setAd2NextAt(Number(res?.ad2NextAt || 0));
     } catch (e) {
-      Alert.alert(t('peaks.errorTitle'), t('peaks.errorClaimDaily'));
+      showAlert(t('peaks.errorTitle'), t('peaks.errorClaimDaily'));
     } finally {
       setClaimingDaily(false);
     }
@@ -129,14 +149,33 @@ export default function GetPeaks({ asModal = false, onClose }) {
     } catch (e) {
       const code = e?.code || '';
       if (code === 'failed-precondition') {
-        Alert.alert(t('peaks.adUnavailableTitle'), t('peaks.adUnavailableMsg'));
+        showAlert(t('peaks.adUnavailableTitle'), t('peaks.adUnavailableMsg'));
       } else {
-        Alert.alert(t('peaks.errorTitle'), t('peaks.errorClaimAd'));
+        showAlert(t('peaks.errorTitle'), t('peaks.errorClaimAd'));
       }
     } finally {
       if (index === 1) setClaimingAd1(false);
       if (index === 2) setClaimingAd2(false);
     }
+  };
+
+  const getInviteMsg = () => {
+    const code = userData?.referralCode || '';
+    const url = 'https://miningtheblocks.github.io/Mining-The-Blocks/';
+    return `Veni a minar conmigo y obtené 5 picos extra con el código ${code}\nDescargá el juego desde: ${url}\nCuando instalás, creá la cuenta e ingresá el código de referido.`;
+  };
+
+  const copyReferralCode = async () => {
+    const msg = getInviteMsg();
+    try {
+      await Share.share({ message: msg });
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {}
+  };
+
+  const shareReferralCode = async () => {
+    try { await Share.share({ message: getInviteMsg() }); } catch {}
   };
 
   return (
@@ -155,6 +194,13 @@ export default function GetPeaks({ asModal = false, onClose }) {
             </View>
           </View>
         )}
+      </View>
+
+      {/* Aviso ads externos */}
+      <View style={styles.adWarningBox}>
+        <Text style={styles.adWarningTxt}>
+          {t('peaks.adBrowserWarning')}
+        </Text>
       </View>
 
       {/* Daily */}
@@ -232,6 +278,36 @@ export default function GetPeaks({ asModal = false, onClose }) {
         )}
       </View>
 
+      {/* Referidos */}
+      <View style={styles.referralCard}>
+        <Text style={styles.referralTitle}>🔗 {t('profile.referralTitle')}</Text>
+
+        {userData?.referralCode ? (
+          <>
+            <Text style={styles.referralSubtitle}>{t('peaks.referralInviteLabel')}</Text>
+            <View style={styles.referralCodeRow}>
+              <Text style={styles.referralCode}>{userData.referralCode}</Text>
+            </View>
+            <View style={styles.referralBtnRow}>
+              <TouchableOpacity
+                style={[styles.copyBtn, copied && styles.copyBtnDone]}
+                onPress={copyReferralCode}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.copyBtnTxt}>{copied ? '✓ Copiado' : '📋 Copiar invitación'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.shareBtn} onPress={shareReferralCode} activeOpacity={0.85}>
+                <Text style={styles.shareBtnTxt}>↑ Compartir</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.referralHint}>{t('peaks.referralHint')}</Text>
+          </>
+        ) : (
+          <Text style={styles.referralMuted}>{t('profile.referralNoCode')}</Text>
+        )}
+      </View>
+
+      {AlertComponent}
     </View>
   );
 }
@@ -306,4 +382,39 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   timerTxt: { fontSize: 16, fontWeight: '900', color: '#888', fontFamily: 'monospace' },
+
+  // Ad warning banner
+  adWarningBox: {
+    backgroundColor: '#1a1000',
+    borderWidth: 1,
+    borderColor: '#4a3000',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+  },
+  adWarningTxt: { fontSize: 12, color: '#aa8800', lineHeight: 18, textAlign: 'center' },
+
+  // Referral card
+  referralCard: {
+    backgroundColor: '#111',
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#1e1e1e',
+  },
+  referralTitle: { fontSize: 15, fontWeight: '700', color: '#ccc', marginBottom: 6 },
+  referralSubtitle: { fontSize: 12, color: '#666', marginBottom: 8 },
+  referralCodeRow: { marginBottom: 10 },
+  referralCode: { fontSize: 28, fontWeight: '900', color: '#ffd700', letterSpacing: 3 },
+  referralBtnRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  copyBtn: { flex: 1, backgroundColor: '#1a1400', borderWidth: 1, borderColor: '#ffd700', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, alignItems: 'center' },
+  copyBtnDone: { backgroundColor: '#0a2a0a', borderColor: '#22c55e' },
+  copyBtnTxt: { color: '#ffd700', fontWeight: '900', fontSize: 13 },
+  shareBtn: { backgroundColor: '#111', borderWidth: 1, borderColor: '#333', paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12, alignItems: 'center' },
+  shareBtnTxt: { color: '#888', fontWeight: '700', fontSize: 13 },
+  referralHint: { fontSize: 11, color: '#555', lineHeight: 16 },
+  referralMuted: { fontSize: 13, color: '#555', fontStyle: 'italic' },
 });

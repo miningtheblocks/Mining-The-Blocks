@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Share, ActivityIndicator, Alert, Linking } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Share, ActivityIndicator, Linking } from 'react-native';
+import { useAppAlert } from '../components/AppAlert';
 
 const TERMS_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/terms.html';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -19,6 +20,7 @@ function formatTimer(ms) {
 
 export default function BuyCredits({ onClose }) {
   const { t } = useI18n();
+  const { showAlert, AlertComponent } = useAppAlert();
   const [loading, setLoading] = useState(false);
   const [payment, setPayment] = useState(null); // { paymentId, amount, expiresAt }
   const [status, setStatus] = useState(null); // 'waiting' | 'completed' | 'expired'
@@ -52,7 +54,7 @@ export default function BuyCredits({ onClose }) {
       setPayment(result);
       setStatus('waiting');
     } catch (e) {
-      Alert.alert('Error', e?.message || t('buyCredits.errorGenerate'));
+      showAlert('Error', e?.message || t('buyCredits.errorGenerate'));
     } finally {
       setLoading(false);
     }
@@ -75,6 +77,7 @@ export default function BuyCredits({ onClose }) {
             <Text style={s.btnTxt}>{t('buyCredits.close')}</Text>
           </TouchableOpacity>
         </View>
+        {AlertComponent}
       </View>
     );
   }
@@ -151,6 +154,7 @@ export default function BuyCredits({ onClose }) {
           </TouchableOpacity>
         </View>
       )}
+      {AlertComponent}
     </View>
   );
 }

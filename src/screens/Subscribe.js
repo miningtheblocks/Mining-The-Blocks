@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, Image, Linking } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Image, Linking } from 'react-native';
+import { useAppAlert } from '../components/AppAlert';
 
 const TERMS_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/terms.html';
 import { auth, db } from '../firebase/client';
@@ -13,6 +14,7 @@ export default function Subscribe({ asModal = false, onClose }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const { showAlert, AlertComponent } = useAppAlert();
 
   const ensureUserDoc = async (uid) => {
     try {
@@ -22,16 +24,16 @@ export default function Subscribe({ asModal = false, onClose }) {
 
   const onLogin = async () => {
     if (!email || !password) {
-      Alert.alert(t('subscribe.requiredFieldsTitle'), t('subscribe.requiredFieldsBody'));
+      showAlert(t('subscribe.requiredFieldsTitle'), t('subscribe.requiredFieldsBody'));
       return;
     }
     setLoading(true);
     try {
       const res = await signInWithEmailAndPassword(auth, email.trim(), password);
       await ensureUserDoc(res.user.uid);
-      Alert.alert(t('subscribe.doneTitle'), t('subscribe.signInTitle'));
+      showAlert(t('subscribe.doneTitle'), t('subscribe.accountCreated'));
     } catch (e) {
-      Alert.alert(t('subscribe.errorTitle'), e?.message || String(e));
+      showAlert(t('subscribe.errorTitle'), e?.message || String(e));
     } finally {
       setLoading(false);
     }
@@ -69,6 +71,7 @@ export default function Subscribe({ asModal = false, onClose }) {
       <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL).catch(() => {})} style={styles.termsBtn}>
         <Text style={styles.termsTxt}>{t('common.termsLink')}</Text>
       </TouchableOpacity>
+      {AlertComponent}
     </View>
   );
 }

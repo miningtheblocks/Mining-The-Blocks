@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, Alert, Share, ScrollView,
+  ActivityIndicator, Share, ScrollView,
 } from 'react-native';
 import { GEMS } from '../utils/gems';
 import { callGetUserGems, callClaimGemNFT } from '../firebase/functions';
@@ -9,6 +9,7 @@ import { auth, db } from '../firebase/client';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { useI18n } from '../utils/i18n';
 import GemPixelArt from '../components/GemPixelArt';
+import { useAppAlert } from '../components/AppAlert';
 
 const STATUS_COLORS = {
   unclaimed: '#888',
@@ -23,6 +24,7 @@ function shortenAddress(addr) {
 
 export default function MyGems({ asModal = false, onClose }) {
   const { t, language } = useI18n();
+  const { showAlert, AlertComponent } = useAppAlert();
   const [gems, setGems]         = useState([]);
   const [loading, setLoading]   = useState(true);
   const [wallet, setWallet]     = useState(null);
@@ -46,7 +48,7 @@ export default function MyGems({ asModal = false, onClose }) {
       const { gems: list } = await callGetUserGems();
       setGems(list || []);
     } catch (e) {
-      Alert.alert('Error', e?.message || t('myGems.errorLoad'));
+      showAlert('Error', e?.message || t('myGems.errorLoad'));
     } finally {
       setLoading(false);
     }
@@ -60,7 +62,7 @@ export default function MyGems({ asModal = false, onClose }) {
 
   const handleClaimNFT = async (gem) => {
     if (!wallet) {
-      Alert.alert(t('myGems.noWalletTitle'), t('myGems.noWalletMsg'));
+      showAlert(t('myGems.noWalletTitle'), t('myGems.noWalletMsg'));
       return;
     }
     setClaiming(gem.id);
@@ -68,7 +70,7 @@ export default function MyGems({ asModal = false, onClose }) {
       await callClaimGemNFT(gem.id, wallet);
       await loadGems();
     } catch (e) {
-      Alert.alert('Error', e?.message || t('myGems.errorClaim'));
+      showAlert('Error', e?.message || t('myGems.errorClaim'));
     } finally {
       setClaiming(null);
     }
@@ -205,6 +207,7 @@ export default function MyGems({ asModal = false, onClose }) {
           windowSize={5}
         />
       )}
+      {AlertComponent}
     </View>
   );
 }

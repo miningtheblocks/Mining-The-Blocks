@@ -116,6 +116,12 @@ export async function callApplyReferral(code) {
   return res.data;
 }
 
+export async function callCheckReferralCode(code) {
+  const fn = httpsCallable(functions, 'checkReferralCode');
+  const res = await fn({ code });
+  return res.data; // { valid: boolean }
+}
+
 // Claims a gem as NFT to the user's wallet (creates pendingMints record)
 // Cash redemption is done on the external website using the gem code
 export async function callClaimGemNFT(gemId, walletAddress) {

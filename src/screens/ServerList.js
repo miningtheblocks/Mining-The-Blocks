@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, TextInput,
-  StyleSheet, Alert, ActivityIndicator, Modal,
+  StyleSheet, ActivityIndicator, Modal,
 } from 'react-native';
+import { useAppAlert } from '../components/AppAlert';
 import { useNavigation } from '@react-navigation/native';
 import { collection, query, orderBy, limit, onSnapshot, doc } from 'firebase/firestore';
 import { db, auth, ensureAnonLogin } from '../firebase/client';
@@ -44,6 +45,8 @@ export default function ServerList() {
   const [serverCredits, setServerCredits] = useState(null);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [showWelcomePicks, setShowWelcomePicks] = useState(false);
+  const [pendingServer, setPendingServer] = useState(null); // server to navigate to after welcome modal
+  const { showAlert, AlertComponent } = useAppAlert();
 
   const currentUid = currentUser?.uid;
 
@@ -128,12 +131,12 @@ export default function ServerList() {
       const { hasAccess, serverCredits } = await callCheckServerAccess(server.id);
       if (!hasAccess) {
         if (serverCredits < 1) {
-          Alert.alert(t('serverList.noCreditsTitle'), t('serverList.noCreditsMsg'));
+          showAlert(t('serverList.noCreditsTitle'), t('serverList.noCreditsMsg'));
           return false;
         }
         const joinResult = await callJoinServer(server.id);
         if (joinResult?.welcomePicks) {
-          setShowWelcomePicks(true);
+          return 'welcome';
         }
       }
       return true;
@@ -141,18 +144,21 @@ export default function ServerList() {
 
     try {
       await refreshAuth();
-      let ok = false;
+      let result = false;
       try {
-        ok = await doJoin();
+        result = await doJoin();
       } catch (firstErr) {
         if (firstErr?.code === 'functions/unauthenticated') {
           try { await auth.currentUser?.getIdToken(true); } catch {}
-          ok = await doJoin();
+          result = await doJoin();
         } else {
           throw firstErr;
         }
       }
-      if (ok) {
+      if (result === 'welcome') {
+        setPendingServer(server);
+        setShowWelcomePicks(true);
+      } else if (result === true) {
         setActiveServer(server);
         navigation.navigate('GameDrawer');
       }
@@ -160,17 +166,15 @@ export default function ServerList() {
       const msg = e?.message || '';
       const code = e?.code || '';
       if (msg.includes('server_full')) {
-        Alert.alert(t('serverList.serverFullTitle'), t('serverList.serverFullMsg'));
+        showAlert(t('serverList.serverFullTitle'), t('serverList.serverFullMsg'));
       } else if (code === 'functions/unauthenticated') {
-        Alert.alert(
-          t('serverList.sessionExpiredTitle'),
-          t('serverList.sessionExpiredMsg'),
-          [{ text: 'OK', onPress: async () => { try { await signOut(auth); } catch {} } }],
-        );
+        showAlert(t('serverList.sessionExpiredTitle'), t('serverList.sessionExpiredMsg'), [
+          { text: 'OK', style: 'destructive', onPress: async () => { try { await signOut(auth); } catch {} } },
+        ]);
       } else if (code === 'functions/permission-denied') {
-        Alert.alert(t('serverList.noCreditsTitle'), msg || t('serverList.errorJoin'));
+        showAlert(t('serverList.noCreditsTitle'), msg || t('serverList.errorJoin'));
       } else {
-        Alert.alert('Error', msg || t('serverList.errorJoin'));
+        showAlert('Error', msg || t('serverList.errorJoin'));
       }
     } finally {
       setJoining(null);
@@ -184,9 +188,6 @@ export default function ServerList() {
     setCreating(true);
     try {
       const result = await callCreateServer(name);
-      if (result?.welcomePicks) {
-        setShowWelcomePicks(true);
-      }
       const newServer = {
         id: result.serverId,
         name,
@@ -194,10 +195,15 @@ export default function ServerList() {
         status: 'active',
         totalMined: 0,
       };
-      setActiveServer(newServer);
-      navigation.navigate('GameDrawer');
+      if (result?.welcomePicks) {
+        setPendingServer(newServer);
+        setShowWelcomePicks(true);
+      } else {
+        setActiveServer(newServer);
+        navigation.navigate('GameDrawer');
+      }
     } catch (e) {
-      Alert.alert('Error', e?.message || t('serverList.errorCreate'));
+      showAlert('Error', e?.message || t('serverList.errorCreate'));
     } finally {
       setCreating(false);
       setShowCreate(false);
@@ -465,18 +471,31 @@ export default function ServerList() {
       )}
 
       {/* Welcome picks modal */}
-      <Modal visible={showWelcomePicks} transparent animationType="fade" onRequestClose={() => setShowWelcomePicks(false)}>
+      <Modal visible={showWelcomePicks} transparent animationType="fade" onRequestClose={() => {}}>
         <View style={wpStyles.overlay}>
           <View style={wpStyles.box}>
             <Text style={wpStyles.icon}>⛏️</Text>
             <Text style={wpStyles.title}>{t('serverList.welcomePicksTitle')}</Text>
             <Text style={wpStyles.msg}>{t('serverList.welcomePicksMsg')}</Text>
-            <TouchableOpacity style={wpStyles.btn} onPress={() => setShowWelcomePicks(false)} activeOpacity={0.85}>
-              <Text style={wpStyles.btnTxt}>¡A minar! ⛏</Text>
+            <TouchableOpacity
+              style={wpStyles.btn}
+              onPress={() => {
+                setShowWelcomePicks(false);
+                if (pendingServer) {
+                  setActiveServer(pendingServer);
+                  setPendingServer(null);
+                  navigation.navigate('GameDrawer');
+                }
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={wpStyles.btnTxt}>{t('serverList.welcomePicksOk')}</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
+
+      {AlertComponent}
 
     </View>
   );

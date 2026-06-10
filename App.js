@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StatusBar as RNStatusBar, Platform, Text, View, TouchableOpacity, Linking, AppState } from 'react-native';
 import MobileAds from 'react-native-google-mobile-ads';
 // LAZY LOAD: Don't import Notifications at module level - causes EventEmitter crash
@@ -7,11 +7,12 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'firebase/auth';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, ensureAnonLogin, db } from './src/firebase/client';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import UpdateModal from './src/components/UpdateModal';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.4';
 const TERMS_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/terms.html';
 
 function compareVersions(v1, v2) {
@@ -31,6 +32,7 @@ import Registration from './src/screens/Registration';
 import Login from './src/screens/Login';
 import { I18nProvider, useI18n } from './src/utils/i18n';
 import { ServerProvider } from './src/utils/serverContext';
+import { AuthProvider, useAuth } from './src/utils/authContext';
 import { OverlayModalsProvider, useOverlayModals } from './src/components/OverlayModalsProvider';
 import { navigationRef, navigate } from './src/utils/navigationRef';
 
@@ -41,8 +43,9 @@ function RootApp() {
   const [initializing, setInitializing] = useState(true);
   const [user, setUser] = useState(null);
   const { t } = useI18n();
+  const { isGuest, exitGuest } = useAuth();
+  const isFirstAuthCheck = useRef(true);
   const [updateInfo, setUpdateInfo] = useState(null); // { forceUpdate, latestVersion, downloadUrl, messageEn, messageEs }
-  const [updateDismissed, setUpdateDismissed] = useState(false);
 
   useEffect(() => {
     // LAZY LOAD: Load Notifications only when needed to avoid EventEmitter crash
@@ -56,6 +59,15 @@ function RootApp() {
             shouldSetBadge: false,
           }),
         });
+        // Ensure the default notification channel exists on Android
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('default', {
+            name: 'Default',
+            importance: Notifications.AndroidImportance.HIGH,
+            sound: 'default',
+            vibrationPattern: [0, 250, 250, 250],
+          });
+        }
       } catch (e) {
         console.warn('Notifications setup failed:', e.message);
       }
@@ -82,26 +94,22 @@ function RootApp() {
         console.warn('Version check failed:', e.message);
       }
     };
-    checkVersion();
+    ensureAnonLogin().then(checkVersion).catch(() => checkVersion());
 
     // Re-check when app comes back to foreground
     const appStateSub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') checkVersion();
     });
-    return () => appStateSub.remove();
 
     // CONFIGURAR PERSISTENCIA DE SESIÓN
     const setupAuth = async () => {
       try {
-        // Web: forzar persistencia local (mantiene sesión tras refresh)
         if (Platform.OS === 'web') {
           try {
             await setPersistence(auth, browserLocalPersistence);
           } catch (pe) {
             console.warn('Failed to set web persistence:', pe?.message || pe);
           }
-        } else {
-          // En React Native, Firebase usa AsyncStorage y persiste por defecto
         }
       } catch (e) {
         console.warn('Auth persistence setup failed:', e.message);
@@ -111,16 +119,35 @@ function RootApp() {
 
     const unsub = onAuthStateChanged(auth, async (u) => {
       try {
-        if (!u) {
-          setUser(null); // Mostrar pantalla de login
+        if (!u || u.isAnonymous) {
+          isFirstAuthCheck.current = false;
+          setUser(null);
+        } else if (isFirstAuthCheck.current) {
+          // Cold start: Firebase restored a session — honor the "keep signed in" preference
+          isFirstAuthCheck.current = false;
+          const keepVal = await AsyncStorage.getItem('@mtb_keep_signed_in');
+          if (keepVal === '0') {
+            await signOut(auth);
+            setUser(null);
+            return;
+          }
+          setUser(u);
         } else {
+          // Subsequent event (e.g. new account just created).
+          // Don't navigate unverified users to the game — leave Registration on screen
+          // so the verify-email modal can render. Verified users proceed normally.
+          if (!u.emailVerified) return;
           setUser(u);
         }
       } finally {
         setInitializing(false);
       }
     });
-    return () => unsub();
+
+    return () => {
+      appStateSub.remove();
+      unsub();
+    };
   }, []);
 
   // Registrar permisos y guardar push token - LAZY LOADED
@@ -143,18 +170,25 @@ function RootApp() {
         if (finalStatus !== 'granted') {
           return;
         }
-        // Obtener token Expo
-        const tokenData = await Notifications.getExpoPushTokenAsync();
+        // Usar token FCM nativo (funciona sin credenciales Expo)
+        let tokenData;
+        try {
+          tokenData = await Notifications.getDevicePushTokenAsync();
+        } catch (te) {
+          console.warn('getDevicePushTokenAsync failed:', String(te));
+          return;
+        }
         const token = tokenData?.data || null;
         if (!token) return;
         // Guardar en Firestore
         const ref = doc(db, 'users', user.uid);
         await setDoc(ref, {
           pushToken: token,
+          pushTokenType: 'fcm',
           pushNotifications: { enabled: true, platform: Platform.OS, updatedAt: Date.now() },
         }, { merge: true });
       } catch (e) {
-        console.warn('Push token setup failed:', e.message);
+        console.warn('Push token setup failed:', String(e));
       }
     };
     
@@ -168,24 +202,23 @@ function RootApp() {
 
   if (initializing) return null;
 
-  const showUpdate = !!updateInfo && (updateInfo.forceUpdate || !updateDismissed);
-
   return (
     <View style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: '#000' }}>
       <UpdateModal
-        visible={showUpdate}
-        forceUpdate={updateInfo?.forceUpdate}
+        visible={!!updateInfo}
+        forceUpdate={true}
         latestVersion={updateInfo?.latestVersion}
         downloadUrl={updateInfo?.downloadUrl}
         messageEn={updateInfo?.messageEn}
         messageEs={updateInfo?.messageEs}
-        onDismiss={() => setUpdateDismissed(true)}
+        onDismiss={() => {}}
       />
       <OverlayModalsProvider>
         <NavigationContainer ref={navigationRef}>
           <RNStatusBar translucent={true} backgroundColor="transparent" barStyle="light-content" />
-          {user ? (
+          {(user || isGuest) ? (
             <Stack.Navigator
+              key="game"
               screenOptions={{
                 headerShown: false,
                 statusBarTranslucent: true,
@@ -200,6 +233,7 @@ function RootApp() {
             </Stack.Navigator>
           ) : (
             <Stack.Navigator
+              key="auth"
               screenOptions={{
                 headerShown: false,
                 statusBarTranslucent: true,
@@ -220,7 +254,9 @@ export default function App() {
   return (
     <I18nProvider initialLanguage="en">
       <ServerProvider>
-        <RootApp />
+        <AuthProvider>
+          <RootApp />
+        </AuthProvider>
       </ServerProvider>
     </I18nProvider>
   );
@@ -255,10 +291,12 @@ function GameDrawer() {
 function CustomDrawerContent(props) {
   const { t } = useI18n();
   const { openModal } = useOverlayModals();
-  
+  const { exitGuest } = useAuth();
+
   const handleSignOut = async () => {
     try {
       props.navigation.closeDrawer();
+      exitGuest();
       await signOut(auth);
     } catch (e) {
       console.warn('Sign out error:', e);
@@ -283,6 +321,7 @@ function CustomDrawerContent(props) {
       {/* Separador */}
       <View style={{ height: 1, backgroundColor: '#333', marginVertical: 8, marginHorizontal: 16 }} />
 
+      <DrawerItem label={t('drawer.report')} onPress={() => { props.navigation.closeDrawer(); openModal('report'); }} />
       <DrawerItem label={t('drawer.terms')} onPress={() => { props.navigation.closeDrawer(); Linking.openURL(TERMS_URL).catch(() => {}); }} dim />
       <DrawerItem label={t('drawer.signOut')} onPress={handleSignOut} />
     </View>
