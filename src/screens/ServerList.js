@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { useAppAlert } from '../components/AppAlert';
 import { useNavigation } from '@react-navigation/native';
-import { collection, query, orderBy, limit, onSnapshot, doc } from 'firebase/firestore';
+import { collection, query, orderBy, limit, onSnapshot, doc, deleteDoc } from 'firebase/firestore';
 import { db, auth, ensureAnonLogin } from '../firebase/client';
 import { signOut, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { callCreateServer, callJoinServer, callCheckServerAccess } from '../firebase/functions';
@@ -44,6 +44,7 @@ export default function ServerList() {
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
   const [serverCredits, setServerCredits] = useState(null);
   const [joinedServerIds, setJoinedServerIds] = useState(new Set());
+  const [referralBonusNotif, setReferralBonusNotif] = useState(null); // { id } pending notification
   const [updateInfo, setUpdateInfo] = useState(null);
   const [showWelcomePicks, setShowWelcomePicks] = useState(false);
   const [pendingServer, setPendingServer] = useState(null); // server to navigate to after welcome modal
@@ -86,6 +87,19 @@ export default function ServerList() {
     const unsub = onSnapshot(
       collection(db, 'users', currentUid, 'serverAccess'),
       (snap) => setJoinedServerIds(new Set(snap.docs.map(d => d.id))),
+      () => {},
+    );
+    return () => unsub();
+  }, [currentUid]);
+
+  useEffect(() => {
+    if (!currentUid) return;
+    const unsub = onSnapshot(
+      collection(db, 'users', currentUid, 'notifications'),
+      (snap) => {
+        const notif = snap.docs.find(d => d.data().type === 'referral_bonus');
+        if (notif) setReferralBonusNotif({ id: notif.id });
+      },
       () => {},
     );
     return () => unsub();
@@ -264,10 +278,9 @@ export default function ServerList() {
         ) : null}
         {(() => {
           const hasAccess = joinedServerIds.has(item.id);
-          const needsUnlock = !hasAccess && serverCredits === 0;
-          const btnStyle = hasAccess ? styles.mineBtn : (needsUnlock ? styles.unlockBtn : styles.joinBtn);
-          const label = hasAccess ? t('serverList.mine') : (needsUnlock ? t('serverList.unlock') : t('serverList.join'));
-          const txtStyle = hasAccess ? styles.mineTxt : (needsUnlock ? styles.unlockTxt : styles.joinTxt);
+          const btnStyle = hasAccess ? styles.mineBtn : styles.unlockBtn;
+          const label = hasAccess ? t('serverList.mine') : t('serverList.unlock');
+          const txtStyle = hasAccess ? styles.mineTxt : styles.unlockTxt;
           return (
             <TouchableOpacity
               style={[btnStyle, joining === item.id && styles.joinBtnDisabled]}
@@ -503,6 +516,30 @@ export default function ServerList() {
               activeOpacity={0.85}
             >
               <Text style={wpStyles.btnTxt}>{t('serverList.welcomePicksOk')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Referral bonus notification modal (shown to referrer when their friend paid) */}
+      <Modal visible={!!referralBonusNotif} transparent animationType="fade" onRequestClose={() => {}}>
+        <View style={wpStyles.overlay}>
+          <View style={wpStyles.box}>
+            <Text style={wpStyles.icon}>🎉</Text>
+            <Text style={wpStyles.title}>{t('serverList.referralBonusTitle')}</Text>
+            <Text style={wpStyles.msg}>{t('serverList.referralBonusMsg')}</Text>
+            <TouchableOpacity
+              style={wpStyles.btn}
+              onPress={async () => {
+                const notifId = referralBonusNotif?.id;
+                setReferralBonusNotif(null);
+                if (notifId && currentUid) {
+                  try { await deleteDoc(doc(db, 'users', currentUid, 'notifications', notifId)); } catch {}
+                }
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={wpStyles.btnTxt}>{t('serverList.referralBonusOk')}</Text>
             </TouchableOpacity>
           </View>
         </View>

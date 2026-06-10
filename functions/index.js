@@ -1444,6 +1444,12 @@ async function runCryptoPaymentProcessing() {
           });
           if (bonusReferredBy) {
             await sendPushToUser(bonusReferredBy, "¡Tu referido compró un crédito! 🎉", "¡Ambos recibieron 5 picos! ¡Seguí invitando amigos!");
+            // In-app notification for the referrer (shown as modal in ServerList)
+            await db.collection("users").doc(bonusReferredBy).collection("notifications").add({
+              type: "referral_bonus",
+              picks: 5,
+              createdAt: Date.now(),
+            });
           }
         } catch (refErr) {
           console.warn("Referral bonus error:", refErr.message);

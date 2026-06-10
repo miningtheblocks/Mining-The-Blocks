@@ -4,7 +4,7 @@ import { useAppAlert } from '../components/AppAlert';
 
 const TERMS_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/terms.html';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase/client';
+import { db, auth } from '../firebase/client';
 import { callCreateCryptoPayment } from '../firebase/functions';
 import { useI18n } from '../utils/i18n';
 
@@ -25,8 +25,10 @@ export default function BuyCredits({ onClose }) {
   const [payment, setPayment] = useState(null); // { paymentId, amount, expiresAt }
   const [status, setStatus] = useState(null); // 'waiting' | 'completed' | 'expired'
   const [timeLeft, setTimeLeft] = useState(0);
+  const [userData, setUserData] = useState(null);
   const timerRef = useRef(null);
   const unsubRef = useRef(null);
+  const userUnsubRef = useRef(null);
 
   // Countdown timer
   useEffect(() => {
@@ -46,6 +48,16 @@ export default function BuyCredits({ onClose }) {
     });
     return () => unsubRef.current && unsubRef.current();
   }, [payment?.paymentId]);
+
+  // Escuchar doc del usuario para detectar bonus de referido
+  useEffect(() => {
+    const u = auth.currentUser;
+    if (!u) return;
+    userUnsubRef.current = onSnapshot(doc(db, 'users', u.uid), (snap) => {
+      setUserData(snap.exists() ? snap.data() : null);
+    }, () => {});
+    return () => userUnsubRef.current && userUnsubRef.current();
+  }, []);
 
   const generatePayment = async () => {
     setLoading(true);
@@ -67,12 +79,18 @@ export default function BuyCredits({ onClose }) {
   };
 
   if (status === 'completed') {
+    const gotReferralBonus = userData?.referralBonusPaid && userData?.referredBy;
     return (
       <View style={s.container}>
         <View style={s.successBox}>
           <Text style={s.successIcon}>✅</Text>
           <Text style={s.successTitle}>{t('buyCredits.successTitle')}</Text>
           <Text style={s.successMsg}>{t('buyCredits.successMsg')}</Text>
+          {gotReferralBonus ? (
+            <View style={s.bonusBox}>
+              <Text style={s.bonusTxt}>{t('buyCredits.successReferralBonus')}</Text>
+            </View>
+          ) : null}
           <TouchableOpacity style={s.btn} onPress={onClose} activeOpacity={0.85}>
             <Text style={s.btnTxt}>{t('buyCredits.close')}</Text>
           </TouchableOpacity>
@@ -193,4 +211,6 @@ const s = StyleSheet.create({
   successIcon:  { fontSize: 64 },
   successTitle: { color: '#5cb85c', fontSize: 22, fontWeight: '900' },
   successMsg:   { color: '#aaa', fontSize: 15, textAlign: 'center' },
+  bonusBox:     { backgroundColor: '#1a1400', borderWidth: 1, borderColor: '#ffd700', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, width: '100%' },
+  bonusTxt:     { color: '#ffd700', fontSize: 14, fontWeight: '800', textAlign: 'center' },
 });
