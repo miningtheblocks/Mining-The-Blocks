@@ -115,32 +115,40 @@
 <main>
 
   <!-- Aviso anti-confusión -->
-  <div style="width:100%;max-width:480px;background:#1a0a00;border:2px solid #cc4400;border-radius:12px;padding:14px 16px;text-align:left;">
-    <div style="font-size:15px;font-weight:900;color:#ff6600;margin-bottom:10px;text-align:center;">
-      <span data-lang="es">⚠️ LEÉ ESTO ANTES DE CONTINUAR</span>
-      <span data-lang="en visible">⚠️ READ THIS BEFORE CONTINUING</span>
-    </div>
-    <div style="font-size:13px;color:#ffaa44;line-height:1.7;font-weight:700;">
-      <span data-lang="es">
-        Esta página muestra <strong style="color:#ff6600;">anuncios externos</strong> que <strong style="color:#ff4444;">NO son del juego</strong>.<br>
-        Los anuncios pueden mostrar:<br>
-        &nbsp;• <strong>"¡Ganaste un iPhone!"</strong> → FALSO<br>
-        &nbsp;• <strong>"Sos el visitante N° 1.000.000"</strong> → FALSO<br>
-        &nbsp;• <strong>"Completá una encuesta para reclamar tu premio"</strong> → FALSO<br>
-        &nbsp;• <strong>Popups con botones de descarga</strong> → NO toques<br><br>
-        <strong style="color:#ffffff;">El único premio real es el pico ⛏ que se acredita solo al terminar el temporizador.</strong><br>
-        Si aparece algo, cerralo y volvé acá.
-      </span>
-      <span data-lang="en visible">
-        This page shows <strong style="color:#ff6600;">external ads</strong> that are <strong style="color:#ff4444;">NOT from the game</strong>.<br>
-        Ads may show:<br>
-        &nbsp;• <strong>"You won an iPhone!"</strong> → FAKE<br>
-        &nbsp;• <strong>"You are visitor #1,000,000"</strong> → FAKE<br>
-        &nbsp;• <strong>"Complete a survey to claim your prize"</strong> → FAKE<br>
-        &nbsp;• <strong>Popups with download buttons</strong> → DO NOT tap<br><br>
-        <strong style="color:#ffffff;">The only real reward is the pick ⛏ credited automatically when the timer ends.</strong><br>
-        If anything pops up, close it and come back here.
-      </span>
+  <div style="width:100%;max-width:480px;background:#1a1000;border:1px solid #4a3000;border-radius:10px;padding:10px 14px;font-size:13px;color:#aa8800;line-height:1.6;text-align:center;font-weight:700;">
+    <span data-lang="es">⚠️ Esta página muestra anuncios externos. <strong>Cualquier premio que aparezca no es real, es la publicidad.</strong> Cerrá los popups y volvé acá. Al terminar el tiempo tu pico se acredita solo. <a href="#" onclick="openExamplesModal(event)" style="color:#4a9eff;font-weight:700;">Ver ejemplos</a></span>
+    <span data-lang="en visible">⚠️ This page shows external ads. <strong>Any prize that appears is not real, it's advertising.</strong> Close popups and come back here. When the timer ends your pick is credited automatically. <a href="#" onclick="openExamplesModal(event)" style="color:#4a9eff;font-weight:700;">See examples</a></span>
+  </div>
+
+  <!-- Modal ejemplos de publicidad engañosa -->
+  <div id="examplesModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.88);z-index:999;align-items:center;justify-content:center;padding:24px;">
+    <div style="background:#111;border:1px solid #333;border-radius:14px;padding:22px 20px;max-width:380px;width:100%;">
+      <div style="font-size:14px;font-weight:900;color:#ff6600;margin-bottom:14px;text-align:center;">
+        <span data-lang="es">Ejemplos de publicidad engañosa</span>
+        <span data-lang="en visible">Examples of deceptive ads</span>
+      </div>
+      <div style="font-size:13px;color:#ccc;line-height:1.9;">
+        <span data-lang="es">
+          • "¡Ganaste un iPhone 15!" → <strong style="color:#ff4444;">FALSO</strong><br>
+          • "Sos el visitante Nº 1.000.000" → <strong style="color:#ff4444;">FALSO</strong><br>
+          • "Completá una encuesta y ganá $500" → <strong style="color:#ff4444;">FALSO</strong><br>
+          • "Tu teléfono tiene un virus, descargá esto" → <strong style="color:#ff4444;">FALSO</strong><br>
+          • Botones de "Descargar" o "Instalar" → <strong style="color:#ff4444;">NO toques</strong>
+        </span>
+        <span data-lang="en visible">
+          • "You won an iPhone 15!" → <strong style="color:#ff4444;">FAKE</strong><br>
+          • "You are visitor #1,000,000" → <strong style="color:#ff4444;">FAKE</strong><br>
+          • "Complete a survey and win $500" → <strong style="color:#ff4444;">FAKE</strong><br>
+          • "Your phone has a virus, download this" → <strong style="color:#ff4444;">FAKE</strong><br>
+          • "Download" or "Install" buttons → <strong style="color:#ff4444;">DO NOT tap</strong>
+        </span>
+      </div>
+      <div style="margin-top:18px;text-align:center;">
+        <button onclick="closeExamplesModal()" style="background:#1a3a1a;border:1px solid #2e7d32;color:#5cb85c;font-size:14px;font-weight:800;padding:11px 32px;border-radius:10px;cursor:pointer;width:100%;">
+          <span data-lang="es">Entendido ✓</span>
+          <span data-lang="en visible">Got it ✓</span>
+        </button>
+      </div>
     </div>
   </div>
 
@@ -351,6 +359,17 @@
       showError(currentLang === 'es' ? 'Sin conexión. Revisá tu internet e intentá de nuevo.' : 'No connection. Check your internet and try again.');
       setLang(currentLang);
     }
+  }
+
+  function openExamplesModal(e) {
+    if (e) e.preventDefault();
+    var modal = document.getElementById('examplesModal');
+    modal.style.display = 'flex';
+    setLang(currentLang);
+  }
+
+  function closeExamplesModal() {
+    document.getElementById('examplesModal').style.display = 'none';
   }
 
   document.addEventListener('DOMContentLoaded', function() {
