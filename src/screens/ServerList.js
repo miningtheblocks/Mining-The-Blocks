@@ -43,6 +43,7 @@ export default function ServerList() {
   const [joining, setJoining] = useState(null); // serverId que está procesando
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
   const [serverCredits, setServerCredits] = useState(null);
+  const [joinedServerIds, setJoinedServerIds] = useState(new Set());
   const [updateInfo, setUpdateInfo] = useState(null);
   const [showWelcomePicks, setShowWelcomePicks] = useState(false);
   const [pendingServer, setPendingServer] = useState(null); // server to navigate to after welcome modal
@@ -77,6 +78,16 @@ export default function ServerList() {
     const unsub = onSnapshot(doc(db, 'users', currentUid), (snap) => {
       setServerCredits(snap.exists() ? (snap.data()?.serverCredits ?? 0) : 0);
     });
+    return () => unsub();
+  }, [currentUid]);
+
+  useEffect(() => {
+    if (!currentUid) { setJoinedServerIds(new Set()); return; }
+    const unsub = onSnapshot(
+      collection(db, 'users', currentUid, 'serverAccess'),
+      (snap) => setJoinedServerIds(new Set(snap.docs.map(d => d.id))),
+      () => {},
+    );
     return () => unsub();
   }, [currentUid]);
 
@@ -252,19 +263,21 @@ export default function ServerList() {
           </TouchableOpacity>
         ) : null}
         {(() => {
-          const needsUnlock = serverCredits === 0;
+          const hasAccess = joinedServerIds.has(item.id);
+          const needsUnlock = !hasAccess && serverCredits === 0;
+          const btnStyle = hasAccess ? styles.mineBtn : (needsUnlock ? styles.unlockBtn : styles.joinBtn);
+          const label = hasAccess ? t('serverList.mine') : (needsUnlock ? t('serverList.unlock') : t('serverList.join'));
+          const txtStyle = hasAccess ? styles.mineTxt : (needsUnlock ? styles.unlockTxt : styles.joinTxt);
           return (
             <TouchableOpacity
-              style={[needsUnlock ? styles.unlockBtn : styles.joinBtn, joining === item.id && styles.joinBtnDisabled]}
+              style={[btnStyle, joining === item.id && styles.joinBtnDisabled]}
               onPress={() => joinServer(item)}
               activeOpacity={0.8}
               disabled={joining === item.id}
             >
               {joining === item.id
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={needsUnlock ? styles.unlockTxt : styles.joinTxt}>
-                    {needsUnlock ? t('serverList.unlock') : t('serverList.join')}
-                  </Text>
+                : <Text style={txtStyle}>{label}</Text>
               }
             </TouchableOpacity>
           );
@@ -633,6 +646,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   historyTxt: { fontSize: 16 },
+  mineBtn: {
+    backgroundColor: '#1a3a1a',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    minWidth: 70,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#2e7d32',
+  },
+  mineTxt: { color: '#5cb85c', fontWeight: '700' },
   joinBtn: {
     backgroundColor: '#1565c0',
     borderRadius: 8,

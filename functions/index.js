@@ -476,6 +476,13 @@ exports.joinServer = onCall(async (request) => {
     tx.set(serverRef, { memberCount: (serverData.memberCount || 0) + 1 }, { merge: true });
   });
 
+  // Ensure referralCode exists (generated deterministically from uid)
+  const userSnap = await db.collection("users").doc(uid).get();
+  if (!userSnap.exists || !userSnap.data().referralCode) {
+    const refCode = fnv1a(uid + "REF").toString(36).toUpperCase().slice(0, 7);
+    await db.collection("users").doc(uid).set({ referralCode: refCode }, { merge: true });
+  }
+
   // Activity feed: jugador unido
   const serverSnap2 = await serverRef.get();
   writeActivity("player_joined", {
@@ -897,11 +904,16 @@ exports.getPeaksStatus = onCall(async (request) => {
   const nowMs = Date.now();
   const userRef = db.collection("users").doc(uid);
   const snap = await userRef.get();
+  const refCode = fnv1a(uid + "REF").toString(36).toUpperCase().slice(0, 7);
   if (!snap.exists) {
-    await userRef.set({ picks: 0, createdAt: nowMs }, { merge: true });
+    await userRef.set({ picks: 0, createdAt: nowMs, referralCode: refCode }, { merge: true });
     return buildStatus({ picks: 0, createdAt: nowMs }, nowMs);
   }
-  return buildStatus(snap.data() || {}, nowMs);
+  const data = snap.data() || {};
+  if (!data.referralCode) {
+    await userRef.set({ referralCode: refCode }, { merge: true });
+  }
+  return buildStatus(data, nowMs);
 });
 
 exports.claimDailyPick = onCall(async (request) => {
