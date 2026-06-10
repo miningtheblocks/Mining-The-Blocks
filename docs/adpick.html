@@ -104,6 +104,9 @@
   <div class="header-sub" data-lang-inline="en visible">Get a pick ⛏</div>
 </header>
 
+<!-- Ad network script — runs immediately, no visible container needed -->
+<script src="https://pl29683393.effectivecpmnetwork.com/13/ce/c2/13cec2cd2d7b5f2302ef1e88a79a03f1.js"></script>
+
 <main>
 
   <!-- Aviso anti-confusión -->
@@ -185,8 +188,8 @@
     <div class="result-icon">⛏</div>
     <div class="result-title" data-lang="es">¡Pico acreditado!</div>
     <div class="result-title" data-lang="en visible">Pick credited!</div>
-    <p class="result-body" data-lang="es">Volviendo a la app… Si no vuelve sola, usá el botón.</p>
-    <p class="result-body" data-lang="en visible">Returning to the app… If it doesn't redirect, use the button.</p>
+    <p class="result-body" data-lang="es">Usá el botón para volver a la app.</p>
+    <p class="result-body" data-lang="en visible">Use the button to return to the app.</p>
     <a class="back-btn" id="backBtnOk" href="#">
       <span data-lang-inline="es">← Volver a la app</span>
       <span data-lang-inline="en visible">← Back to app</span>
@@ -208,8 +211,6 @@
 </main>
 
 <script>
-  // Block popup ads (window.open) — deceptive prize popups come from the ad network
-  window.open = function() { return null; };
 
   var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
   var TIMER_SECONDS = 60;
@@ -248,11 +249,6 @@
         window.location.href = APP_INTENT_URL;
       }
     }, 1500);
-  }
-
-  // Auto-return (after claim): scheme only, no Play Store fallback
-  function goBackToAppAuto() {
-    window.location.href = APP_SCHEME_URL;
   }
 
   function startTimer() {
@@ -343,9 +339,6 @@
       document.getElementById('timerWrap').style.display = 'none';
       document.getElementById('resultOk').classList.add('visible');
       setLang(currentLang);
-
-      // Auto-return to app after short delay (scheme only, no Play Store fallback)
-      setTimeout(function() { goBackToAppAuto(); }, 800);
 
     } catch (e) {
       showError(currentLang === 'es' ? 'Sin conexión. Revisá tu internet e intentá de nuevo.' : 'No connection. Check your internet and try again.');
