@@ -549,46 +549,8 @@ exports.getUserGems = onCall(async (request) => {
   return { gems };
 });
 
-// Canjear código de gema por dinero (marca la gema como canjeada)
-exports.redeemGem = onCall(async (request) => {
-  requireRegistered(request);
-  const uid = request.auth.uid;
-
-  const gemId = String((request.data && request.data.gemId) || '');
-  if (!gemId) throw new HttpsError("invalid-argument", "gemId required");
-
-  const gemRef = db.collection("users").doc(uid).collection("gems").doc(gemId);
-
-  let price;
-  let gemTier;
-  let gemCode;
-  await db.runTransaction(async (tx) => {
-    const gemSnap = await tx.get(gemRef);
-    if (!gemSnap.exists) throw new HttpsError("not-found", "Gem not found");
-    const gem = gemSnap.data();
-    if (gem.status !== "unclaimed") {
-      throw new HttpsError("failed-precondition",
-        gem.status === "redeemed" ? "Gem already redeemed" : "Gem already minted as NFT");
-    }
-    price = GEM_PRICES[gem.gemTier - 1] || 0;
-    gemTier = gem.gemTier;
-    gemCode = gem.code;
-    tx.set(gemRef, { status: "redeemed", redeemedAt: Date.now(), redeemedValue: price }, { merge: true });
-  });
-
-  // Registrar en cola de pagos para procesamiento manual/automático
-  await db.collection("pendingPayments").add({
-    uid,
-    gemId,
-    gemTier,
-    gemCode,
-    amountUSD: price,
-    createdAt: Date.now(),
-    status: "pending",
-  });
-
-  return { ok: true, amountUSD: price };
-});
+// redeemGem eliminado: cash redemption ahora va por submitGemClaim (web).
+// La función estaba orphan (sin caller en el cliente) y representaba superficie de ataque extra.
 
 // Vincular wallet para recibir el NFT (marca la gema como "minting")
 exports.claimGemNFT = onCall(async (request) => {
@@ -664,6 +626,10 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     if (serverData.status && serverData.status !== 'active') throw new HttpsError("failed-precondition", "Server not active");
 
     const K = serverData.currentLayer;
+    // FIX-FINAL-4: validar K range para evitar NaN propagation y data corruption
+    if (!Number.isInteger(K) || K < 0 || K > 100) {
+      throw new HttpsError("failed-precondition", "Invalid layer state");
+    }
     const TOTAL_CUBES_K = shellTotalCubes(K);
     if (n > TOTAL_CUBES_K) throw new HttpsError("invalid-argument", "Cube out of range for current layer");
 
@@ -1212,8 +1178,8 @@ exports.checkReferralCode = onCall(async (request) => {
 // SEC-N-005: setear walletAddress del usuario via Cloud Function (las rules
 // bloquean escritura directa). Valida formato y limpia el field si se pasa null.
 exports.setUserWallet = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  requireRegistered(request);
+  const uid = request.auth.uid;
   const okRate = await _rateLimitFirestore(`suw_${uid}`, 5, 60 * 1000);
   if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
 
@@ -1266,8 +1232,11 @@ exports.applyReferral = onCall(async (request) => {
 // para evitar race condition donde dos uids reclaman el mismo amount y luego
 // `pendingByAmount.set` sobreescribe → robo de crédito por colisión.
 exports.createCryptoPayment = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  requireRegistered(request);
+  const uid = request.auth.uid;
+  // FIX-FINAL-5: rate-limit para evitar agotar las 99 slots de amount unique
+  const okRate = await _rateLimitFirestore(`ccp_${uid}`, 3, 60 * 60 * 1000);
+  if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
 
   const nowMs = Date.now();
 

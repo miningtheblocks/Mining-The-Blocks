@@ -1919,6 +1919,7 @@ const handleZoomButton = useCallback((direction) => {
     let phaseStart = Date.now();
 
     const step = () => {
+      markActive(); // FIX-P1: mantener FPS alto durante animación de cámara multi-fase
       const now = Date.now();
       const dur = phase === 1 ? DUR_1 : phase === 2 ? DUR_2 : DUR_3;
       const t = dur > 0 ? Math.min(1, (now - phaseStart) / dur) : 1;
@@ -2162,9 +2163,8 @@ const handleZoomButton = useCallback((direction) => {
           const data = snap.exists() ? snap.data() : {};
           setPicks(data?.picks ?? 0);
           const walletData = data && data.wallet;
-          if (snap.exists() && (!walletData || walletData.balance === undefined)) {
-            setDoc(ref, { wallet: { balance: 0 } }, { merge: true }).catch(() => {});
-          }
+          // Firestore rules deniegan write de 'wallet' desde cliente.
+          // Si el campo no existe aún (user nuevo), mostramos 0.
           setCash(Number((walletData && walletData.balance) || 0));
           const settings = data?.settings || {};
           const music = settings.musicEnabled ?? true;

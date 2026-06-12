@@ -41,9 +41,11 @@ android/app/build/outputs/mapping/
 # EAS
 .eas.json
 
-# IDE
+# IDE / tooling
 .idea/
 .vscode/
+.claude/
+.gstack/
 
 # Logs
 *.log

@@ -134,9 +134,10 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // App config: authenticated users can read (needed for version check)
+    // App config: lectura pública para que el force-update modal aparezca
+    // también en usuarios logged-out (Login screen).
     match /config/{doc} {
-      allow read: if request.auth != null;
+      allow read: if true;
       allow write: if false;
     }
 

@@ -48,16 +48,10 @@ export async function ensureUser() {
     const userRef = doc(db, 'users', auth.currentUser.uid);
     const snap = await getDoc(userRef);
     if (!snap.exists()) {
+      // Firestore rules whitelist: solo picks=0 + createdAt + updatedAt en create.
+      // wallet/stats se setean server-side (Admin SDK) cuando hace falta.
       await setDoc(userRef, {
         picks: 0,
-        wallet: { balance: 0 },
-        stats: {
-          totalMined: 0,
-          totalRewardPicks: 0,
-          totalRewards: 0,
-          lastMine: null,
-          lastReward: null,
-        },
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       }, { merge: true });

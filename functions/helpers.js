@@ -135,14 +135,13 @@ function generateReferralCode() {
 }
 
 function generateGemCode(serverId, K, cubeNumber, gemTier, uid) {
-  const hashHex = fnv1a(`CODE|${serverId}|${K}|${cubeNumber}|${gemTier}|${uid}`)
-      .toString(16).padStart(8, '0').toUpperCase();
+  // FIX-P1: randomBytes en lugar de fnv1a(uid-derived).
+  // El código no debería ser predecible aun conociendo todos los inputs.
+  const hashHex = crypto.randomBytes(4).toString('hex').toUpperCase();
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const saltBytes = crypto.randomBytes(6);
   let salt = '';
-  const h2 = fnv1a(`SALT|${serverId}|${cubeNumber}|${uid}|${Date.now()}`);
-  for (let i = 0; i < 6; i++) {
-    salt += chars[(h2 >> (i * 5)) & 31];
-  }
+  for (let i = 0; i < 6; i++) salt += chars[saltBytes[i] % chars.length];
   return `MTB${gemTier}-${hashHex}-${salt}`;
 }
 

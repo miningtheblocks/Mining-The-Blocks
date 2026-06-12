@@ -406,7 +406,7 @@ export default function ServerList() {
         downloadUrl={updateInfo?.downloadUrl}
         messageEn={updateInfo?.messageEn}
         messageEs={updateInfo?.messageEs}
-        onDismiss={() => {}}
+        onDismiss={() => setUpdateInfo(null)}
       />
 
       {/* Header */}
@@ -549,7 +549,7 @@ export default function ServerList() {
       )}
 
       {/* Welcome picks modal */}
-      <Modal visible={showWelcomePicks} transparent animationType="fade" onRequestClose={() => {}}>
+      <Modal visible={showWelcomePicks} transparent animationType="fade" onRequestClose={() => setShowWelcomePicks(false)}>
         <View style={wpStyles.overlay}>
           <View style={wpStyles.box}>
             <Text style={wpStyles.icon}>⛏️</Text>
@@ -574,7 +574,7 @@ export default function ServerList() {
       </Modal>
 
       {/* Referral bonus notification modal (shown to referrer when their friend paid) */}
-      <Modal visible={!!referralBonusNotif} transparent animationType="fade" onRequestClose={() => {}}>
+      <Modal visible={!!referralBonusNotif} transparent animationType="fade" onRequestClose={() => setReferralBonusNotif(null)}>
         <View style={wpStyles.overlay}>
           <View style={wpStyles.box}>
             <Text style={wpStyles.icon}>🎉</Text>
@@ -598,7 +598,7 @@ export default function ServerList() {
       </Modal>
 
       {/* Referral bonus self — shown to the buyer who used a referral code */}
-      <Modal visible={!!referralBonusSelfNotif} transparent animationType="fade" onRequestClose={() => {}}>
+      <Modal visible={!!referralBonusSelfNotif} transparent animationType="fade" onRequestClose={() => setReferralBonusSelfNotif(null)}>
         <View style={wpStyles.overlay}>
           <View style={wpStyles.box}>
             <Text style={wpStyles.icon}>🎁</Text>

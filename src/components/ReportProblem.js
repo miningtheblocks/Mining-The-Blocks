@@ -28,7 +28,7 @@ export default function ReportProblem({ onClose }) {
     setSending(true);
     try {
       await callReportProblem({
-        userType: 'registered',
+        userType: auth.currentUser ? 'registered' : 'unregistered',
         reportType,
         description: description.trim(),
         email: email.trim() || null,
