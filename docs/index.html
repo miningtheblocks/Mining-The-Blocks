@@ -332,6 +332,36 @@
       <p class="msg-error" id="codeError"></p>
     </div>
 
+    <div class="card" id="cardLogin">
+      <p class="card-title">
+        <span data-lang-inline="es">🔐 Iniciá sesión para canjear</span>
+        <span data-lang-inline="en visible">🔐 Sign in to redeem</span>
+      </p>
+      <p class="card-sub" style="font-size:13px;color:#666;margin:8px 0 14px">
+        <span data-lang-inline="es">Usá el email y contraseña de tu cuenta de la app (la cuenta que generó la gema).</span>
+        <span data-lang-inline="en visible">Use the email and password of your app account (the account that generated the gem).</span>
+      </p>
+      <div class="claim-grid">
+        <div>
+          <p class="claim-label">Email</p>
+          <input type="email" id="loginEmail" placeholder="email@ejemplo.com" autocomplete="email">
+        </div>
+        <div>
+          <p class="claim-label"><span data-lang-inline="es">Contraseña</span><span data-lang-inline="en visible">Password</span></p>
+          <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
+        </div>
+      </div>
+      <button class="btn" onclick="doLogin()" id="btnLogin" style="width:100%;margin-top:8px">
+        <span data-lang-inline="es">Iniciar sesión</span>
+        <span data-lang-inline="en visible">Sign in</span>
+      </button>
+      <p class="msg-error" id="loginError"></p>
+      <p style="font-size:12px;color:#888;margin-top:10px;text-align:center">
+        <span data-lang-inline="es">¿No tenés cuenta? Registrate primero desde la app de Mining The Blocks.</span>
+        <span data-lang-inline="en visible">No account? Register first from the Mining The Blocks app.</span>
+      </p>
+    </div>
+
     <div class="card" id="cardEmail">
       <span class="gem-badge" id="gemBadge"></span>
       <p class="card-title">
@@ -601,7 +631,18 @@
 </div>
 
 
+<!-- Firebase SDK (compat para que el código funcione sin bundler) -->
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
 <script>
+  // Firebase Web API key — pública por diseño. Restringida por HTTP referrer +
+  // API allowlist en GCP Console (Identity Toolkit, Firestore, FCM).
+  firebase.initializeApp({
+    apiKey: 'AIzaSyDRCpXkNWupz2PmoOG6XcuFENYaU5xIUps',
+    authDomain: 'miningtheblocks-669f6.firebaseapp.com',
+    projectId: 'miningtheblocks-669f6',
+  });
+
   var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
   var currentLang = 'en';
 
@@ -622,7 +663,18 @@
       already_minted:  'Este código ya fue reclamado como NFT.',
       server_error:    'Error del servidor. Intentá de nuevo en unos minutos.',
       invalid_email:   'El email ingresado no es válido.',
+      invalid_wallet:  'La dirección de billetera no es válida.',
       missing_fields:  'Completá todos los campos.',
+      unauthenticated: 'Debés iniciar sesión para canjear.',
+      invalid_token:   'Sesión inválida o expirada. Iniciá sesión de nuevo.',
+      not_owner:       'Este código no pertenece a tu cuenta. Iniciá sesión con la cuenta que generó la gema.',
+      rate_limited:    'Demasiados intentos. Esperá un minuto y reintentá.',
+      'auth/wrong-password':   'Contraseña incorrecta.',
+      'auth/user-not-found':   'No existe cuenta con ese email. Registrate primero desde la app.',
+      'auth/invalid-email':    'Email mal escrito.',
+      'auth/too-many-requests':'Demasiados intentos fallidos. Esperá unos minutos.',
+      'auth/network-request-failed':'Sin conexión. Revisá tu internet.',
+      'auth/invalid-credential':'Email o contraseña incorrectos.',
     },
     en: {
       not_found:       'Code not found. Check that it\'s written correctly.',
@@ -630,7 +682,18 @@
       already_minted:  'This code has already been claimed as an NFT.',
       server_error:    'Server error. Please try again in a few minutes.',
       invalid_email:   'The email address is not valid.',
+      invalid_wallet:  'The wallet address is not valid.',
       missing_fields:  'Please fill in all fields.',
+      unauthenticated: 'You must sign in to redeem.',
+      invalid_token:   'Invalid or expired session. Sign in again.',
+      not_owner:       'This code does not belong to your account. Sign in with the account that generated the gem.',
+      rate_limited:    'Too many attempts. Wait a minute and try again.',
+      'auth/wrong-password':   'Wrong password.',
+      'auth/user-not-found':   'No account found for that email. Register in the app first.',
+      'auth/invalid-email':    'Email is malformed.',
+      'auth/too-many-requests':'Too many failed attempts. Wait a few minutes.',
+      'auth/network-request-failed':'No connection. Check your internet.',
+      'auth/invalid-credential':'Email or password incorrect.',
     }
   };
 
@@ -695,6 +758,7 @@
   async function verifyCode() {
     var code = document.getElementById('codeInput').value.trim().toUpperCase();
     showError('codeError', '');
+    document.getElementById('cardLogin').classList.remove('visible');
     document.getElementById('cardEmail').classList.remove('visible');
     document.getElementById('cardDone').classList.remove('visible');
     if (!code) { showError('codeError', currentLang === 'es' ? 'Ingresá tu código.' : 'Enter your code.'); return; }
@@ -707,16 +771,47 @@
         return;
       }
       verifiedCode = code;
-      var name = GEM_NAMES[currentLang][data.tier] || ('Tier ' + data.tier);
-      var prize = GEM_PRIZES[data.tier] || '';
-      document.getElementById('gemBadge').textContent = name + (prize ? ' · ' + prize : '');
-      document.getElementById('cardEmail').classList.add('visible');
-      document.getElementById('emailInput').focus();
+      // El backend ya no devuelve `tier` por seguridad. Mostramos genérico.
+      document.getElementById('gemBadge').textContent = currentLang === 'es' ? '✓ Código válido' : '✓ Valid code';
+      // Si el user ya está logueado, saltamos directo al form de datos. Sino, pedimos login.
+      if (firebase.auth().currentUser) {
+        document.getElementById('cardEmail').classList.add('visible');
+        document.getElementById('nameInput').focus();
+      } else {
+        document.getElementById('cardLogin').classList.add('visible');
+        document.getElementById('loginEmail').focus();
+      }
     } catch (e) {
       showError('codeError', currentLang === 'es' ? 'Sin conexión. Verificá tu internet.' : 'No connection. Check your internet.');
     } finally {
       setLoading('btnVerify', false);
       setLang(currentLang); // restaurar textos del botón
+    }
+  }
+
+  async function doLogin() {
+    var email = document.getElementById('loginEmail').value.trim();
+    var password = document.getElementById('loginPassword').value;
+    showError('loginError', '');
+    if (!email || !password) {
+      showError('loginError', currentLang === 'es' ? 'Completá email y contraseña.' : 'Fill in email and password.');
+      return;
+    }
+    setLoading('btnLogin', true);
+    try {
+      await firebase.auth().signInWithEmailAndPassword(email, password);
+      // Pre-llenar el email del form de canje (suele ser el mismo)
+      var emailInput = document.getElementById('emailInput');
+      if (emailInput && !emailInput.value) emailInput.value = email;
+      document.getElementById('cardLogin').classList.remove('visible');
+      document.getElementById('cardEmail').classList.add('visible');
+      document.getElementById('nameInput').focus();
+    } catch (e) {
+      var key = e && e.code ? e.code : '';
+      showError('loginError', (ERRORS[currentLang][key]) || (currentLang === 'es' ? 'Error al iniciar sesión.' : 'Sign in error.'));
+    } finally {
+      setLoading('btnLogin', false);
+      setLang(currentLang);
     }
   }
 
@@ -731,11 +826,26 @@
     if (!email)  { showError('emailError', err ? 'Ingresá tu email.' : 'Enter your email.'); return; }
     if (!phone)  { showError('emailError', err ? 'Ingresá tu teléfono.' : 'Enter your phone number.'); return; }
     if (!wallet || !wallet.startsWith('0x') || wallet.length < 40) { showError('emailError', err ? 'Ingresá una dirección de billetera válida (empieza con 0x).' : 'Enter a valid wallet address (starts with 0x).'); return; }
+
+    // OPS-9: requerir Firebase ID token. Si la sesión expiró entre verifyCode
+    // y submitClaim, volver a la pantalla de login.
+    var user = firebase.auth().currentUser;
+    if (!user) {
+      document.getElementById('cardEmail').classList.remove('visible');
+      document.getElementById('cardLogin').classList.add('visible');
+      showError('loginError', err ? 'Tu sesión expiró. Iniciá sesión de nuevo.' : 'Your session expired. Sign in again.');
+      return;
+    }
+
     setLoading('btnClaim', true);
     try {
+      var idToken = await user.getIdToken();
       var res = await fetch(FUNCTIONS_BASE + '/submitGemClaim', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + idToken,
+        },
         body: JSON.stringify({ code: verifiedCode, name: name, email: email, phone: phone, wallet: wallet }),
       });
       var data = await res.json();
