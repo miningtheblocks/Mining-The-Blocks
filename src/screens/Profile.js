@@ -6,7 +6,8 @@ import { navigate } from '../utils/navigationRef';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { useI18n } from '../utils/i18n';
 import { useOverlayModals } from '../components/OverlayModalsProvider';
-import { callApplyReferral } from '../firebase/functions';
+import { callApplyReferral, callSetUserWallet } from '../firebase/functions';
+import { logError } from '../utils/logError';
 
 const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
@@ -72,10 +73,12 @@ export default function Profile({ asModal = false, onClose }) {
     }
     setSavingWallet(true);
     try {
-      const u = auth.currentUser;
-      await setDoc(doc(db, 'users', u.uid), { walletAddress: addr || null }, { merge: true });
+      // SEC-N-005: las Firestore rules bloquean escritura directa de walletAddress.
+      // Cloud Function valida formato y la setea con Admin SDK.
+      await callSetUserWallet(addr || null);
       showAlert('', addr ? t('profile.walletSaved') : t('profile.walletRemoved'));
     } catch (e) {
+      logError('Profile.saveWallet', e);
       showAlert('Error', e?.message);
     } finally {
       setSavingWallet(false);

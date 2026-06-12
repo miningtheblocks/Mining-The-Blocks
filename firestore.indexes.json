@@ -34,6 +34,14 @@
         { "fieldPath": "faceIndex", "order": "ASCENDING" },
         { "fieldPath": "gridIdx",   "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "mined",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "K",        "order": "ASCENDING" },
+        { "fieldPath": "minedAt",  "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

@@ -1,0 +1,6 @@
+{
+  "exclude": [
+    "react-native-reanimated",
+    "react-native-gesture-handler"
+  ]
+}

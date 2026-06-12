@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SEC-A4: bloquear backups y device-transfer.
+
+  Sin esto, `adb backup com.bissi.miningtheblocks` puede extraer todo el
+  AsyncStorage (token Firebase, datos de wallet) sin root en muchos OEMs.
+-->
+<data-extraction-rules>
+  <cloud-backup>
+    <exclude domain="root"/>
+    <exclude domain="database"/>
+    <exclude domain="sharedpref"/>
+    <exclude domain="external"/>
+    <exclude domain="file"/>
+  </cloud-backup>
+  <device-transfer>
+    <exclude domain="root"/>
+    <exclude domain="database"/>
+    <exclude domain="sharedpref"/>
+    <exclude domain="external"/>
+    <exclude domain="file"/>
+  </device-transfer>
+</data-extraction-rules>

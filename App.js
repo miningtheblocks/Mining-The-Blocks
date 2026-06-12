@@ -8,22 +8,12 @@ import { createDrawerNavigator } from '@react-navigation/drawer';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { auth, ensureAnonLogin, db } from './src/firebase/client';
+import { auth, ensureUser, db } from './src/firebase/client';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import UpdateModal from './src/components/UpdateModal';
+import ErrorBoundary from './src/components/ErrorBoundary';
 
-const APP_VERSION = '1.0.4';
-const TERMS_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/terms.html';
-
-function compareVersions(v1, v2) {
-  const a = (v1 || '0').split('.').map(Number);
-  const b = (v2 || '0').split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((a[i] || 0) < (b[i] || 0)) return -1;
-    if ((a[i] || 0) > (b[i] || 0)) return 1;
-  }
-  return 0;
-}
+import { APP_VERSION, TERMS_URL, compareVersions, StorageKeys } from './src/constants';
 import Home from './src/screens/Home';
 import ServerList from './src/screens/ServerList';
 import ChainHistoryScreen from './src/screens/ChainHistoryScreen';
@@ -32,7 +22,6 @@ import Registration from './src/screens/Registration';
 import Login from './src/screens/Login';
 import { I18nProvider, useI18n } from './src/utils/i18n';
 import { ServerProvider } from './src/utils/serverContext';
-import { AuthProvider, useAuth } from './src/utils/authContext';
 import { OverlayModalsProvider, useOverlayModals } from './src/components/OverlayModalsProvider';
 import { navigationRef, navigate } from './src/utils/navigationRef';
 
@@ -42,8 +31,6 @@ const Stack = createNativeStackNavigator();
 function RootApp() {
   const [initializing, setInitializing] = useState(true);
   const [user, setUser] = useState(null);
-  const { t } = useI18n();
-  const { isGuest, exitGuest } = useAuth();
   const isFirstAuthCheck = useRef(true);
   const [updateInfo, setUpdateInfo] = useState(null); // { forceUpdate, latestVersion, downloadUrl, messageEn, messageEs }
 
@@ -94,7 +81,8 @@ function RootApp() {
         console.warn('Version check failed:', e.message);
       }
     };
-    ensureAnonLogin().then(checkVersion).catch(() => checkVersion());
+    // V1.1.0: ya no creamos sesión anónima al boot. Solo chequeamos versión.
+    checkVersion();
 
     // Re-check when app comes back to foreground
     const appStateSub = AppState.addEventListener('change', (nextState) => {
@@ -119,13 +107,14 @@ function RootApp() {
 
     const unsub = onAuthStateChanged(auth, async (u) => {
       try {
-        if (!u || u.isAnonymous) {
+        // V1.1.0: sin modo anónimo. Si no hay user → null (App muestra Login).
+        if (!u) {
           isFirstAuthCheck.current = false;
           setUser(null);
         } else if (isFirstAuthCheck.current) {
           // Cold start: Firebase restored a session — honor the "keep signed in" preference
           isFirstAuthCheck.current = false;
-          const keepVal = await AsyncStorage.getItem('@mtb_keep_signed_in');
+          const keepVal = await AsyncStorage.getItem(StorageKeys.KEEP_SIGNED_IN);
           if (keepVal === '0') {
             await signOut(auth);
             setUser(null);
@@ -154,12 +143,13 @@ function RootApp() {
   useEffect(() => {
     if (!user) return;
     let active = true;
-    
+
     const setupPushToken = async () => {
       try {
+        if (!active) return;
         // LAZY LOAD: Import Notifications only when user is authenticated
         const Notifications = await import('expo-notifications');
-        
+
         // Pedir permisos
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
         let finalStatus = existingStatus;
@@ -167,9 +157,8 @@ function RootApp() {
           const { status } = await Notifications.requestPermissionsAsync();
           finalStatus = status;
         }
-        if (finalStatus !== 'granted') {
-          return;
-        }
+        if (finalStatus !== 'granted' || !active) return;
+
         // Usar token FCM nativo (funciona sin credenciales Expo)
         let tokenData;
         try {
@@ -178,6 +167,7 @@ function RootApp() {
           console.warn('getDevicePushTokenAsync failed:', String(te));
           return;
         }
+        if (!active) return;
         const token = tokenData?.data || null;
         if (!token) return;
         // Guardar en Firestore
@@ -191,11 +181,10 @@ function RootApp() {
         console.warn('Push token setup failed:', String(e));
       }
     };
-    
+
     // Delay push token setup to ensure everything is ready
-    setTimeout(setupPushToken, 2000);
-    
-    return () => { active = false; };
+    const timer = setTimeout(setupPushToken, 2000);
+    return () => { active = false; clearTimeout(timer); };
   }, [user]);
 
 
@@ -206,18 +195,18 @@ function RootApp() {
     <View style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: '#000' }}>
       <UpdateModal
         visible={!!updateInfo}
-        forceUpdate={true}
+        forceUpdate={!!updateInfo?.forceUpdate}
         latestVersion={updateInfo?.latestVersion}
         downloadUrl={updateInfo?.downloadUrl}
         messageEn={updateInfo?.messageEn}
         messageEs={updateInfo?.messageEs}
-        onDismiss={() => {}}
+        onDismiss={() => setUpdateInfo(null)}
       />
       <OverlayModalsProvider>
         <DeepLinkHandler />
         <NavigationContainer ref={navigationRef}>
           <RNStatusBar translucent={true} backgroundColor="transparent" barStyle="light-content" />
-          {(user || isGuest) ? (
+          {user ? (
             <Stack.Navigator
               key="game"
               screenOptions={{
@@ -253,13 +242,13 @@ function RootApp() {
 
 export default function App() {
   return (
-    <I18nProvider initialLanguage="en">
-      <ServerProvider>
-        <AuthProvider>
+    <ErrorBoundary>
+      <I18nProvider initialLanguage="en">
+        <ServerProvider>
           <RootApp />
-        </AuthProvider>
-      </ServerProvider>
-    </I18nProvider>
+        </ServerProvider>
+      </I18nProvider>
+    </ErrorBoundary>
   );
 }
 
@@ -292,12 +281,10 @@ function GameDrawer() {
 function CustomDrawerContent(props) {
   const { t } = useI18n();
   const { openModal } = useOverlayModals();
-  const { exitGuest } = useAuth();
 
   const handleSignOut = async () => {
     try {
       props.navigation.closeDrawer();
-      exitGuest();
       await signOut(auth);
     } catch (e) {
       console.warn('Sign out error:', e);
@@ -307,7 +294,7 @@ function CustomDrawerContent(props) {
   return (
     <View style={{ flex: 1, backgroundColor: '#000', paddingTop: 40 }}>
       <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
-        <Text style={{ color: '#999', fontWeight: '800', fontSize: 12 }}>Menu</Text>
+        <Text style={{ color: '#999', fontWeight: '800', fontSize: 12 }}>{t('drawer.menu')}</Text>
       </View>
       <DrawerItem label={t('drawer.home')} onPress={() => props.navigation.navigate('Home')} />
       <DrawerItem label={t('drawer.activity')} onPress={() => { props.navigation.closeDrawer(); navigate('Activity'); }} />
@@ -316,7 +303,6 @@ function CustomDrawerContent(props) {
       <DrawerItem label={t('drawer.config')} onPress={() => { props.navigation.closeDrawer(); openModal('config'); }} />
       <DrawerItem label={t('drawer.gems')} onPress={() => { props.navigation.closeDrawer(); openModal('gems'); }} />
       <DrawerItem label={t('drawer.getPeaks')} onPress={() => { props.navigation.closeDrawer(); openModal('peaks'); }} />
-      <DrawerItem label={t('drawer.subscribe')} onPress={() => { props.navigation.closeDrawer(); openModal('subscribe'); }} />
       <DrawerItem label={t('drawer.buyCredits')} onPress={() => { props.navigation.closeDrawer(); openModal('buyCredits'); }} />
 
       {/* Separador */}

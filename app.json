@@ -2,7 +2,7 @@
   "expo": {
     "name": "mining the blocks",
     "slug": "miningtheblocks",
-    "version": "1.0.4",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -28,7 +28,6 @@
     },
     "plugins": [
       "expo-asset",
-      "expo-dev-client",
       "expo-font",
       [
         "expo-notifications",
@@ -42,8 +41,7 @@
       [
         "react-native-google-mobile-ads",
         {
-          "androidAppId": "ca-app-pub-4718826806092770~3631324090",
-          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+          "androidAppId": "ca-app-pub-4718826806092770~3631324090"
         }
       ]
     ],

@@ -2,9 +2,42 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Users: each user can only read/write their own document
+    // Users: each user can read their own document and update only safe fields.
+    // picks, serverCredits and all game-state fields are server-only (Cloud Functions use Admin SDK).
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if request.auth != null && request.auth.uid == uid;
+
+      // SEC-005: New user bootstrap (anonymous sign-in): whitelist explícito.
+      // Anteriormente sólo bloqueaba picks/serverCredits — permitía settear referredBy,
+      // referralCode, walletAddress, picksLastResetAt, etc. arbitrariamente.
+      // pushToken/pushTokenType incluidos por race: App.js puede correr setDoc(merge)
+      // antes de que ensureAnonLogin termine su bootstrap.
+      // FIX-P1: 'wallet' y 'stats' sacados del whitelist. Si en el futuro
+      // alguna feature lee esos campos, un cliente malicioso podría meter
+      // valores arbitrarios. El bootstrap inicial (picks=0) sí es seguro.
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly([
+             'picks', 'createdAt', 'updatedAt',
+             'settings', 'profile', 'displayName', 'email',
+             'avatarUrl', 'photoURL', 'language',
+             'pushToken', 'pushTokenType', 'pushNotifications'
+           ])
+        && (!('picks' in request.resource.data) || request.resource.data.picks == 0);
+
+      // SEC-P1-6: migrado a WHITELIST explícito. Antes era blacklist y si
+      // mañana agregamos un nuevo campo sensible al doc, olvidarse de
+      // blacklistearlo deja el agujero abierto. Con whitelist el default es
+      // bloqueado, fail-safe.
+      // Los campos sensibles (picks, serverCredits, lastMineAt, walletAddress,
+      // referralCode, referredBy, etc.) NO están en esta whitelist y por lo
+      // tanto sólo pueden ser modificados por Cloud Functions (Admin SDK).
+      allow update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'displayName', 'email', 'avatarUrl', 'photoURL', 'language',
+             'settings', 'profile', 'updatedAt',
+             'pushToken', 'pushTokenType', 'pushNotifications'
+           ]);
+
       match /mines/{doc} {
         allow read: if request.auth != null && request.auth.uid == uid;
       }
@@ -51,19 +84,40 @@ service cloud.firestore {
         allow write: if false;
       }
 
-      // Contador de secuencia para el historial (solo el campo seq)
+      // Contador de secuencia para el historial — solo puede incrementarse de 1 en 1
       match /meta/{doc} {
         allow read: if request.auth != null;
         allow write: if request.auth != null
           && request.resource.data.keys().hasOnly(['seq'])
-          && request.resource.data.seq is int;
+          && request.resource.data.seq is int
+          && request.resource.data.seq > 0
+          && (resource == null || request.resource.data.seq == resource.data.seq + 1);
       }
 
       match /history/{entryId} {
         allow read: if request.auth != null;
+        // SEC-A1: episode_complete ahora lo escribe SOLO el backend (closeEpisode).
+        // Cliente sólo puede escribir type='mine'.
+        // SEC-A2: cap de seq como defense-in-depth contra spam.
+        // SEC-N-019: validar que el chainId del body coincida con el chainId del path,
+        // sino un user con acceso a chain X puede escribir entradas en chain Y.
         allow create: if request.auth != null
           && request.resource.data.uid == request.auth.uid
-          && request.resource.data.type in ['mine', 'episode_complete', 'episode_start'];
+          && (!('chainId' in request.resource.data) || request.resource.data.chainId == chainId)
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid)/serverAccess/$(request.resource.data.serverId))
+          && request.resource.data.type == 'mine'
+          && request.resource.data.keys().hasOnly([
+               'type', 'seq', 'ts', 'uid', 'displayName',
+               'cubeNumber', 'apiCubeNumber', 'layerK', 'episodeNumber', 'chainId',
+               'serverId', 'rewardPicks', 'rewardCash', 'totalMined'
+             ])
+          && (!('displayName' in request.resource.data) || request.resource.data.displayName is string && request.resource.data.displayName.size() <= 60)
+          && (!('rewardPicks' in request.resource.data) || (request.resource.data.rewardPicks is int && request.resource.data.rewardPicks >= 0 && request.resource.data.rewardPicks <= 5))
+          && (!('rewardCash' in request.resource.data) || (request.resource.data.rewardCash is number && request.resource.data.rewardCash >= 0 && request.resource.data.rewardCash <= 100000))
+          && (!('totalMined' in request.resource.data) || (request.resource.data.totalMined is int && request.resource.data.totalMined >= 0))
+          && (!('layerK' in request.resource.data) || (request.resource.data.layerK is int && request.resource.data.layerK >= 0 && request.resource.data.layerK <= 100))
+          && (!('episodeNumber' in request.resource.data) || (request.resource.data.episodeNumber is int && request.resource.data.episodeNumber >= 1 && request.resource.data.episodeNumber <= 10))
+          && request.resource.data.seq is int && request.resource.data.seq > 0 && request.resource.data.seq <= 100000000;
         allow update, delete: if false;
       }
     }
@@ -110,6 +164,51 @@ service cloud.firestore {
     // Ad sessions: solo Cloud Functions (admin) — tokens de un solo uso para la página de anuncios
     match /adSessions/{sessionId} {
       allow read, write: if false;
+    }
+
+    // SEC-004: userMeta — rate-limit counters, sólo Cloud Functions escriben.
+    // Lectura permitida al dueño para que el cliente pueda mostrar "esperá 5 min".
+    match /userMeta/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // SEC-P1-7: rateLimits — buckets de rate-limit globales (por IP, por uid, etc.)
+    // sólo Cloud Functions escriben. No legibles desde cliente.
+    match /rateLimits/{bucket} {
+      allow read, write: if false;
+    }
+
+    // SEC-P1-8: errorLog — logs de errores de la app. Solo backend escribe.
+    // Lectura sólo desde Admin SDK (Firebase Console).
+    match /errorLog/{entryId} {
+      allow read, write: if false;
+    }
+
+    // SEC-P0-3: adminActions — audit log de operaciones admin/destructivas.
+    // Solo backend escribe; legible sólo desde Admin SDK.
+    match /adminActions/{actionId} {
+      allow read, write: if false;
+    }
+
+    // Usernames: unique username registry
+    // Document ID is the username itself (lowercase). Rules enforce format so
+    // malicious clients cannot bypass the Cloud Function validation.
+    match /usernames/{username} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'createdAt', 'updatedAt'])
+        && username.size() >= 3
+        && username.size() <= 30
+        && username.matches('[a-z0-9_]+');
+      // SEC-006: el dueño puede actualizar pero NO puede reasignar el username
+      // a otro usuario, ni inflar el doc con campos arbitrarios.
+      allow update: if request.auth != null
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'createdAt', 'updatedAt']);
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
     }
   }
 }

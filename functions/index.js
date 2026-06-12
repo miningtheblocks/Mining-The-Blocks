@@ -5,10 +5,24 @@
 /* eslint-disable object-curly-spacing */
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { setGlobalOptions } = require("firebase-functions/v2");
 const { defineSecret } = require("firebase-functions/params");
 const { ethers } = require("ethers");
 const admin = require("firebase-admin");
 const nodemailer = require("nodemailer");
+
+// OPS-8: reducir CPU por función para entrar en el quota de Cloud Run.
+// Con 31 funciones × 1 vCPU = 31 vCPUs reservados, agotaba el quota default.
+// 0.5 vCPU es suficiente para nuestras funciones (poco compute, mayormente I/O
+// a Firestore). Si alguna requiere más, podemos overridearla individualmente.
+setGlobalOptions({ cpu: 0.5, memory: "256MiB", maxInstances: 10 });
+
+// SEC: secrets declarados al inicio del archivo para evitar TDZ —
+// se referencian en `exports.xxx = onCall({ secrets: [...] }, ...)` que se
+// evalúan al cargar el módulo.
+const companyWalletKey = defineSecret("COMPANY_WALLET_KEY");
+const gmailAppPassword = defineSecret("GMAIL_APP_PASSWORD");
+const serverSeed = defineSecret("SERVER_SEED");
 
 try {
   admin.initializeApp();
@@ -16,192 +30,43 @@ try {
 
 const db = admin.firestore();
 
-// ─── Constantes ──────────────────────────────────────────────────────────────
+// ─── Constantes y helpers extraídos ─────────────────────────────────────────
 
-const MAX_EPISODES = 10; // Eslabones por cadena
-const STARTING_LAYER = 100; // Capa de inicio de cada episodio
+const {
+  MAX_EPISODES,
+  STARTING_LAYER,
+  GEM_PRICES,
+  MAX_MEMBERS_PER_SERVER,
+  GEM_TOKEN_URIS,
+  MTBGEMS_CONTRACT,
+  DAY_MS,
+  PAYMENT_WALLET,
+  USDC_CONTRACTS,
+  USDC_ABI,
+  CREDIT_PRICE_USD,
+  PAYMENT_WINDOW_MS,
+  GEM_NAMES_ES,
+  NOTIFY_EMAIL,
+} = require("./constants");
 
-// Precio fijo por tier (USD) — tier 1 = más raro = más caro
-const GEM_PRICES = [100000, 50000, 10000, 1000, 500, 100, 50, 25, 15];
-
-// Máximo de jugadores por servidor/eslabon
-const MAX_MEMBERS_PER_SERVER = 100000;
-
-// Usuarios mínimos para desbloquear cada tier de gema.
-// Fórmula: suma acumulada de (cantidad × precio) de ese tier y todos los más baratos, dividido $15.
-// Garantiza que la recaudación cubre 100% el pool de premios antes de que aparezca el tier.
-// Indexed by tier (1-9): GEM_UNLOCK_THRESHOLDS[tier - 1]
-// +25% de margen sobre el mínimo de break-even para cada tier
-const GEM_UNLOCK_THRESHOLDS = [
-  54167, // tier 1: $100k  — break-even 43.333 × 1.25
-  45834, // tier 2: $50k   — break-even 36.667 × 1.25
-  41667, // tier 3: $10k   — break-even 33.333 × 1.25
-  37500, // tier 4: $1k    — break-even 30.000 × 1.25
-  33334, // tier 5: $500   — break-even 26.667 × 1.25
-  29167, // tier 6: $100   — break-even 23.333 × 1.25
-  25000, // tier 7: $50    — break-even 20.000 × 1.25
-  20834, // tier 8: $25    — break-even 16.667 × 1.25
-  12500, // tier 9: $15    — break-even 10.000 × 1.25
-];
-
-// TokenURIs IPFS para cada tier de gema (metadata ERC-721 en IPFS)
-const GEM_TOKEN_URIS = [
-  'ipfs://bafkreiazqr5ll6frb27jxl6n6pp7c7jrfy2stcezwl7r3hr4iyyqxctl5m', // tier 1
-  'ipfs://bafkreiggojefjwtthfjpxg454euhzf3zajjadlw3q6nv3tttorvu3frndq', // tier 2
-  'ipfs://bafkreif4ysa3pwnrpuqqmtk4647a26vfwyfp3tbpe5ypcivjytptr3b7he', // tier 3
-  'ipfs://bafkreicc4vvma5xb3u65poxnncqj63z3jke5q3zo53s2vfc3vzjcxpefaa', // tier 4
-  'ipfs://bafkreiggrq4ipierqj2eyfzg7qm4gfuyl5ve6hhpknqvjnqzy7vg6ijpdm', // tier 5
-  'ipfs://bafkreigxc6uqc7co6qcu4mzaq2tnkqwcsngfet63eczmmgwfzbyhmmpogq', // tier 6
-  'ipfs://bafkreidex4rj7rofevpe45u2sdvvnq5hkovxulqjtpjjj2xjakxvuzpbi4', // tier 7
-  'ipfs://bafkreiaujynahu64ui75bihvggjh5thoesn7ewgjqgqgafjf24osdb4lci', // tier 8
-  'ipfs://bafkreiabkbvz5g3b3alkh3omymgg2urw47bgtal3sd7kudxtebohk2pzta', // tier 9
-];
-
-// Dirección del contrato MTBGems en Polygon (deployado 2026-06-03)
-const MTBGEMS_CONTRACT = process.env.MTBGEMS_CONTRACT || '0x54c2859411afCb51fcfE42054aDcA3484B3f29E6';
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function getLayerGridSize(K) {
-  return 2 * K + 1;
-}
-
-function shellTotalCubes(K) {
-  const g = getLayerGridSize(K);
-  return g * g * 6;
-}
-
-function cubeNumberToFaceGridForK(n, K) {
-  const gridSize = getLayerGridSize(K);
-  const cubesPerFace = gridSize * gridSize;
-  const totalCubes = cubesPerFace * 6;
-  n = Number(n);
-  if (!Number.isFinite(n) || n < 1 || n > totalCubes) return null;
-  const zero = n - 1;
-  const faceIndex = Math.floor(zero / cubesPerFace);
-  const idx = zero % cubesPerFace;
-  const gridY = Math.floor(idx / gridSize);
-  const gridX = idx % gridSize;
-  return { faceIndex, gridX, gridY };
-}
-
-// FNV-1a hash — usado para recompensas deterministas
-function fnv1a(str) {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
-  }
-  return h;
-}
+const {
+  shellTotalCubes,
+  cubeNumberToFaceGridForK,
+  getRewardForCube,
+  getGemForCube,
+  generateReferralCode,
+  generateGemCode,
+  toMillis,
+  buildStatus,
+  esc,
+  setCorsHeaders,
+  setRestrictedCorsHeaders,
+} = require("./helpers");
 
 function requireRegistered(request) {
   if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "Login required");
   const provider = request.auth.token && request.auth.token.firebase && request.auth.token.firebase.sign_in_provider;
   if (provider === "anonymous") throw new HttpsError("permission-denied", "Registro requerido para jugar");
-}
-
-// Deterministic reward for a cube — no pre-population needed
-// Returns 0 (no reward) or 1-5 (picks won)
-function getRewardForCube(serverId, K, cubeNumber) {
-  const norm = fnv1a(`${serverId}|${K}|${cubeNumber}`) / 0xffffffff;
-  const winRate = K >= 90 ? 0.50 : K >= 70 ? 0.40 : K >= 50 ? 0.30 : K >= 20 ? 0.20 : 0.15;
-  if (norm >= winRate) return 0;
-  const r = norm / winRate;
-  if (r < 0.40) return 1;
-  if (r < 0.70) return 2;
-  if (r < 0.90) return 3;
-  if (r < 0.95) return 4;
-  return 5;
-}
-
-// Deterministic gem reward — independent hash from picks
-// Returns null (no gem) or 1-9 (gem tier, 1=rarest, 9=most common)
-// Tiers más raros solo se desbloquean en capas más profundas Y cuando hay suficientes jugadores
-// para que la recaudación cubra 100% el pool de premios de ese tier.
-function getGemForCube(serverId, K, cubeNumber, memberCount) {
-  if (K >= 98) return null; // capas 1-3: solo picos, sin gemas
-
-  const members = memberCount || 0;
-  const tierUnlocked = (tier) => members >= GEM_UNLOCK_THRESHOLDS[tier - 1];
-
-  // cumSum(n) = cubos totales en K=0 … K=n-1  →  2·n·(2n-1)·(2n+1)
-  function cumSum(n) {
-    return 2 * n * (2 * n - 1) * (2 * n + 1);
-  }
-
-  // Posición global de este cubo dentro de la zona que arranca en minK
-  function offsetInZone(minK) {
-    return cumSum(K) - cumSum(minK) + (cubeNumber - 1);
-  }
-
-  // Verifica si este cubo es el portador del premio tier dado.
-  // Sistema de buckets: la zona se divide en 'count' tramos iguales;
-  // cada tramo tiene exactamente 1 premio en una posición determinista.
-  // Garantiza entrega de TODOS los premios y propiedad de descarte:
-  // si quedan N cubos en un tramo y todos menos uno fueron minados, ese uno tiene el premio.
-  function hasPrize(tier, count, minK, zoneSize) {
-    if (!tierUnlocked(tier)) return false;
-    const offset = offsetInZone(minK);
-    if (offset < 0 || offset >= zoneSize) return false;
-
-    const base = Math.floor(zoneSize / count);
-    const rem = zoneSize % count;
-    let bucket; let within; let bSize;
-    if (offset < (base + 1) * rem) {
-      bucket = Math.floor(offset / (base + 1));
-      within = offset % (base + 1);
-      bSize = base + 1;
-    } else {
-      const adj = offset - rem * (base + 1);
-      bucket = rem + Math.floor(adj / base);
-      within = adj % base;
-      bSize = base;
-    }
-    return within === fnv1a(`PRIZE|${serverId}|${tier}|${bucket}`) % bSize;
-  }
-
-  // ── Tamaños de zona pre-calculados (cumSum(maxK+1) − cumSum(minK)) ──
-  // Tier 1 ($100K, ×1):  K 0-6   → 2.730
-  // Tier 2 ($50K,  ×1):  K 7-16  → 36.540
-  // Tier 3 ($10K,  ×5):  K 17-26 → 118.140
-  // Tiers 4-5:           K 0-46  → 830.490
-  // Tiers 6-7:           K 0-81  → 4.410.780
-  // Tiers 8-9:           K 0-97  → 7.529.340
-
-  // Zonas exclusivas para los 3 premios mayores (sin solapamiento entre sí)
-  if (K <= 6) {
-    if (hasPrize(1, 1, 0, 2730)) return 1;
-  } else if (K <= 16) {
-    if (hasPrize(2, 1, 7, 36540)) return 2;
-  } else if (K <= 26) {
-    if (hasPrize(3, 5, 17, 118140)) return 3;
-  }
-
-  // Premios acumulativos (disponibles en toda su zona, incluso en las zonas exclusivas de arriba)
-  if (K <= 46 && hasPrize(4, 50, 0, 830490)) return 4; // $1.000 — capas 55-101
-  if (K <= 46 && hasPrize(5, 100, 0, 830490)) return 5; // $500   — capas 55-101
-  if (K <= 81 && hasPrize(6, 500, 0, 4410780)) return 6; // $100   — capas 20-101
-  if (K <= 81 && hasPrize(7, 1000, 0, 4410780)) return 7; // $50    — capas 20-101
-  if (hasPrize(8, 4000, 0, 7529340)) return 8; // $25    — capas 4-101
-  if (hasPrize(9, 10000, 0, 7529340)) return 9; // $15    — capas 4-101
-
-  return null;
-}
-
-// Genera un código de canje único y verificable para una gema
-// Formato: MTBt-XXXXXXXX-RRRRRR  (t=tier, X=hash, R=salt aleatorio)
-function generateGemCode(serverId, K, cubeNumber, gemTier, uid) {
-  const hashHex = fnv1a(`CODE|${serverId}|${K}|${cubeNumber}|${gemTier}|${uid}`)
-      .toString(16).padStart(8, '0').toUpperCase();
-  // Salt de 6 chars alfanumérico (no predictible)
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let salt = '';
-  const h2 = fnv1a(`SALT|${serverId}|${cubeNumber}|${uid}|${Date.now()}`);
-  for (let i = 0; i < 6; i++) {
-    salt += chars[(h2 >> (i * 5)) & 31];
-  }
-  return `MTB${gemTier}-${hashHex}-${salt}`;
 }
 
 // ─── Activity Feed ───────────────────────────────────────────────────────────
@@ -264,6 +129,27 @@ async function closeEpisode(chainRef, serverRef, serverData, winnerUid, totalMin
   const episodeNumber = serverData.episodeNumber || 1;
   const chainId = chainRef.id;
 
+  // SEC-N-004: idempotency key. Si dos workers entran al closeEpisode del mismo
+  // episodio (race en mineCube), el segundo va a fallar al setear el guard.
+  // Esto previene servidores duplicados y entradas history fantasma.
+  const guardRef = chainRef.collection("meta").doc(`closing_${episodeNumber}`);
+  let acquired = false;
+  try {
+    await db.runTransaction(async (tx) => {
+      const g = await tx.get(guardRef);
+      if (g.exists) throw new Error("ALREADY_CLOSING");
+      tx.set(guardRef, { startedAt: Date.now(), winnerUid: winnerUid || null });
+      acquired = true;
+    });
+  } catch (e) {
+    if (e.message === "ALREADY_CLOSING") {
+      console.log(`closeEpisode: episode ${episodeNumber} ya está cerrando, skip duplicado`);
+      return { isLastEpisode: false, nextEpisode: episodeNumber + 1 };
+    }
+    throw e;
+  }
+  if (!acquired) return { isLastEpisode: false, nextEpisode: episodeNumber + 1 };
+
   const episodeSnap = {
     serverId: serverRef.id,
     episodeNumber,
@@ -275,6 +161,35 @@ async function closeEpisode(chainRef, serverRef, serverData, winnerUid, totalMin
 
   // Guardar episodio en subcolección
   await chainRef.collection("episodes").doc(String(episodeNumber)).set(episodeSnap);
+
+  // SEC-A1: history.episode_complete antes lo escribía el cliente, lo que permitía
+  // a cualquier miembro hacerse pasar por ganador. Ahora lo escribimos en backend
+  // con el winnerUid auténtico y un seq atómico desde meta/counter.
+  try {
+    const counterRef = chainRef.collection("meta").doc("counter");
+    const winnerSnap = winnerUid ? await db.collection("users").doc(winnerUid).get() : null;
+    const winnerName = winnerSnap && winnerSnap.exists ?
+      (winnerSnap.data().displayName || winnerSnap.data().profile && winnerSnap.data().profile.displayName || null) : null;
+    await db.runTransaction(async (tx) => {
+      const cs = await tx.get(counterRef);
+      const seq = ((cs.exists && cs.data().seq) || 0) + 1;
+      const histRef = chainRef.collection("history").doc();
+      tx.set(histRef, {
+        type: "episode_complete",
+        seq,
+        ts: Date.now(),
+        uid: winnerUid || null,
+        displayName: winnerName,
+        episodeNumber,
+        serverId: serverRef.id,
+        chainId,
+        totalMined: totalMinedFinal,
+      });
+      tx.set(counterRef, { seq }, { merge: true });
+    });
+  } catch (e) {
+    console.warn("closeEpisode: history entry failed:", e.message);
+  }
 
   // Activity feed: episodio completo
   writeActivity("episode_complete", {
@@ -334,6 +249,21 @@ exports.addServerCredit = onCall(async (request) => {
     const current = (snap.exists ? snap.data().serverCredits : 0) || 0;
     tx.set(userRef, { serverCredits: current + amount }, { merge: true });
   });
+
+  // SEC-M3: audit log de operación admin. Si una cuenta admin se compromete,
+  // queremos saber qué se hizo, cuándo y a quién.
+  try {
+    await db.collection("adminActions").add({
+      action: "addServerCredit",
+      adminUid: uid,
+      targetUid,
+      amount,
+      ts: Date.now(),
+      reason: String((request.data && request.data.reason) || "").slice(0, 200),
+    });
+  } catch (logErr) {
+    console.warn("audit log addServerCredit failed:", logErr.message);
+  }
 
   return { ok: true, added: amount };
 });
@@ -421,6 +351,9 @@ exports.joinServer = onCall(async (request) => {
   const serverRef = db.collection("servers").doc(serverId);
   const userRef = db.collection("users").doc(uid);
 
+  // Track whether this was an actual new (paid) join vs already-had-access
+  let wasNewPaidJoin = false;
+
   await db.runTransaction(async (tx) => {
     const serverSnap = await tx.get(serverRef);
     if (!serverSnap.exists) throw new HttpsError("not-found", "Server not found");
@@ -439,20 +372,28 @@ exports.joinServer = onCall(async (request) => {
       throw new HttpsError("resource-exhausted", "server_full");
     }
 
-    // Servers legacy (sin chainId) son de acceso libre — fueron creados antes del sistema de créditos
+    const episodeNumber = serverData.episodeNumber || 1;
+
+    // Servers legacy (sin chainId) son de acceso libre
     if (!serverChainId) {
-      tx.set(accessRef, { serverId, chainId: null, joinedAt: Date.now(), role: 'member' });
+      tx.set(accessRef, { serverId, chainId: null, episodeNumber, joinedAt: Date.now(), role: 'member' });
       return;
     }
 
-    // Episodio final (10) es gratis para quien jugó los 9 anteriores de la misma cadena
-    const episodeNumber = serverData.episodeNumber || 1;
+    // Episodio final (10) es gratis para quien jugó los 9 anteriores de la misma cadena.
+    // FIX-P1: contar episodios DISTINTOS (no cantidad de docs), por defensa en profundidad
+    // contra accesos duplicados si en el futuro el flow de chain se rompe.
     if (episodeNumber >= MAX_EPISODES) {
       const chainAccessSnaps = await tx.get(
           userRef.collection("serverAccess").where("chainId", "==", serverChainId),
       );
-      if (chainAccessSnaps.size >= MAX_EPISODES - 1) {
-        tx.set(accessRef, { serverId, chainId: serverChainId, joinedAt: Date.now(), role: 'member', freeEpisode: true });
+      const distinctEpisodes = new Set();
+      chainAccessSnaps.forEach((d) => {
+        const ep = d.data().episodeNumber;
+        if (Number.isInteger(ep) && ep >= 1 && ep < MAX_EPISODES) distinctEpisodes.add(ep);
+      });
+      if (distinctEpisodes.size >= MAX_EPISODES - 1) {
+        tx.set(accessRef, { serverId, chainId: serverChainId, episodeNumber, joinedAt: Date.now(), role: 'member', freeEpisode: true });
         tx.set(serverRef, { memberCount: (serverData.memberCount || 0) + 1 }, { merge: true });
         return;
       }
@@ -462,25 +403,59 @@ exports.joinServer = onCall(async (request) => {
     await consumeServerCredit(uid, tx);
 
     // Registrar acceso
-    tx.set(accessRef, {
-      serverId,
-      chainId: serverChainId,
-      joinedAt: Date.now(),
-      role: 'member',
-    });
+    tx.set(accessRef, { serverId, chainId: serverChainId, episodeNumber, joinedAt: Date.now(), role: 'member' });
 
     // Bienvenida: 5 picos al pagar la entrada
     tx.set(userRef, { picks: admin.firestore.FieldValue.increment(5) }, { merge: true });
 
     // Incrementar memberCount
     tx.set(serverRef, { memberCount: (serverData.memberCount || 0) + 1 }, { merge: true });
+
+    wasNewPaidJoin = true;
   });
 
-  // Ensure referralCode exists (generated deterministically from uid)
+  // If user already had access, just let them in — no welcome picks, no bonus
+  if (!wasNewPaidJoin) {
+    return { ok: true, serverId };
+  }
+
+  // Ensure referralCode exists (SEC-008: random, no derivado de uid)
   const userSnap = await db.collection("users").doc(uid).get();
-  if (!userSnap.exists || !userSnap.data().referralCode) {
-    const refCode = fnv1a(uid + "REF").toString(36).toUpperCase().slice(0, 7);
-    await db.collection("users").doc(uid).set({ referralCode: refCode }, { merge: true });
+  const userData = userSnap.exists ? (userSnap.data() || {}) : {};
+  if (!userData.referralCode) {
+    await db.collection("users").doc(uid).set({ referralCode: generateReferralCode() }, { merge: true });
+  }
+
+  // SEC-M1: referral bonus con check DENTRO de la TX (anteriormente se leía
+  // referralBonusPaid afuera y dos joins concurrentes podían duplicar el bonus).
+  const referredBy = userData.referredBy || null;
+  if (referredBy) {
+    try {
+      let bonusGranted = false;
+      await db.runTransaction(async (tx) => {
+        const uRef = db.collection("users").doc(uid);
+        const rRef = db.collection("users").doc(referredBy);
+        const freshU = await tx.get(uRef);
+        if (!freshU.exists) return;
+        const fud = freshU.data();
+        if (fud.referralBonusPaid) return; // ya pagado
+        tx.set(uRef, { picks: admin.firestore.FieldValue.increment(5), referralBonusPaid: true }, { merge: true });
+        tx.set(rRef, { picks: admin.firestore.FieldValue.increment(5) }, { merge: true });
+        bonusGranted = true;
+      });
+      if (bonusGranted) {
+        await Promise.all([
+          db.collection("users").doc(uid).collection("notifications").add({
+            type: "referral_bonus_self", picks: 5, createdAt: Date.now(),
+          }),
+          db.collection("users").doc(referredBy).collection("notifications").add({
+            type: "referral_bonus", picks: 5, createdAt: Date.now(),
+          }),
+        ]);
+      }
+    } catch (refErr) {
+      console.warn("Referral bonus error in joinServer:", refErr.message);
+    }
   }
 
   // Activity feed: jugador unido
@@ -522,7 +497,18 @@ exports.getServers = onCall(async (request) => {
       .limit(50)
       .get();
 
-  const servers = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  // SEC-M5: whitelist explícito de campos públicos. Antes devolvíamos `...d.data()`
+  // exponiendo `createdBy` (uid del creador) y cualquier campo interno futuro.
+  const PUBLIC_FIELDS = [
+    "name", "createdAt", "status", "currentLayer", "totalMined",
+    "memberCount", "chainId", "episodeNumber", "winner", "completedAt", "prevServerId",
+  ];
+  const servers = snap.docs.map((d) => {
+    const data = d.data() || {};
+    const out = { id: d.id };
+    for (const k of PUBLIC_FIELDS) if (k in data) out[k] = data[k];
+    return out;
+  });
   return { servers };
 });
 
@@ -565,40 +551,40 @@ exports.getUserGems = onCall(async (request) => {
 
 // Canjear código de gema por dinero (marca la gema como canjeada)
 exports.redeemGem = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  requireRegistered(request);
+  const uid = request.auth.uid;
 
   const gemId = String((request.data && request.data.gemId) || '');
   if (!gemId) throw new HttpsError("invalid-argument", "gemId required");
 
   const gemRef = db.collection("users").doc(uid).collection("gems").doc(gemId);
-  const gemSnap = await gemRef.get();
 
-  if (!gemSnap.exists) throw new HttpsError("not-found", "Gem not found");
-  const gem = gemSnap.data();
-
-  if (gem.status !== 'unclaimed') {
-    throw new HttpsError("failed-precondition",
-      gem.status === 'redeemed' ? "Gem already redeemed" : "Gem already minted as NFT");
-  }
-
-  const price = GEM_PRICES[gem.gemTier - 1] || 0;
-
-  await gemRef.set({
-    status: 'redeemed',
-    redeemedAt: Date.now(),
-    redeemedValue: price,
-  }, { merge: true });
+  let price;
+  let gemTier;
+  let gemCode;
+  await db.runTransaction(async (tx) => {
+    const gemSnap = await tx.get(gemRef);
+    if (!gemSnap.exists) throw new HttpsError("not-found", "Gem not found");
+    const gem = gemSnap.data();
+    if (gem.status !== "unclaimed") {
+      throw new HttpsError("failed-precondition",
+        gem.status === "redeemed" ? "Gem already redeemed" : "Gem already minted as NFT");
+    }
+    price = GEM_PRICES[gem.gemTier - 1] || 0;
+    gemTier = gem.gemTier;
+    gemCode = gem.code;
+    tx.set(gemRef, { status: "redeemed", redeemedAt: Date.now(), redeemedValue: price }, { merge: true });
+  });
 
   // Registrar en cola de pagos para procesamiento manual/automático
   await db.collection("pendingPayments").add({
     uid,
     gemId,
-    gemTier: gem.gemTier,
-    gemCode: gem.code,
+    gemTier,
+    gemCode,
     amountUSD: price,
     createdAt: Date.now(),
-    status: 'pending',
+    status: "pending",
   });
 
   return { ok: true, amountUSD: price };
@@ -606,8 +592,8 @@ exports.redeemGem = onCall(async (request) => {
 
 // Vincular wallet para recibir el NFT (marca la gema como "minting")
 exports.claimGemNFT = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  requireRegistered(request);
+  const uid = request.auth.uid;
 
   const gemId = String((request.data && request.data.gemId) || '');
   const walletAddress = String((request.data && request.data.walletAddress) || '').trim();
@@ -618,33 +604,33 @@ exports.claimGemNFT = onCall(async (request) => {
   }
 
   const gemRef = db.collection("users").doc(uid).collection("gems").doc(gemId);
-  const gemSnap = await gemRef.get();
 
-  if (!gemSnap.exists) throw new HttpsError("not-found", "Gem not found");
-  const gem = gemSnap.data();
-
-  if (gem.status !== 'unclaimed') {
-    throw new HttpsError("failed-precondition",
-      gem.status === 'redeemed' ? "Gem already redeemed for cash" : "NFT already claimed");
-  }
-
-  await gemRef.set({
-    status: 'minting',
-    walletAddress,
-    claimedAt: Date.now(),
-  }, { merge: true });
+  let gemTier;
+  let gemCode;
+  await db.runTransaction(async (tx) => {
+    const gemSnap = await tx.get(gemRef);
+    if (!gemSnap.exists) throw new HttpsError("not-found", "Gem not found");
+    const gem = gemSnap.data();
+    if (gem.status !== "unclaimed") {
+      throw new HttpsError("failed-precondition",
+        gem.status === "redeemed" ? "Gem already redeemed for cash" : "NFT already claimed");
+    }
+    gemTier = gem.gemTier;
+    gemCode = gem.code;
+    tx.set(gemRef, { status: "minting", walletAddress, claimedAt: Date.now() }, { merge: true });
+  });
 
   // Encolar para minteo (procesado por el backend de NFT — Polygon)
   await db.collection("pendingMints").add({
     uid,
     gemId,
-    gemTier: gem.gemTier,
-    gemCode: gem.code,
-    tokenURI: GEM_TOKEN_URIS[(gem.gemTier - 1)] || null,
+    gemTier,
+    gemCode,
+    tokenURI: GEM_TOKEN_URIS[(gemTier - 1)] || null,
     walletAddress,
-    priceUSD: GEM_PRICES[(gem.gemTier - 1)] || 0,
+    priceUSD: GEM_PRICES[(gemTier - 1)] || 0,
     createdAt: Date.now(),
-    status: 'pending',
+    status: "pending",
   });
 
   return { ok: true, walletAddress };
@@ -652,14 +638,20 @@ exports.claimGemNFT = onCall(async (request) => {
 
 // ─── Mining ──────────────────────────────────────────────────────────────────
 
-exports.mineCube = onCall(async (request) => {
+exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
   requireRegistered(request);
   const uid = request.auth.uid;
 
-  const cubeNumber = String((request.data && request.data.cubeNumber) || '');
+  // SEC-003: Canonicalizar cubeNumber a entero antes de usar como docId.
+  // String("1"), "1.0", "01", " 1" coercionan al mismo N pero crean docs diferentes
+  // — bypaseaba el check `minedSnap.exists` permitiendo doble-mineo del mismo cubo.
+  const nRaw = (request.data && request.data.cubeNumber);
+  const n = Math.floor(Number(nRaw));
+  if (!Number.isInteger(n) || n < 1) throw new HttpsError("invalid-argument", "cubeNumber required");
+  const cubeNumber = String(n); // forma canónica para docId
+
   const serverId = String((request.data && request.data.serverId) || '');
   if (!serverId) throw new HttpsError("invalid-argument", "serverId required");
-  if (!cubeNumber || isNaN(Number(cubeNumber))) throw new HttpsError("invalid-argument", "cubeNumber required");
 
   const serverRef = db.collection("servers").doc(serverId);
   const userRef = db.collection("users").doc(uid);
@@ -673,22 +665,35 @@ exports.mineCube = onCall(async (request) => {
 
     const K = serverData.currentLayer;
     const TOTAL_CUBES_K = shellTotalCubes(K);
-    const n = Number(cubeNumber);
-    if (n < 1 || n > TOTAL_CUBES_K) throw new HttpsError("invalid-argument", "Cube out of range for current layer");
+    if (n > TOTAL_CUBES_K) throw new HttpsError("invalid-argument", "Cube out of range for current layer");
 
     const minedRef = serverRef.collection("mined").doc(cubeNumber);
     const layerRef = serverRef.collection("layers").doc(String(K));
+    const accessRef = userRef.collection("serverAccess").doc(serverId);
 
-    const [minedSnap, userSnap, layerSnap] = await Promise.all([
-      tx.get(minedRef), tx.get(userRef), tx.get(layerRef),
+    const [minedSnap, userSnap, layerSnap, accessSnap] = await Promise.all([
+      tx.get(minedRef), tx.get(userRef), tx.get(layerRef), tx.get(accessRef),
     ]);
+
+    // Enforce payment — user must have joined (paid) this server
+    if (!accessSnap.exists) throw new HttpsError("permission-denied", "No server access. Join the server first.");
+
+    // SEC-009: Rate limit ANTES del check alreadyMined. Sin esto, un atacante
+    // que ya tenga serverAccess podría sondear cubos sin costo (oracle).
+    // Rate limit: máximo 1 mine cada 2s por usuario — previene bots.
+    if (userSnap.exists) {
+      const lastMineAt = userSnap.data().lastMineAt || 0;
+      if (Date.now() - lastMineAt < 2000) {
+        const waitSec = Math.ceil((2000 - (Date.now() - lastMineAt)) / 1000);
+        throw new HttpsError("resource-exhausted", `rate_limited:${waitSec}`);
+      }
+    }
 
     if (minedSnap.exists) return { ok: true, alreadyMined: true };
 
     let picks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
     if (!userSnap.exists) {
-      const refCode = fnv1a(uid + "REF").toString(36).toUpperCase().slice(0, 7);
-      tx.set(userRef, { picks: 0, createdAt: Date.now(), referralCode: refCode }, { merge: true });
+      tx.set(userRef, { picks: 0, createdAt: Date.now(), referralCode: generateReferralCode() }, { merge: true });
     }
 
     // Reset lazy de picos: si el servidor inició un nuevo episodio y el usuario no fue reseteado aún
@@ -702,23 +707,16 @@ exports.mineCube = onCall(async (request) => {
     const currentMined = layerSnap.exists ? (layerSnap.data().stats && layerSnap.data().stats.mined) || 0 : 0;
     const cubesRemaining = TOTAL_CUBES_K - currentMined;
 
-    // Rate limit: máximo 1 mine cada 2s por usuario — previene bots, sin costo extra
-    if (userSnap.exists) {
-      const lastMineAt = userSnap.data().lastMineAt || 0;
-      if (Date.now() - lastMineAt < 2000) {
-        const waitSec = Math.ceil((2000 - (Date.now() - lastMineAt)) / 1000);
-        throw new HttpsError("resource-exhausted", `rate_limited:${waitSec}`);
-      }
-    }
-
     // Episodio termina cuando se completa la capa central (K=0)
     // Flujo: K=100 (exterior) → K=99 → ... → K=0 (centro) → episodio completo
     // K=0 es un cubo único de 6 caras — la primera cara minada destruye el cubo y termina el episodio
     const layerComplete = (currentMined + 1) >= TOTAL_CUBES_K;
     const episodeComplete = K === 0;
 
-    const reward = getRewardForCube(serverId, K, cubeNumber);
-    const gem = getGemForCube(serverId, K, cubeNumber, serverData.memberCount || 0);
+    // SEC-B-1: pasar SERVER_SEED a las funciones de cálculo de premios.
+    const seed = serverSeed.value();
+    const reward = getRewardForCube(serverId, K, cubeNumber, seed);
+    const gem = getGemForCube(serverId, K, cubeNumber, serverData.memberCount || 0, seed);
 
     const userUpdate = { lastMineAt: Date.now() };
     if (needsPicksReset) {
@@ -768,7 +766,8 @@ exports.mineCube = onCall(async (request) => {
 
       // Verificar si el usuario tiene wallet vinculada para auto-mintear el NFT
       const userSnap = await db.collection("users").doc(uid).get();
-      const userWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
+      const rawWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
+      const userWallet = (rawWallet && /^0x[a-fA-F0-9]{40}$/.test(rawWallet)) ? rawWallet : null;
       const gemStatus = userWallet ? 'minting' : 'unclaimed';
 
       const gemRef = await db.collection("users").doc(uid).collection("gems").add({
@@ -872,46 +871,19 @@ exports.mineCube = onCall(async (request) => {
 
 // ─── Peaks ───────────────────────────────────────────────────────────────────
 
-function toMillis(ts) {
-  if (!ts) return 0;
-  if (typeof ts === "number") return ts;
-  if (ts && typeof ts.toMillis === "function") return ts.toMillis();
-  return Number(ts) || 0;
-}
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function buildStatus(userData, nowMs) {
-  userData = userData || {};
-  const picks = Number(userData.picks || 0);
-  const createdAt = toMillis(userData.createdAt) || nowMs;
-  const lastDailyAt = toMillis(userData.lastDailyAt) || 0;
-  const lastAd1At = toMillis(userData.lastAd1At) || 0;
-  const lastAd2At = toMillis(userData.lastAd2At) || 0;
-  const anchorDaily = lastDailyAt || createdAt;
-  return {
-    picks,
-    serverNow: nowMs,
-    nextDailyAt: anchorDaily + DAY_MS,
-    ad1NextAt: (lastAd1At || 0) + DAY_MS,
-    ad2NextAt: (lastAd2At || 0) + DAY_MS,
-  };
-}
-
 exports.getPeaksStatus = onCall(async (request) => {
   const uid = request.auth && request.auth.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
   const nowMs = Date.now();
   const userRef = db.collection("users").doc(uid);
   const snap = await userRef.get();
-  const refCode = fnv1a(uid + "REF").toString(36).toUpperCase().slice(0, 7);
   if (!snap.exists) {
-    await userRef.set({ picks: 0, createdAt: nowMs, referralCode: refCode }, { merge: true });
+    await userRef.set({ picks: 0, createdAt: nowMs, referralCode: generateReferralCode() }, { merge: true });
     return buildStatus({ picks: 0, createdAt: nowMs }, nowMs);
   }
   const data = snap.data() || {};
   if (!data.referralCode) {
-    await userRef.set({ referralCode: refCode }, { merge: true });
+    await userRef.set({ referralCode: generateReferralCode() }, { merge: true });
   }
   return buildStatus(data, nowMs);
 });
@@ -934,26 +906,8 @@ exports.claimDailyPick = onCall(async (request) => {
   return result;
 });
 
-exports.claimAdPick = onCall(async (request) => {
-  requireRegistered(request);
-  const uid = request.auth.uid;
-  const index = Number(request.data && request.data.index);
-  if (index !== 1 && index !== 2) throw new HttpsError("invalid-argument", "index must be 1 or 2");
-  const nowMs = Date.now();
-  const userRef = db.collection("users").doc(uid);
-  const result = await db.runTransaction(async (tx) => {
-    const snap = await tx.get(userRef);
-    const data = snap.exists ? (snap.data() || {}) : { picks: 0, createdAt: nowMs };
-    if (!snap.exists) tx.set(userRef, data, { merge: true });
-    const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
-    const lastVal = toMillis(data[lastKey]) || 0;
-    if (nowMs < lastVal + DAY_MS) throw new HttpsError("failed-precondition", `Ad ${index} not ready`);
-    tx.set(userRef, { picks: admin.firestore.FieldValue.increment(1), [lastKey]: nowMs }, { merge: true });
-    const updated = Object.assign({}, data, { picks: (data.picks || 0) + 1, [lastKey]: nowMs });
-    return buildStatus(updated, nowMs);
-  });
-  return result;
-});
+// claimAdPick removed — ad picks are now issued exclusively through the
+// createAdSession → web timer page → claimAdSession flow.
 
 // ─── Ad timer page (web interstitial) ────────────────────────────────────────
 // Crea una sesión para la página de anuncios web (timer de 45s).
@@ -977,8 +931,13 @@ exports.createAdSession = onCall(async (request) => {
   const crypto = require("crypto");
   const token = crypto.randomBytes(24).toString("hex");
   const sessionId = crypto.randomBytes(16).toString("hex");
+  // OPS-7: expiresAt para TTL — sesiones se borran 1 día después de crear.
+  // El user tiene 30 min reales para ver el ad; después la session sigue
+  // existiendo pero ya no sirve. TTL la limpia para no acumular.
+  const now = Date.now();
   await db.collection("adSessions").doc(sessionId).set({
-    uid, index, token, createdAt: Date.now(), used: false,
+    uid, index, token, createdAt: now, used: false,
+    expiresAt: admin.firestore.Timestamp.fromMillis(now + 24 * 60 * 60 * 1000),
   });
   return { sessionId, token };
 });
@@ -1035,108 +994,12 @@ exports.claimAdSession = onRequest(async (req, res) => {
 });
 
 // ─── Admin helpers ───────────────────────────────────────────────────────────
-
-exports.grantPicksDev = onCall(async (request) => {
-  if (!request.auth || !request.auth.token || !request.auth.token.admin) {
-    throw new HttpsError("permission-denied", "Admin only");
-  }
-  const uid = request.auth.uid;
-  const userRef = db.collection("users").doc(uid);
-  await db.runTransaction(async (tx) => {
-    const snap = await tx.get(userRef);
-    const curr = snap.exists ? (snap.data().picks || 0) : 0;
-    tx.set(userRef, { picks: curr + 1 }, { merge: true });
-  });
-  return { ok: true };
-});
-
-exports.resetAllMinedCubes = onCall(async (request) => {
-  if (!request.auth || !request.auth.token || !request.auth.token.admin) {
-    throw new HttpsError("permission-denied", "Admin only");
-  }
-  const serverId = String((request.data && request.data.serverId) || '');
-  if (!serverId) throw new HttpsError("invalid-argument", "serverId required");
-
-  const BATCH_LIMIT = 400;
-  const deleteCollection = async (colRef) => {
-    let total = 0;
-    let snap = await colRef.limit(BATCH_LIMIT).get();
-    while (!snap.empty) {
-      const batch = db.batch();
-      snap.forEach((d) => batch.delete(d.ref));
-      await batch.commit();
-      total += snap.size;
-      if (snap.size < BATCH_LIMIT) break;
-      snap = await colRef.limit(BATCH_LIMIT).get();
-    }
-    return total;
-  };
-
-  const serverRef = db.collection("servers").doc(serverId);
-  const deleted = await deleteCollection(serverRef.collection("mined"));
-  const layersSnap = await serverRef.collection("layers").get();
-  if (!layersSnap.empty) {
-    const batch = db.batch();
-    layersSnap.forEach((d) => batch.update(d.ref, { 'stats.mined': 0 }));
-    await batch.commit();
-  }
-  await serverRef.set({
-    totalMined: 0,
-    currentLayer: STARTING_LAYER,
-    status: 'active',
-    winner: null,
-    completedAt: null,
-  }, { merge: true });
-  return { ok: true, deletedCubes: deleted };
-});
-
-exports.sendTestPush = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
-  const userRef = db.collection("users").doc(uid);
-  const snap = await userRef.get();
-  const data = snap.exists ? snap.data() : {};
-  const token = data.pushToken || null;
-  const tokenType = data.pushTokenType || 'expo';
-  if (!token) throw new HttpsError("failed-precondition", "No push token on user");
-  try {
-    if (tokenType === 'fcm') {
-      // Native FCM token — send via Firebase Admin SDK directly
-      await admin.messaging().send({
-        token,
-        notification: { title: "Mining The Blocks", body: "Test notification ⛏" },
-        android: {
-          priority: "high",
-          notification: {
-            sound: "default",
-            channelId: "default",
-            priority: "high",
-            defaultSound: true,
-          },
-        },
-        data: { type: "test" },
-      });
-      return { ok: true, method: 'fcm' };
-    } else {
-      // Legacy Expo push token
-      const res = await fetch('https://exp.host/--/api/v2/push/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: token, title: "Mining The Blocks", body: "Test notification ⛏", sound: "default" }),
-      });
-      return { ok: true, method: 'expo', data: await res.json() };
-    }
-  } catch (e) {
-    throw new HttpsError("internal", String(e && e.message || e));
-  }
-});
-
-exports.initLayerRewards = onCall(async (request) => {
-  if (!request.auth || !request.auth.token || !request.auth.token.admin) {
-    throw new HttpsError("permission-denied", "Admin only");
-  }
-  return { ok: true, note: "Rewards are now deterministic — no pre-initialization needed" };
-});
+// OPS-8: grantPicksDev / resetAllMinedCubes / sendTestPush / initLayerRewards
+// removidas para liberar CPU del quota. Si necesitás admin actions:
+//   - reset: scripts/reset_server.js (Admin SDK directo)
+//   - dev picks: actualizar Firestore manualmente desde Firebase Console
+//   - test push: usar la app del usuario
+//   - layer rewards: ya son deterministas (no-op)
 
 // ─── Worker: procesa pendingMints y mintea NFTs en Polygon ───────────────────
 
@@ -1144,13 +1007,17 @@ const MTBGEMS_ABI = [
   "function mintGem(address to, uint8 gemTier, string calldata gemCode, string calldata tokenURI_) external returns (uint256)",
 ];
 
-async function sendPushToUser(uid, title, body) {
+// titles/bodies can be plain strings or {en, es} objects for bilingual support
+async function sendPushToUser(uid, titles, bodies) {
   try {
     const snap = await db.collection("users").doc(uid).get();
     const data = snap.exists ? snap.data() : {};
     const token = data.pushToken || null;
     const tokenType = data.pushTokenType || 'expo';
     if (!token) return;
+    const lang = (data && data.settings && data.settings.language) === 'es' ? 'es' : 'en';
+    const title = typeof titles === 'object' ? (titles[lang] || titles.en) : titles;
+    const body = typeof bodies === 'object' ? (bodies[lang] || bodies.en) : bodies;
     if (tokenType === 'fcm') {
       await admin.messaging().send({
         token,
@@ -1171,7 +1038,7 @@ async function sendPushToUser(uid, title, body) {
 
 // Lógica de minteo compartida entre onCall y onSchedule
 async function runMintProcessing() {
-  const privateKey = process.env.COMPANY_WALLET_KEY;
+  const privateKey = companyWalletKey.value();
   if (!privateKey) {
     console.error("COMPANY_WALLET_KEY no configurada");
     return { ok: false, processed: 0, failed: 0 };
@@ -1184,7 +1051,7 @@ async function runMintProcessing() {
 
   if (snap.empty) return { ok: true, processed: 0, failed: 0 };
 
-  const provider = new ethers.JsonRpcProvider("https://polygon-rpc.com");
+  const provider = new ethers.JsonRpcProvider("https://polygon-bor-rpc.publicnode.com");
   const wallet = new ethers.Wallet(privateKey, provider);
   const contract = new ethers.Contract(MTBGEMS_CONTRACT, MTBGEMS_ABI, wallet);
   const iface = new ethers.Interface(["event GemMinted(uint256 indexed tokenId, address indexed to, uint8 tier, string gemCode)"]);
@@ -1240,18 +1107,54 @@ async function runMintProcessing() {
         }, { merge: true });
       }
 
-      console.log(`NFT minteado: tokenId=${tokenId} → ${data.walletAddress}`);
+      // SEC: no loguear walletAddress en plaintext (info pública on-chain pero
+      // ruido en logs y útil para análisis de fraude si se cruza con otras fuentes).
+      console.log(`NFT minteado: tokenId=${tokenId} mintId=${mintId}`);
       if (data.uid) {
         await sendPushToUser(
             data.uid,
-            "¡Tu NFT llegó! 💎",
-            `Tu gema fue minteada en Polygon. Token #${tokenId || ''}`,
+            { en: "Your NFT arrived! 💎", es: "¡Tu NFT llegó! 💎" },
+            { en: `Your gem was minted on Polygon. Token #${tokenId || ''}`, es: `Tu gema fue minteada en Polygon. Token #${tokenId || ''}` },
         );
       }
       processed++;
     } catch (e) {
       console.error(`Error minteando ${mintId}:`, e.message);
-      await mintRef.set({ status: 'failed', error: e.message, failedAt: Date.now() }, { merge: true });
+      // SEC-M2: retry hasta 5 veces antes de marcar failed. Si llega a 5,
+      // alertamos al admin para revisión manual (gas insuficiente, RPC caído, etc.)
+      const attemptCount = ((data && data.attemptCount) || 0) + 1;
+      if (attemptCount < 5) {
+        await mintRef.set({
+          status: 'pending',
+          attemptCount,
+          lastError: e.message,
+          lastFailedAt: Date.now(),
+        }, { merge: true });
+      } else {
+        await mintRef.set({
+          status: 'failed',
+          attemptCount,
+          error: e.message,
+          failedAt: Date.now(),
+        }, { merge: true });
+        try {
+          const appPassword = gmailAppPassword.value();
+          if (appPassword) {
+            const transporter = nodemailer.createTransport({
+              service: "gmail",
+              auth: { user: NOTIFY_EMAIL, pass: appPassword },
+            });
+            await transporter.sendMail({
+              from: `"MTB Mint Alert" <${NOTIFY_EMAIL}>`,
+              to: NOTIFY_EMAIL,
+              subject: `[MTB] Mint failed after 5 attempts: ${mintId}`,
+              text: `Mint ${mintId} failed.\nuid: ${data && data.uid}\nwallet: ${data && data.walletAddress}\ntier: ${data && data.gemTier}\nerror: ${e.message}`,
+            });
+          }
+        } catch (mailErr) {
+          console.warn("mint alert email failed:", mailErr.message);
+        }
+      }
       failed++;
     }
   }
@@ -1260,7 +1163,7 @@ async function runMintProcessing() {
 }
 
 // Llamable manualmente (solo admin)
-exports.processPendingMints = onCall({ secrets: ["COMPANY_WALLET_KEY"] }, async (request) => {
+exports.processPendingMints = onCall({ secrets: [companyWalletKey, gmailAppPassword] }, async (request) => {
   if (!request.auth || !request.auth.token || !request.auth.token.admin) {
     throw new HttpsError("permission-denied", "Admin only");
   }
@@ -1269,43 +1172,87 @@ exports.processPendingMints = onCall({ secrets: ["COMPANY_WALLET_KEY"] }, async 
 
 // Scheduler automático — corre cada 5 minutos
 exports.mintProcessorScheduled = onSchedule(
-    { schedule: "every 5 minutes", secrets: ["COMPANY_WALLET_KEY"] },
+    { schedule: "every 5 minutes", secrets: [companyWalletKey, gmailAppPassword] },
     async () => {
       const result = await runMintProcessing();
-      console.log("mintProcessorScheduled:", JSON.stringify(result));
+      // SEC: solo counts, no JSON completo (puede contener uids/wallet addresses).
+      console.log(`mintProcessorScheduled: processed=${result.processed || 0} failed=${result.failed || 0}`);
     },
 );
 
 // ─── Referidos ────────────────────────────────────────────────────────────────
 
+exports.checkUsername = onCall(async (request) => {
+  const username = String((request.data && request.data.username) || '').trim().toLowerCase();
+  if (!username || username.length < 3) return { available: false, reason: 'too_short' };
+  if (username.length > 30) return { available: false, reason: 'too_long' };
+  if (!/^[a-z0-9_]+$/.test(username)) return { available: false, reason: 'invalid_chars' };
+  const uid = request.auth && request.auth.uid;
+  const snap = await db.collection("usernames").doc(username).get();
+  if (!snap.exists) return { available: true };
+  // User can keep their own username
+  if (uid && snap.data().uid === uid) return { available: true };
+  return { available: false, reason: 'taken' };
+});
+
+// SEC-M7 + P1-7: rate-limit por uid persistido en Firestore — 10 lookups/min/uid.
 exports.checkReferralCode = onCall(async (request) => {
+  const uid = request.auth && request.auth.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  const ok = await _rateLimitFirestore(`crc_${uid}`, 10, 60 * 1000);
+  if (!ok) {
+    throw new HttpsError("resource-exhausted", "rate_limited");
+  }
   const code = String((request.data && request.data.code) || '').trim().toUpperCase();
-  if (!code) return { valid: false };
+  if (!code || code.length > 16) return { valid: false };
   const q = await db.collection("users").where("referralCode", "==", code).limit(1).get();
   return { valid: !q.empty };
+});
+
+// SEC-N-005: setear walletAddress del usuario via Cloud Function (las rules
+// bloquean escritura directa). Valida formato y limpia el field si se pasa null.
+exports.setUserWallet = onCall(async (request) => {
+  const uid = request.auth && request.auth.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  const okRate = await _rateLimitFirestore(`suw_${uid}`, 5, 60 * 1000);
+  if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
+
+  const raw = (request.data && request.data.walletAddress);
+  const addr = raw === null || raw === '' ? null : String(raw || '').trim();
+  if (addr !== null && !/^0x[a-fA-F0-9]{40}$/.test(addr)) {
+    throw new HttpsError("invalid-argument", "invalid_wallet");
+  }
+  await db.collection("users").doc(uid).set({
+    walletAddress: addr,
+    updatedAt: Date.now(),
+  }, { merge: true });
+  return { ok: true, walletAddress: addr };
 });
 
 exports.applyReferral = onCall(async (request) => {
   const uid = request.auth && request.auth.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  // SEC-N-003: rate-limit 5/min/uid para evitar enumeration de códigos.
+  const okRate = await _rateLimitFirestore(`ar_${uid}`, 5, 60 * 1000);
+  if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
 
   const code = String((request.data && request.data.code) || '').trim().toUpperCase();
-  if (!code) throw new HttpsError("invalid-argument", "Code required");
+  if (!code || code.length > 16) throw new HttpsError("invalid-argument", "Code required");
 
   const userRef = db.collection("users").doc(uid);
-  const userSnap = await userRef.get();
-  if (!userSnap.exists) throw new HttpsError("not-found", "User not found");
-  if (userSnap.data().referredBy) throw new HttpsError("already-exists", "Already applied a referral");
 
-  // Buscar al referidor por código
+  // Buscar al referidor por código (lectura fuera de transacción — solo referencia inmutable)
   const referrerQuery = await db.collection("users").where("referralCode", "==", code).limit(1).get();
   if (referrerQuery.empty) throw new HttpsError("not-found", "Invalid code");
 
   const referrerDoc = referrerQuery.docs[0];
   if (referrerDoc.id === uid) throw new HttpsError("invalid-argument", "Cannot use your own code");
 
-  // Solo marcar referredBy — los picos se acreditan cuando el referido compra un crédito
+  // El check de referredBy va DENTRO de la transacción para evitar la condición de carrera
   await db.runTransaction(async (tx) => {
+    const freshSnap = await tx.get(userRef);
+    if (!freshSnap.exists) throw new HttpsError("not-found", "User not found");
+    if (freshSnap.data().referredBy) throw new HttpsError("already-exists", "Already applied a referral");
     tx.set(userRef, { referredBy: referrerDoc.id, referralAppliedAt: Date.now() }, { merge: true });
   });
 
@@ -1314,25 +1261,21 @@ exports.applyReferral = onCall(async (request) => {
 
 // ─── Pagos crypto ─────────────────────────────────────────────────────────────
 
-const PAYMENT_WALLET = '0x61f7E9df2113Ac2E4a3D18f802AF2EE77cFAAD4f';
-const USDC_CONTRACTS = [
-  '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', // USDC bridged (PoS)
-  '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', // USDC native
-];
-const USDC_ABI = ['event Transfer(address indexed from, address indexed to, uint256 value)'];
-const CREDIT_PRICE_USD = 15;
-const PAYMENT_WINDOW_MS = 30 * 60 * 1000; // 30 minutos
-
-// Crea un pago pendiente con monto único para identificar al usuario
+// Crea un pago pendiente con monto único para identificar al usuario.
+// SEC-002: docId determinístico = "amt_${amountUnits}" + transacción atómica
+// para evitar race condition donde dos uids reclaman el mismo amount y luego
+// `pendingByAmount.set` sobreescribe → robo de crédito por colisión.
 exports.createCryptoPayment = onCall(async (request) => {
   const uid = request.auth && request.auth.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
+
+  const nowMs = Date.now();
 
   // Si ya tiene un pago pendiente vigente, devolverlo
   const existing = await db.collection("pendingCryptoPayments")
       .where("uid", "==", uid)
       .where("status", "==", "waiting")
-      .where("expiresAt", ">", Date.now())
+      .where("expiresAt", ">", nowMs)
       .limit(1).get();
 
   if (!existing.empty) {
@@ -1340,40 +1283,45 @@ exports.createCryptoPayment = onCall(async (request) => {
     return { paymentId: existing.docs[0].id, amount: d.amountDisplay, wallet: PAYMENT_WALLET, expiresAt: d.expiresAt };
   }
 
-  // Generar monto único: $15.01 – $15.99 (centavos aleatorios para identificar el pago)
-  let amountUnits;
-  let amountDisplay;
-  let unique = false;
-  for (let attempt = 0; attempt < 20; attempt++) {
+  // Loop: probar centavos aleatorios hasta encontrar uno libre (con docId determinístico)
+  for (let attempt = 0; attempt < 30; attempt++) {
     const cents = Math.floor(Math.random() * 99) + 1;
-    amountUnits = (CREDIT_PRICE_USD * 100 + cents) * 10000; // USDC 6 decimales
-    amountDisplay = `${CREDIT_PRICE_USD}.${String(cents).padStart(2, "0")}`;
-    const conflict = await db.collection("pendingCryptoPayments")
-        .where("amountUnits", "==", amountUnits)
-        .where("status", "==", "waiting")
-        .where("expiresAt", ">", Date.now())
-        .limit(1).get();
-    if (conflict.empty) {
-      unique = true;
-      break;
+    const amountUnits = (CREDIT_PRICE_USD * 100 + cents) * 10000; // USDC 6 decimales
+    const amountDisplay = `${CREDIT_PRICE_USD}.${String(cents).padStart(2, "0")}`;
+    const docId = `amt_${amountUnits}`;
+    const ref = db.collection("pendingCryptoPayments").doc(docId);
+    const expiresAt = Date.now() + PAYMENT_WINDOW_MS;
+
+    try {
+      await db.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        // Si existe y sigue vigente con otro uid (o el mismo), colisión → reintento
+        if (snap.exists) {
+          const data = snap.data() || {};
+          if (data.status === "waiting" && (data.expiresAt || 0) > Date.now()) {
+            throw new Error("collision");
+          }
+          // Si está expired/completed/cancelled, podemos sobrescribirlo
+        }
+        tx.set(ref, {
+          uid, amountUnits, amountDisplay,
+          status: "waiting",
+          createdAt: Date.now(),
+          expiresAt,
+        });
+      });
+      return { paymentId: docId, amount: amountDisplay, wallet: PAYMENT_WALLET, expiresAt };
+    } catch (e) {
+      if (e.message !== "collision") throw e; // error real, no reintentar
+      // colisión → siguiente attempt
     }
   }
-  if (!unique) throw new HttpsError("resource-exhausted", "try_again");
-
-  const expiresAt = Date.now() + PAYMENT_WINDOW_MS;
-  const ref = await db.collection("pendingCryptoPayments").add({
-    uid, amountUnits, amountDisplay,
-    status: "waiting",
-    createdAt: Date.now(),
-    expiresAt,
-  });
-
-  return { paymentId: ref.id, amount: amountDisplay, wallet: PAYMENT_WALLET, expiresAt };
+  throw new HttpsError("resource-exhausted", "try_again");
 });
 
 // Escanea Polygon cada 5 min buscando transferencias USDC al wallet de pagos
 async function runCryptoPaymentProcessing() {
-  const provider = new ethers.JsonRpcProvider("https://polygon-rpc.com");
+  const provider = new ethers.JsonRpcProvider("https://polygon-bor-rpc.publicnode.com");
   const currentBlock = await provider.getBlockNumber();
   const fromBlock = currentBlock - 200; // ~6-7 min de bloques en Polygon
 
@@ -1384,9 +1332,14 @@ async function runCryptoPaymentProcessing() {
       .get();
   if (pendingSnap.empty) return { processed: 0 };
 
+  // SEC-002 defense-in-depth: array por amount (no sobreescribir).
+  // Con docId determinístico nuevo, no debería haber colisiones, pero data legacy
+  // de createCryptoPayment con random IDs puede tener duplicados.
   const pendingByAmount = new Map();
   pendingSnap.docs.forEach((doc) => {
-    pendingByAmount.set(doc.data().amountUnits, doc);
+    const amt = doc.data().amountUnits;
+    if (!pendingByAmount.has(amt)) pendingByAmount.set(amt, []);
+    pendingByAmount.get(amt).push(doc);
   });
 
   let processed = 0;
@@ -1407,13 +1360,21 @@ async function runCryptoPaymentProcessing() {
 
     for (const event of events) {
       const amount = Number(event.args.value);
-      if (!pendingByAmount.has(amount)) continue;
-
-      const paymentDoc = pendingByAmount.get(amount);
+      const docs = pendingByAmount.get(amount);
+      if (!docs || docs.length === 0) continue;
+      // FCFS: tomar el más antiguo (createdAt asc) para resolver colisiones legacy
+      docs.sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0));
+      const paymentDoc = docs.shift();
       const { uid } = paymentDoc.data();
 
       try {
+        let alreadyProcessed = false;
         await db.runTransaction(async (tx) => {
+          const freshPayment = await tx.get(paymentDoc.ref);
+          if (!freshPayment.exists || freshPayment.data().status !== "waiting") {
+            alreadyProcessed = true;
+            return;
+          }
           const userRef = db.collection("users").doc(uid);
           tx.set(userRef, { serverCredits: admin.firestore.FieldValue.increment(1) }, { merge: true });
           tx.set(paymentDoc.ref, {
@@ -1422,6 +1383,7 @@ async function runCryptoPaymentProcessing() {
             completedAt: Date.now(),
           }, { merge: true });
         });
+        if (alreadyProcessed) continue;
 
         // Bonus de referido: 5 picos para el referidor Y 5 picos para el referido al primer crédito
         try {
@@ -1443,7 +1405,7 @@ async function runCryptoPaymentProcessing() {
             }
           });
           if (bonusReferredBy) {
-            await sendPushToUser(bonusReferredBy, "¡Tu referido compró un crédito! 🎉", "¡Ambos recibieron 5 picos! ¡Seguí invitando amigos!");
+            await sendPushToUser(bonusReferredBy, { en: "Your referral bought a credit! 🎉", es: "¡Tu referido compró un crédito! 🎉" }, { en: "You both received 5 picks! Keep inviting friends!", es: "¡Ambos recibieron 5 picos! ¡Seguí invitando amigos!" });
             // In-app notification for the referrer
             await db.collection("users").doc(bonusReferredBy).collection("notifications").add({
               type: "referral_bonus",
@@ -1463,24 +1425,18 @@ async function runCryptoPaymentProcessing() {
 
         // Push notification al comprador
         try {
-          const buyerSnap = await db.collection("users").doc(uid).get();
-          const pushToken = buyerSnap.exists ? buyerSnap.data().pushToken : null;
-          if (pushToken) {
-            await fetch("https://exp.host/--/api/v2/push/send", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                to: pushToken,
-                title: "¡Pago recibido! 💰",
-                body: "Tu crédito fue acreditado. ¡Ya podés unirte a una cadena!",
-              }),
-            });
-          }
+          await sendPushToUser(
+              uid,
+              {en: "Payment received! 💰", es: "¡Pago recibido! 💰"},
+              {en: "Your credit was added. You can now join a chain!", es: "Tu crédito fue acreditado. ¡Ya podés unirte a una cadena!"},
+          );
         } catch (pushErr) {
           console.warn("Push notification failed:", pushErr.message);
         }
 
-        pendingByAmount.delete(amount); // evitar doble procesamiento
+        // Si todavía hay docs legacy con este amount, no borrar el Map entry —
+        // ya hicimos shift(). Si quedó vacío el array, limpiar.
+        if (docs.length === 0) pendingByAmount.delete(amount);
         processed++;
       } catch (e) {
         console.error("Error procesando pago crypto:", e.message);
@@ -1508,8 +1464,16 @@ exports.notifyAllUsers = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Admin only");
   }
 
-  const title = String((request.data && request.data.title) || '').trim();
-  const body = String((request.data && request.data.body) || '').trim();
+  // SEC-M4 + P2-12: rate-limit 1 broadcast/hora por admin para evitar abuso si la
+  // cuenta admin se compromete (spam a toda la base) o uso accidental.
+  const adminUid = request.auth.uid;
+  const ok = await _rateLimitFirestore(`nau_${adminUid}`, 1, 60 * 60 * 1000);
+  if (!ok) {
+    throw new HttpsError("resource-exhausted", "rate_limited: 1 broadcast/hour");
+  }
+
+  const title = String((request.data && request.data.title) || '').trim().slice(0, 100);
+  const body = String((request.data && request.data.body) || '').trim().slice(0, 500);
   if (!title || !body) throw new HttpsError("invalid-argument", "title and body required");
 
   // Recopilar todos los tokens (en lotes de 500 para no agotar memoria)
@@ -1552,26 +1516,97 @@ exports.notifyAllUsers = onCall(async (request) => {
   }
 
   console.log(`notifyAllUsers: sent=${sent} total_tokens=${tokens.length}`);
+
+  // SEC-P2-12: audit log
+  try {
+    await db.collection("adminActions").add({
+      action: "notifyAllUsers",
+      adminUid,
+      title: title.slice(0, 100),
+      body: body.slice(0, 200),
+      sent,
+      total: tokens.length,
+      ts: Date.now(),
+    });
+  } catch (logErr) {
+    console.warn("notifyAllUsers audit log failed:", logErr.message);
+  }
+
   return { ok: true, sent, total: tokens.length };
 });
 
 exports.cryptoPaymentProcessorScheduled = onSchedule("every 5 minutes", async () => {
   const result = await runCryptoPaymentProcessing();
-  console.log("cryptoPaymentProcessorScheduled:", JSON.stringify(result));
+  // SEC: solo count agregado, no result completo con uids/paymentIds.
+  console.log(`cryptoPaymentProcessorScheduled: processed=${result && result.processed || 0}`);
+});
+
+// FIX-3: Backup diario de Firestore a Cloud Storage.
+// Requiere:
+//   1. Bucket: `gsutil mb -p miningtheblocks-669f6 -l us-central1 gs://miningtheblocks-669f6-backups`
+//   2. Service account de la function tiene rol `roles/datastore.importExportAdmin`
+//      (lo seteás una vez: `gcloud projects add-iam-policy-binding miningtheblocks-669f6 \
+//        --member=serviceAccount:miningtheblocks-669f6@appspot.gserviceaccount.com \
+//        --role=roles/datastore.importExportAdmin`)
+//   3. Bucket lifecycle: borrar exports >30 días para no acumular costos.
+// Si el bucket no existe o el rol no está, la function loguea el error y no falla la app.
+exports.firestoreBackupScheduled = onSchedule("every day 03:00", async () => {
+  try {
+    const { v1 } = require("@google-cloud/firestore");
+    const client = new v1.FirestoreAdminClient();
+    const projectId = process.env.GCLOUD_PROJECT || "miningtheblocks-669f6";
+    const bucket = `gs://${projectId}-backups`;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const [operation] = await client.exportDocuments({
+      name: client.databasePath(projectId, "(default)"),
+      outputUriPrefix: `${bucket}/${dateStr}`,
+      collectionIds: [], // todas las colecciones
+    });
+    console.log(`firestoreBackupScheduled: started export to ${bucket}/${dateStr}, operation=${operation.name}`);
+  } catch (e) {
+    console.error(`firestoreBackupScheduled error: ${e.message}`);
+    // No re-throw: backup fallido no debería tirar reportes infinitos.
+  }
 });
 
 // ─── Web: Verificación y claim de gemas ──────────────────────────────────────
 
-function setCorsHeaders(res) {
-  res.set("Access-Control-Allow-Origin", "*");
-  res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type");
+// SEC-P1-7: rate-limit persistido en Firestore (consistente entre instancias).
+// Antes era Map in-memory; un atacante podía repartir requests entre instancias
+// de Cloud Functions y bypasear el límite.
+//
+// Implementación: doc en rateLimits/{bucket} con array de timestamps en ventana.
+// La TX limpia los viejos y verifica el cap. Si el bucket no existe lo crea.
+async function _rateLimitFirestore(bucket, max, windowMs) {
+  const ref = db.collection("rateLimits").doc(bucket);
+  let allowed = false;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const now = Date.now();
+    const arr = (snap.exists ? (snap.data().ts || []) : []).filter((t) => now - t < windowMs);
+    if (arr.length >= max) {
+      allowed = false;
+      tx.set(ref, { ts: arr, expiresAt: now + windowMs * 2 }, { merge: true });
+      return;
+    }
+    arr.push(now);
+    tx.set(ref, { ts: arr, expiresAt: now + windowMs * 2 }, { merge: true });
+    allowed = true;
+  });
+  return allowed;
 }
 
 exports.verifyGemCode = onRequest(async (req, res) => {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     return res.status(204).send("");
+  }
+  // SEC-A10 + P1-7: rate-limit por IP persistido en Firestore — 30 lookups/min.
+  const ip = req.ip || (req.headers && req.headers["x-forwarded-for"]) || "unknown";
+  const ipKey = String(ip).split(",")[0].trim().replace(/[^a-zA-Z0-9._:]/g, "_").slice(0, 50);
+  const ok = await _rateLimitFirestore(`vgc_${ipKey}`, 30, 60 * 1000);
+  if (!ok) {
+    return res.status(429).json({ error: "rate_limited" });
   }
   const code = ((req.query.code || (req.body && req.body.code)) || "").toString().trim().toUpperCase();
   if (!code) {
@@ -1587,16 +1622,17 @@ exports.verifyGemCode = onRequest(async (req, res) => {
       const errKey = gem.status === "redeemed" || gem.status === "claim_submitted" ? "already_redeemed" : "already_minted";
       return res.status(400).json({ error: errKey });
     }
-    return res.json({ valid: true, tier: gem.gemTier || gem.tier });
+    // SEC-A10: no devolvemos `tier` en el endpoint público — la web sólo necesita
+    // saber si el código es válido. Quien quiera ver el tier debe ir a la app
+    // autenticado y consultar el doc directamente.
+    return res.json({ valid: true });
   } catch (e) {
     console.error("verifyGemCode:", e.message);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
-const GEM_NAMES_ES = ["Diamante rojo", "Painita", "Musgravita", "Jadeíta imperial", "Alejandrita", "Rubí sangre de paloma", "Diamante azul", "Diamante rosa", "Esmeralda colombiana"];
-const NOTIFY_EMAIL = "miningtheblocks@gmail.com";
-const gmailAppPassword = defineSecret("GMAIL_APP_PASSWORD");
+// gmailAppPassword movido arriba (SEC-M2) — ahora es global desde el inicio del archivo.
 
 // Envía un email de verificación personalizado al usuario recién registrado
 exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (request) => {
@@ -1652,7 +1688,7 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
               <!-- Body -->
               <tr>
                 <td style="padding:32px">
-                  <p style="margin:0 0 8px;color:#999;font-size:13px;text-transform:uppercase;letter-spacing:1px;font-weight:700">Hola, ${displayName}</p>
+                  <p style="margin:0 0 8px;color:#999;font-size:13px;text-transform:uppercase;letter-spacing:1px;font-weight:700">Hola, ${esc(displayName)}</p>
                   <h2 style="margin:0 0 16px;color:#ffffff;font-size:20px;font-weight:800">Ya casi estás adentro</h2>
                   <p style="margin:0 0 24px;color:#aaa;font-size:15px;line-height:1.6">
                     Hacé click en el botón para verificar tu email y acceder al juego. El link es válido por <strong style="color:#fff">24 horas</strong>.
@@ -1693,18 +1729,37 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
 });
 
 exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, res) => {
-  setCorsHeaders(res);
+  setRestrictedCorsHeaders(res);
   if (req.method === "OPTIONS") {
     return res.status(204).send("");
   }
   if (req.method !== "POST") {
     return res.status(405).json({ error: "method_not_allowed" });
   }
+
+  // SEC-B3: requerir Firebase ID token + verificar ownership de la gema.
+  // Sin este check, cualquiera con el código (que se filtra por screenshots,
+  // share social, etc.) podía robar el premio via curl porque CORS no protege
+  // contra server-to-server.
+  let authUid = null;
+  try {
+    const authHeader = req.get("Authorization") || "";
+    const m = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (!m) {
+      return res.status(401).json({ error: "unauthenticated" });
+    }
+    const decoded = await admin.auth().verifyIdToken(m[1]);
+    authUid = decoded.uid;
+  } catch (authErr) {
+    console.error("submitGemClaim auth error:", authErr.message);
+    return res.status(401).json({ error: "invalid_token" });
+  }
+
   const body = req.body || {};
-  const code = (body.code || "").toString().trim().toUpperCase();
-  const email = (body.email || "").toString().trim().toLowerCase();
-  const name = (body.name || "").toString().trim();
-  const phone = (body.phone || "").toString().trim();
+  const code = (body.code || "").toString().trim().toUpperCase().slice(0, 30);
+  const email = (body.email || "").toString().trim().toLowerCase().slice(0, 200);
+  const name = (body.name || "").toString().trim().slice(0, 100);
+  const phone = (body.phone || "").toString().trim().slice(0, 30);
   const wallet = (body.wallet || "").toString().trim();
   if (!code || !email || !name || !phone || !wallet) {
     return res.status(400).json({ error: "missing_fields" });
@@ -1722,13 +1777,35 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
       return res.status(404).json({ error: "not_found" });
     }
     const gemDoc = snap.docs[0];
-    const gem = gemDoc.data();
-    if (gem.status !== "unclaimed") {
-      const errKey = gem.status === "redeemed" || gem.status === "claim_submitted" ? "already_redeemed" : "already_minted";
-      return res.status(400).json({ error: errKey });
+
+    // SEC-B3: la gema debe vivir en /users/{uid}/gems/{gemId}. Validamos la
+    // forma exacta para evitar matches espurios via collectionGroup (otras
+    // subcolecciones llamadas "gems" en paths distintos).
+    const pathParts = gemDoc.ref.path.split("/");
+    if (pathParts.length !== 4 || pathParts[0] !== "users" || pathParts[2] !== "gems") {
+      console.warn("submitGemClaim unexpected gem path:", { path: gemDoc.ref.path, code });
+      return res.status(403).json({ error: "not_owner" });
+    }
+    const ownerUid = pathParts[1];
+    if (ownerUid !== authUid) {
+      console.warn("submitGemClaim ownership mismatch:", { authUid, ownerUid, code });
+      return res.status(403).json({ error: "not_owner" });
     }
 
-    const gemTier = gem.gemTier || gem.tier || null;
+    let gemTier;
+    // Atomic check-and-mark: prevents double-claim race condition
+    await db.runTransaction(async (tx) => {
+      const freshSnap = await tx.get(gemDoc.ref);
+      if (!freshSnap.exists) throw new Error("not_found");
+      const gem = freshSnap.data();
+      if (gem.status !== "unclaimed") {
+        const errKey = gem.status === "redeemed" || gem.status === "claim_submitted" ? "already_redeemed" : "already_minted";
+        throw new Error(errKey);
+      }
+      gemTier = gem.gemTier || gem.tier || null;
+      tx.set(gemDoc.ref, { status: "claim_submitted", claimSubmittedAt: Date.now() }, { merge: true });
+    });
+
     const gemName = gemTier ? (GEM_NAMES_ES[gemTier - 1] || `Tier ${gemTier}`) : "Desconocida";
     const gemPrize = gemTier ? (`$${GEM_PRICES[gemTier - 1].toLocaleString()}`) : "-";
 
@@ -1744,9 +1821,6 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
       status: "pending",
     });
 
-    // Marcar la gema para prevenir doble envío
-    await gemDoc.ref.set({ status: "claim_submitted", claimSubmittedAt: Date.now() }, { merge: true });
-
     // Enviar notificación al admin
     try {
       const appPassword = gmailAppPassword.value();
@@ -1756,7 +1830,6 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
           auth: { user: NOTIFY_EMAIL, pass: appPassword },
         });
         const fecha = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
-        const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         await transporter.sendMail({
           from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
           to: NOTIFY_EMAIL,
@@ -1788,17 +1861,75 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
   }
 });
 
-exports.reportProblem = onCall({ secrets: [gmailAppPassword] }, async (request) => {
+// P1-8: log de errores client-side. Rate-limit 100/dia/uid + 10/min/uid via
+// Firestore para evitar que un bug en bucle sature la colección.
+exports.logClientError = onCall(async (request) => {
+  const uid = (request.auth && request.auth.uid) || null;
+  // Permitimos sin auth (bootstrap errors antes del login), pero limitamos por IP.
+  const bucketKey = uid ? `lce_u_${uid}` : `lce_a_${request.rawRequest && request.rawRequest.ip || "unknown"}`;
+  const okMin = await _rateLimitFirestore(`${bucketKey}_min`, 10, 60 * 1000);
+  if (!okMin) {
+    return { ok: false, reason: "rate_limited_min" };
+  }
+  const okDay = await _rateLimitFirestore(`${bucketKey}_day`, 100, 24 * 60 * 60 * 1000);
+  if (!okDay) {
+    return { ok: false, reason: "rate_limited_day" };
+  }
+
   const data = request.data || {};
-  const description = (data.description || "").toString().trim();
+  const scope = String(data.scope || "").slice(0, 80);
+  const msg = String(data.msg || "").slice(0, 500);
+  const ctx = String(data.ctx || "").slice(0, 1000);
+  if (!scope || !msg) {
+    return { ok: false, reason: "missing_fields" };
+  }
+
+  try {
+    await db.collection("errorLog").add({
+      scope, msg, ctx,
+      uid: uid || null,
+      ts: Date.now(),
+      // TTL: borrar después de 30 días via TTL policy en Firestore Console.
+      expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+  } catch (e) {
+    console.error("logClientError write failed:", e.message);
+    return { ok: false, reason: "write_failed" };
+  }
+  return { ok: true };
+});
+
+exports.reportProblem = onCall({ secrets: [gmailAppPassword] }, async (request) => {
+  // SEC-004: requiere auth + rate-limit (1 reporte cada 5 min por uid) para
+  // prevenir spam que pueda saturar la Gmail account (causaría suspensión del
+  // app-password y caída del flow de verificación + NFT notifications).
+  const uid = (request.auth && request.auth.uid) || null;
+  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+
+  const data = request.data || {};
+  const description = (data.description || "").toString().trim().slice(0, 5000);
   if (!description || description.length < 5) {
     throw new HttpsError("invalid-argument", "Description too short");
   }
 
+  // Rate-limit: 1 reporte cada 5 minutos por usuario (campo aparte para no
+  // ensuciar el doc principal del usuario ni colisionar con sus reglas).
+  const RATE_LIMIT_MS = 5 * 60 * 1000;
+  const rateRef = db.collection("userMeta").doc(uid);
+  const rateSnap = await rateRef.get();
+  const lastReportAt = (rateSnap.exists ? (rateSnap.data().lastReportAt || 0) : 0);
+  if (Date.now() - lastReportAt < RATE_LIMIT_MS) {
+    throw new HttpsError("resource-exhausted", "rate_limited");
+  }
+  await rateRef.set({ lastReportAt: Date.now() }, { merge: true });
+
   const userType = (data.userType || "unknown").toString().slice(0, 20);
   const reportType = (data.reportType || "bug").toString().slice(0, 20);
-  const reporterEmail = (data.email || "").toString().trim().slice(0, 200) || null;
-  const uid = (request.auth && request.auth.uid) || null;
+  // SEC-M12: validar formato de email para evitar inyección via "a@b.com,x@evil.com"
+  // que se cuele al replyTo y agregue destinatarios.
+  const rawEmail = (data.email || "").toString().trim().slice(0, 200);
+  const EMAIL_RE = /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/;
+  const reporterEmail = (rawEmail && EMAIL_RE.test(rawEmail)) ? rawEmail : null;
 
   const appPassword = gmailAppPassword.value();
   if (!appPassword) throw new HttpsError("internal", "Email service not configured");
@@ -1808,14 +1939,11 @@ exports.reportProblem = onCall({ secrets: [gmailAppPassword] }, async (request) 
     auth: { user: NOTIFY_EMAIL, pass: appPassword },
   });
 
-  const uidLine = uid ? `<b>UID:</b> ${uid}` : "<b>UID:</b> no auth";
-  const emailLine = reporterEmail ? `<b>Email del usuario:</b> ${reporterEmail}` : "<b>Email del usuario:</b> no indicado";
-
   await transporter.sendMail({
     from: `"MTB Reports" <${NOTIFY_EMAIL}>`,
     to: NOTIFY_EMAIL,
-    replyTo: reporterEmail || NOTIFY_EMAIL,
-    subject: `[MTB] ${reportType.toUpperCase()} · ${userType} · ${uid ? uid.slice(0, 8) : "anon"}`,
+    replyTo: (reporterEmail ? reporterEmail.replace(/[\r\n]/g, "") : null) || NOTIFY_EMAIL,
+    subject: `[MTB] ${reportType.replace(/[\r\n]/g, "").toUpperCase()} · ${userType.replace(/[\r\n]/g, "")} · ${uid ? uid.slice(0, 8) : "anon"}`,
     html: `
       <!DOCTYPE html>
       <html>
@@ -1833,25 +1961,25 @@ exports.reportProblem = onCall({ secrets: [gmailAppPassword] }, async (request) 
               <table style="width:100%;border-collapse:collapse">
                 <tr>
                   <td style="padding:8px 0;border-bottom:1px solid #222;color:#888;font-size:13px;width:40%">Tipo de usuario</td>
-                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#fff;font-size:13px;font-weight:700">${userType}</td>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#fff;font-size:13px;font-weight:700">${esc(userType)}</td>
                 </tr>
                 <tr>
                   <td style="padding:8px 0;border-bottom:1px solid #222;color:#888;font-size:13px">Tipo de reporte</td>
-                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#f87171;font-size:13px;font-weight:700">${reportType.toUpperCase()}</td>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#f87171;font-size:13px;font-weight:700">${esc(reportType.toUpperCase())}</td>
                 </tr>
                 <tr>
-                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#888;font-size:13px">${uidLine.replace(/<[^>]+>/g, "")}</td>
-                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#4a9eff;font-size:12px;font-family:monospace">${uid || "—"}</td>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#888;font-size:13px">UID</td>
+                  <td style="padding:8px 0;border-bottom:1px solid #222;color:#4a9eff;font-size:12px;font-family:monospace">${esc(uid || "—")}</td>
                 </tr>
                 <tr>
-                  <td style="padding:8px 0;color:#888;font-size:13px">${emailLine.replace(/<[^>]+>/g, "")}</td>
-                  <td style="padding:8px 0;color:#22c55e;font-size:13px">${reporterEmail || "—"}</td>
+                  <td style="padding:8px 0;color:#888;font-size:13px">Email del usuario</td>
+                  <td style="padding:8px 0;color:#22c55e;font-size:13px">${esc(reporterEmail || "—")}</td>
                 </tr>
               </table>
               <div style="margin-top:20px">
                 <p style="margin:0 0 8px;color:#888;font-size:12px;text-transform:uppercase;letter-spacing:1px;font-weight:700">Descripción</p>
                 <div style="background:#1a1a1a;border-radius:8px;padding:14px 16px;border:1px solid #2a2a2a">
-                  <p style="margin:0;color:#ddd;font-size:14px;line-height:1.6;white-space:pre-wrap">${description.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>
+                  <p style="margin:0;color:#ddd;font-size:14px;line-height:1.6;white-space:pre-wrap">${esc(description)}</p>
                 </div>
               </div>
             </td>

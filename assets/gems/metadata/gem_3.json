@@ -1,0 +1,38 @@
+{
+  "name": "MTB Musgravita #3",
+  "description": "Mining The Blocks — Musgravita. Tier 3 gem discovered by mining the community cube. Fixed redemption value: $50 USD. Redeem your code at miningtheblocks.com or hold as NFT.",
+  "image": "ipfs://bafkreihyc5mqvtpwju2mkkpipklb3dckqwlmyymknj4k3n5j7v2uz4hnke",
+  "external_url": "https://miningtheblocks.com",
+  "attributes": [
+    {
+      "trait_type": "Gem Name",
+      "value": "Musgravita"
+    },
+    {
+      "trait_type": "Tier",
+      "value": 3,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Rarity",
+      "value": "Epic"
+    },
+    {
+      "trait_type": "Redemption Value",
+      "value": "$50 USD"
+    },
+    {
+      "trait_type": "Quantity/Server",
+      "value": 5,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Game",
+      "value": "Mining The Blocks"
+    },
+    {
+      "trait_type": "Blockchain",
+      "value": "Polygon"
+    }
+  ]
+}

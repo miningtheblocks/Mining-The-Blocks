@@ -84,6 +84,14 @@
     }
     .btn:hover { opacity: 0.78; }
     .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn.loading { position: relative; color: transparent !important; }
+    .btn.loading::after {
+      content: ''; position: absolute; top: 50%; left: 50%;
+      width: 16px; height: 16px; margin: -8px 0 0 -8px;
+      border: 2px solid #fff; border-top-color: transparent;
+      border-radius: 50%; animation: btnspin 0.7s linear infinite;
+    }
+    @keyframes btnspin { to { transform: rotate(360deg); } }
     .msg-error { color: #b00020; font-size: 13px; margin-top: 8px; min-height: 18px; font-weight: 500; }
 
     .card {
@@ -560,14 +568,14 @@
     </div>
 
     <div class="dl-grid">
-      <a href="https://github.com/miningtheblocks/Mining-The-Blocks/releases/download/v1.04/MTB-v1.04.apk" class="dl-btn" id="downloadAndroid">
+      <a href="https://github.com/miningtheblocks/Mining-The-Blocks/releases/download/v1.1.0/MTB-v1.1.0.apk" class="dl-btn" id="downloadAndroid">
         <svg class="dl-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-10C2.67 8 2 8.67 2 9.5v7c0 .83.67 1.5 1.5 1.5S5 17.33 5 16.5v-7C5 8.67 4.33 8 3.5 8zm17 0c-.83 0-1.5.67-1.5 1.5v7c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5v-7c0-.83-.67-1.5-1.5-1.5zm-4.97-5.84 1.3-1.3a.496.496 0 0 0 0-.71.503.503 0 0 0-.71 0l-1.48 1.48A5.84 5.84 0 0 0 12 1c-1.1 0-2.15.23-3.09.63L7.43.15a.503.503 0 0 0-.71 0 .496.496 0 0 0 0 .71l1.3 1.3C6.41 3.07 5 5.38 5 8h14c0-2.62-1.41-4.93-3.47-5.84zM10 6H9V5h1v1zm5 0h-1V5h1v1z" fill="#3ddc84"/>
         </svg>
         <span class="dl-info">
           <span class="dl-title" data-lang="es">Descargar para Android</span>
           <span class="dl-title" data-lang="en visible">Download for Android</span>
-          <span class="dl-sub">APK · v1.04</span>
+          <span class="dl-sub">APK · v1.1.0</span>
         </span>
         <svg class="dl-arrow" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M12 4v12m0 0-4-4m4 4 4-4M4 20h16" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -751,8 +759,9 @@
   function setLoading(btnId, loading) {
     var btn = document.getElementById(btnId);
     btn.disabled = loading;
-    if (!loading) return;
-    btn.textContent = '...';
+    btn.classList.toggle('loading', !!loading);
+    // FIX-P0: NO sobreescribir textContent — destruía los spans data-lang
+    // de i18n y el botón quedaba vacío al volver al estado normal.
   }
 
   async function verifyCode() {

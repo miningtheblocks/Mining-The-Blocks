@@ -1,35 +1,35 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, ActivityIndicator, Switch, Linking, Modal } from 'react-native';
 import { useAppAlert } from '../components/AppAlert';
-
-const TERMS_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/terms.html';
+import { TERMS_URL } from '../constants';
 import { auth, db, storage } from '../firebase/client';
 import { createUserWithEmailAndPassword, EmailAuthProvider, linkWithCredential, updateEmail, reauthenticateWithCredential, sendEmailVerification, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import * as ImagePicker from 'expo-image-picker';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { useI18n } from '../utils/i18n';
-import { useAuth } from '../utils/authContext';
 import { navigate, goBack, navigationRef } from '../utils/navigationRef';
-import { callSendVerificationEmail, callCheckReferralCode, callApplyReferral } from '../firebase/functions';
+import { callSendVerificationEmail, callCheckReferralCode, callApplyReferral, callCheckUsername } from '../firebase/functions';
 
 export default function Registration({ asModal = false, onClose }) {
   const { t } = useI18n();
-  const { exitGuest } = useAuth();
   const [loading, setLoading] = useState(true);
   const [avatarUrl, setAvatarUrl] = useState('');
   const [uploading, setUploading] = useState(false);
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [username, setUsername] = useState('');
-  const [birthday, setBirthday] = useState(''); // YYYY-MM-DD
+  const [originalUsername, setOriginalUsername] = useState('');
+  const [usernameStatus, setUsernameStatus] = useState('idle'); // 'idle'|'checking'|'available'|'taken'|'invalid'
+  const usernameDebounceRef = useRef(null);
+  const [birthday, setBirthday] = useState('');
   const [phone, setPhone] = useState('');
-  const [address, setAddress] = useState('');
-  const [postalCode, setPostalCode] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [isAnon, setIsAnon] = useState(true);
+  // FIX-P1: inicializar desde auth.currentUser para evitar race en cold-start
+  // (si auth se restaura entre el mount y el useEffect, antes quedaba en true).
+  const [isAnon, setIsAnon] = useState(() => !auth.currentUser);
   const [accept18, setAccept18] = useState(false);
   const [acceptRisk, setAcceptRisk] = useState(false);
   const [originalEmail, setOriginalEmail] = useState('');
@@ -50,7 +50,7 @@ export default function Registration({ asModal = false, onClose }) {
       try {
         const u = auth.currentUser;
         if (!u) return;
-        setIsAnon(!!u.isAnonymous);
+        setIsAnon(false); // V1.1.0: sin modo anónimo
         const ref = doc(db, 'users', u.uid);
         const snap = await getDoc(ref);
         if (snap.exists()) {
@@ -60,10 +60,9 @@ export default function Registration({ asModal = false, onClose }) {
           setFirstName(p.firstName || '');
           setLastName(p.lastName || '');
           setUsername(p.username || '');
+          setOriginalUsername(p.username || '');
           setBirthday(p.birthday || '');
           setPhone(p.phone || '');
-          setAddress(p.address || '');
-          setPostalCode(p.postalCode || '');
           const initialEmail = p.email || d.email || u.email || '';
           setEmail(initialEmail);
           setOriginalEmail(initialEmail);
@@ -75,6 +74,25 @@ export default function Registration({ asModal = false, onClose }) {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    const u = username.trim().toLowerCase();
+    if (!u) { setUsernameStatus('idle'); return; }
+    if (u === originalUsername.toLowerCase()) { setUsernameStatus('available'); return; }
+    if (u.length < 3) { setUsernameStatus('invalid'); return; }
+    if (!/^[a-z0-9_]+$/.test(u)) { setUsernameStatus('invalid'); return; }
+    setUsernameStatus('checking');
+    if (usernameDebounceRef.current) clearTimeout(usernameDebounceRef.current);
+    usernameDebounceRef.current = setTimeout(async () => {
+      try {
+        const res = await callCheckUsername(u);
+        setUsernameStatus(res?.available ? 'available' : 'taken');
+      } catch {
+        setUsernameStatus('idle');
+      }
+    }, 600);
+    return () => { if (usernameDebounceRef.current) clearTimeout(usernameDebounceRef.current); };
+  }, [username, originalUsername]);
 
   useEffect(() => {
     const code = referralCode.trim().toUpperCase();
@@ -97,10 +115,27 @@ export default function Registration({ asModal = false, onClose }) {
     setSaving(true);
     try {
       let u = auth.currentUser;
-      if (!u || u.isAnonymous) {
+      // V1.1.0: sin modo anónimo. Si !u → signup nuevo (requiere aceptaciones).
+      if (!u) {
         if (!accept18) { showAlert(t('registration.errorTitle'), t('registration.mustAccept18')); return; }
         if (!acceptRisk) { showAlert(t('registration.errorTitle'), t('registration.mustAcceptRisk')); return; }
       }
+
+      // Required fields
+      if (!firstName.trim() || !lastName.trim() || !username.trim() || !birthday.trim() || !phone.trim()) {
+        showAlert(t('registration.requiredFields'), t('registration.requiredFieldsBody'));
+        return;
+      }
+      // Username must be available
+      if (usernameStatus === 'taken') {
+        showAlert(t('registration.errorTitle'), t('registration.usernameTakenError'));
+        return;
+      }
+      if (usernameStatus === 'invalid') {
+        showAlert(t('registration.errorTitle'), t('registration.usernameInvalidChars'));
+        return;
+      }
+
       // Validaciones según estado de autenticación
       if (!u) {
         // Sin sesión: creación completa requiere email y password
@@ -118,24 +153,6 @@ export default function Registration({ asModal = false, onClose }) {
         }
         const credUser = await createUserWithEmailAndPassword(auth, (email || '').trim(), password || '');
         u = credUser.user;
-        try { await callSendVerificationEmail(); } catch { try { await sendEmailVerification(u); } catch {} }
-      } else if (u.isAnonymous) {
-        // Usuario anónimo: permitir vincular si provee email+password
-        if (!email) {
-          showAlert(t('registration.needValidEmailTitle'), t('registration.needValidEmailBody'));
-          return;
-        }
-        if (!password || password.length < 6) {
-          showAlert(t('registration.weakPasswordTitle'), t('registration.weakPasswordBody'));
-          return;
-        }
-        if (password !== confirmPassword) {
-          showAlert(t('registration.passwordsTitle'), t('registration.passwordsBody'));
-          return;
-        }
-        const credential = EmailAuthProvider.credential((email || '').trim(), password);
-        const linked = await linkWithCredential(u, credential);
-        u = linked.user;
         try { await callSendVerificationEmail(); } catch { try { await sendEmailVerification(u); } catch {} }
       } else {
         // Usuario ya logueado (no anónimo): no exigir email/clave salvo que quiera CAMBIAR el email de la cuenta
@@ -164,7 +181,7 @@ export default function Registration({ asModal = false, onClose }) {
       }
 
       const wasNewAccount = isAnon; // anon user just linked → new account
-      const ref = doc(db, 'users', u.uid);
+      const userDocRef = doc(db, 'users', u.uid);
       const profileData = {
         avatarUrl: avatarUrl || null,
         photoURL: avatarUrl || null,
@@ -173,19 +190,29 @@ export default function Registration({ asModal = false, onClose }) {
         profile: {
           firstName: firstName || null,
           lastName: lastName || null,
-          username: username || null,
+          username: username.trim() || null,
           birthday: birthday || null,
           phone: phone || null,
-          address: address || null,
-          postalCode: postalCode || null,
           email: email || null,
           updatedAt: serverTimestamp(),
         },
       };
-      if (wasNewAccount) {
-        profileData['wallet'] = { balance: 0 };
+      // FIX-P1: wallet ya no se escribe desde cliente — backend usa Admin SDK.
+      // Las Firestore rules bloquean 'wallet'/'stats' fuera del whitelist.
+      await setDoc(userDocRef, profileData, { merge: true });
+
+      // Claim username in usernames collection
+      const unameLower = username.trim().toLowerCase();
+      if (unameLower) {
+        try {
+          // Release old username if changed
+          if (originalUsername && originalUsername.toLowerCase() !== unameLower) {
+            await deleteDoc(doc(db, 'usernames', originalUsername.toLowerCase())).catch(() => {});
+          }
+          await setDoc(doc(db, 'usernames', unameLower), { uid: u.uid, updatedAt: serverTimestamp() });
+          setOriginalUsername(username.trim());
+        } catch {}
       }
-      await setDoc(ref, profileData, { merge: true });
 
       // Aplicar código de referido si se ingresó uno válido en una cuenta nueva
       if (wasNewAccount && referralCode.trim() && referralStatus === 'valid') {
@@ -199,7 +226,7 @@ export default function Registration({ asModal = false, onClose }) {
         const goHome = () => {
           try {
             const u = auth.currentUser;
-            if (u && !u.isAnonymous) {
+            if (u) {
               navigate('ServerList');
             } else {
               navigate('Login');
@@ -339,9 +366,8 @@ export default function Registration({ asModal = false, onClose }) {
       // Cerrar modales y limpiar estado
       setShowVerifyModal(false);
       if (onClose) { try { onClose(); } catch {} }
-      exitGuest();
       await signOut(auth);
-      // App.js recibe el onAuthStateChanged (user=null, isGuest=false) y
+      // App.js recibe el onAuthStateChanged (user=null) y
       // monta el stack de Login. Esperamos un tick para que la transición
       // de stack esté estable antes de hacer el reset de navegación.
       setTimeout(() => {
@@ -365,7 +391,7 @@ export default function Registration({ asModal = false, onClose }) {
       {!asModal && <TouchableOpacity style={styles.backBtn} onPress={() => {
         try {
           const u = auth.currentUser;
-          if (u && !u.isAnonymous) {
+          if (u) {
             navigate('Home');
             return;
           }
@@ -413,7 +439,21 @@ export default function Registration({ asModal = false, onClose }) {
         <TextInput style={styles.input} value={lastName} onChangeText={setLastName} placeholderTextColor="#555" />
 
         <Text style={styles.label}>{t('registration.username')}</Text>
-        <TextInput style={styles.input} value={username} onChangeText={setUsername} autoCapitalize="none" placeholder={t('registration.usernamePlaceholder')} placeholderTextColor="#555" />
+        <View style={styles.rowAlign}>
+          <TextInput style={[styles.input, { flex: 1 }]} value={username} onChangeText={setUsername} autoCapitalize="none" placeholder={t('registration.usernamePlaceholder')} placeholderTextColor="#555" />
+          <Text style={[styles.matchIcon, usernameStatus === 'available' ? styles.matchOk : (usernameStatus === 'taken' || usernameStatus === 'invalid') ? styles.matchBad : styles.matchEmpty]}>
+            {usernameStatus === 'available' ? '✓' : (usernameStatus === 'taken' || usernameStatus === 'invalid') ? '✗' : usernameStatus === 'checking' ? '…' : ''}
+          </Text>
+        </View>
+        {usernameStatus === 'available' && username.trim() && (
+          <Text style={styles.referralValidMsg}>{t('registration.usernameAvailable')}</Text>
+        )}
+        {usernameStatus === 'taken' && (
+          <Text style={styles.referralInvalidMsg}>{t('registration.usernameTaken')}</Text>
+        )}
+        {usernameStatus === 'invalid' && username.trim() && (
+          <Text style={styles.referralInvalidMsg}>{t('registration.usernameInvalidChars')}</Text>
+        )}
 
         <Text style={styles.label}>{t('registration.birthday')}</Text>
         <TextInput
@@ -428,12 +468,6 @@ export default function Registration({ asModal = false, onClose }) {
 
         <Text style={styles.label}>{t('registration.phone')}</Text>
         <TextInput style={styles.input} value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholderTextColor="#555" />
-
-        <Text style={styles.label}>{t('registration.address')}</Text>
-        <TextInput style={styles.input} value={address} onChangeText={setAddress} placeholderTextColor="#555" />
-
-        <Text style={styles.label}>{t('registration.postalCode')}</Text>
-        <TextInput style={styles.input} value={postalCode} onChangeText={setPostalCode} keyboardType="numbers-and-punctuation" placeholderTextColor="#555" />
 
         {/* Email/Password section logic */}
         {isAnon ? (
@@ -494,7 +528,7 @@ export default function Registration({ asModal = false, onClose }) {
           </View>
         )}
 
-        {(!auth.currentUser || auth.currentUser.isAnonymous) && (
+        {!auth.currentUser && (
           <View style={styles.legalSection}>
             <TouchableOpacity style={styles.checkRow} onPress={() => setAccept18(v => !v)} activeOpacity={0.7}>
               <View style={[styles.checkbox, accept18 && styles.checkboxOn]}>

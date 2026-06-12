@@ -6,16 +6,16 @@ import { useAppAlert } from './AppAlert';
 import { GLView } from 'expo-gl';
 import { Renderer } from 'expo-three';
 import * as THREE from 'three';
-import { ensureAnonLogin } from '../firebase/client';
+import { ensureUser } from '../firebase/client';
 import { callMineCube } from '../firebase/functions';
 import { auth, db } from '../firebase/client';
-import { doc, onSnapshot, collection, query, where, setDoc, addDoc, serverTimestamp, increment, runTransaction } from 'firebase/firestore';
+import { doc, onSnapshot, collection, query, where, limit, orderBy, setDoc, addDoc, serverTimestamp, increment, runTransaction } from 'firebase/firestore';
 import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { signOut, onAuthStateChanged } from 'firebase/auth';
 import { useI18n } from '../utils/i18n';
+import { logError } from '../utils/logError';
 import { useOverlayModals } from './OverlayModalsProvider';
 import { useServer } from '../utils/serverContext';
-import { useAuth } from '../utils/authContext';
 import { GEMS, GEM_SHAPE } from '../utils/gems';
 import GemPixelArt from './GemPixelArt';
 import { createRewardIndicatorSprite, MinedCubesRewardStore } from './MinedCellIndicators';
@@ -1338,7 +1338,6 @@ export default function DynamicCube201() {
   const { t, language } = useI18n();
   const { openModal } = useOverlayModals ? useOverlayModals() : { openModal: () => {} };
   const { activeServer } = useServer ? useServer() : { activeServer: null };
-  const { isGuest } = useAuth();
   const { showAlert, AlertComponent } = useAppAlert();
   const serverId = activeServer?.id || null;
   const glRef = useRef(null);
@@ -1348,6 +1347,14 @@ export default function DynamicCube201() {
   const cubeGroupRef = useRef(new THREE.Group());
   const glSizeRef = useRef({ width: screenWidth, height: screenHeight });
   const animRef = useRef(0);
+  // PERF-001: cuando la app va a background, el render loop sigue siendo
+  // programado por RAF pero se saltea `renderer.render()`. Esto preserva el
+  // estado de la cámara/escena para reanudar sin reinicializar.
+  const renderPausedRef = useRef(false);
+  // PERF-001: timestamp de la última interacción (touch/pan/pinch/animaciones).
+  // El render loop usa esto para bajar el FPS cuando el user está inactivo.
+  const lastActivityRef = useRef(Date.now());
+  const markActive = () => { lastActivityRef.current = performance.now(); };
   const faceGroupsRef = useRef([]);
 
   // Sincroniza tamaños de renderer/cámara/viewport usando drawingBuffer (YA escalado por expo-gl)
@@ -1600,19 +1607,21 @@ const handleZoomButton = useCallback((direction) => {
     initAudio();
 
     return () => {
-      audioManager.cleanup();
       if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
     };
   }, []);
 
-  // Pausar/reanudar música cuando la app se minimiza/abre
+  // Pausar/reanudar música y render 3D cuando la app se minimiza/abre.
+  // PERF-001: cuando la app va a background, también pausamos el render loop
+  // (vía renderPausedRef leído dentro del renderLoop) para no quemar GPU/batería
+  // mientras la pantalla está apagada.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'background' || nextAppState === 'inactive') {
-        // App minimizada - pausar música
+        renderPausedRef.current = true;
         audioManager.pauseBackgroundMusic();
       } else if (nextAppState === 'active') {
-        // App abierta - reanudar música
+        renderPausedRef.current = false;
         audioManager.resumeBackgroundMusic();
       }
     });
@@ -1708,10 +1717,16 @@ const handleZoomButton = useCallback((direction) => {
     let unsub = null;
     try {
       const col = collection(db, 'servers', serverId, 'mined');
-      // Query simplificado: solo filtrar por capa actual, cargar TODAS las caras
+      // PERF-004: limit(2500) — protección contra capas con muchos miles de cubos.
+      // Una capa K=100 puede llegar a tener 242k cubos. Sin limit, el listener
+      // descarga TODO en cada cambio. 2500 cubre el caso típico (mineamientos
+      // recientes); si una capa supera ese número, se carga progresivamente al
+      // navegar. K=0 son solo 6 cubos así que tampoco afecta el endgame.
       const q = query(
         col,
-        where('K', '==', currentLayer)
+        where('K', '==', currentLayer),
+        orderBy('minedAt', 'desc'),
+        limit(2500)
       );
       unsub = onSnapshot(q, (snap) => {
         const idsToAdd = [];
@@ -2161,7 +2176,7 @@ const handleZoomButton = useCallback((direction) => {
           const p = data?.profile || {};
           const name = [p.firstName, p.lastName].filter(Boolean).join(' ').trim()
             || p.username
-            || (u.isAnonymous ? 'Jugador Anónimo' : (u.email?.split('@')[0] || 'Jugador'));
+            || (u.email?.split('@')[0] || 'Jugador');
           userDisplayNameRef.current = name;
         });
       } catch (e) {
@@ -2373,6 +2388,7 @@ const handleZoomButton = useCallback((direction) => {
         onMoveShouldSetPanResponder: (evt) => evt.nativeEvent.touches.length <= 2,
         onPanResponderGrant: (evt) => {
           isGesturingRef.current = true;
+          markActive(); // PERF-001: forzar render a 60 FPS durante gesture
           const t = evt.nativeEvent.touches;
           if (t.length === 2) {
             // ZOOM: Guardar distancia inicial entre dedos
@@ -2536,6 +2552,7 @@ const handleZoomButton = useCallback((direction) => {
           }
         },
         onPanResponderMove: (evt, gestureState) => {
+          markActive(); // PERF-001
           const t = evt.nativeEvent.touches;
           // Update touches count continuously
           activeTouchesRef.current = t.length;
@@ -2780,6 +2797,8 @@ const handleZoomButton = useCallback((direction) => {
           }
         },
         onPanResponderRelease: (evt) => {
+          // FIX-P1: mantener FPS alto durante la inercia (no bajar a 30/15 mientras la cámara se desliza)
+          markActive();
           // Siempre cancelar timers de long press y modal diferido al soltar
           // Resetear indicadores de gesto y conteo de dedos activos
           isGesturingRef.current = false;
@@ -2835,6 +2854,7 @@ const handleZoomButton = useCallback((direction) => {
               const DECAY = 0.88; // por frame a 60fps (~1.2s hasta detenerse)
               const MIN_SPEED = 0.00008;
               const inertiaStep = () => {
+                markActive(); // FIX-P1: mantener FPS alto mientras la inercia anima la cámara
                 const _now = Date.now();
                 const _dt = Math.min(50, _now - _lastT);
                 _lastT = _now;
@@ -2897,9 +2917,18 @@ const handleZoomButton = useCallback((direction) => {
         cancelAnimationFrame(animRef.current);
       }
       
-      // Optimización: Throttling moderado del render loop (60 FPS máximo)
+      // PERF-001: throttling dinámico según actividad. Mientras hay interacción
+      // (touch/pan/pinch/animaciones) corremos a 60 FPS. Cuando el user está
+      // quieto, bajamos progresivamente a 30 FPS y luego 15 FPS — ahorra
+      // batería significativamente sin afectar UX percibida.
       let lastRenderTime = 0;
-      const RENDER_THROTTLE_MS = 16; // 60 FPS para mayor fluidez
+      // lastActivityRef ya existe en el scope; lo seteamos en pan/pinch handlers.
+      const ACTIVE_FPS = 60, IDLE_FPS = 30, DEEP_IDLE_FPS = 15;
+      const ACTIVE_THROTTLE_MS = 1000 / ACTIVE_FPS;
+      const IDLE_THROTTLE_MS = 1000 / IDLE_FPS;
+      const DEEP_IDLE_THROTTLE_MS = 1000 / DEEP_IDLE_FPS;
+      const IDLE_AFTER_MS = 1500;
+      const DEEP_IDLE_AFTER_MS = 6000;
 
       // Start new render loop with updated state
       const renderLoop = () => {
@@ -2908,9 +2937,23 @@ const handleZoomButton = useCallback((direction) => {
           return;
         }
 
-        // THROTTLING: Renderizar a 60 FPS para fluidez óptima
+        // PERF-001: pausa cuando la app está en background. Mantenemos el RAF
+        // programado para reanudar sin reinicializar; aumentamos el intervalo
+        // a 500ms para no quemar CPU revisando el flag a 60Hz.
+        if (renderPausedRef.current) {
+          setTimeout(() => {
+            animRef.current = requestAnimationFrame(renderLoop);
+          }, 500);
+          return;
+        }
+
+        // THROTTLING dinámico según actividad reciente.
         const now = performance.now();
-        if (now - lastRenderTime < RENDER_THROTTLE_MS) {
+        const sinceActivity = now - (lastActivityRef.current || 0);
+        let throttleMs = ACTIVE_THROTTLE_MS;
+        if (sinceActivity > DEEP_IDLE_AFTER_MS) throttleMs = DEEP_IDLE_THROTTLE_MS;
+        else if (sinceActivity > IDLE_AFTER_MS) throttleMs = IDLE_THROTTLE_MS;
+        if (now - lastRenderTime < throttleMs) {
           animRef.current = requestAnimationFrame(renderLoop);
           return;
         }
@@ -3532,11 +3575,11 @@ const handleZoomButton = useCallback((direction) => {
             glRef.current.endFrameEXP();
           }
         } catch (renderError) {
-          console.error('Render error:', renderError.message);
-          return; // Detener render loop si hay error
+          // FIX-P1: re-schedule incluso ante excepción transitoria (context lost,
+          // textura corrupta, etc). Antes hacía return → cubo se quedaba congelado.
+          logError('DynamicCube201.renderLoop', renderError);
         }
 
-        // PROTECCIÃƒâ€œN: Solo continuar si no hay errores crÃƒÂ­ticos
         animRef.current = requestAnimationFrame(renderLoop);
       };
       
@@ -3547,7 +3590,52 @@ const handleZoomButton = useCallback((direction) => {
     
     return () => {
       if (animRef.current) cancelAnimationFrame(animRef.current);
+      if (camAnimRef.current) { cancelAnimationFrame(camAnimRef.current); camAnimRef.current = null; }
+      if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
       fragmentsCancelRef.current = true;
+
+      // PERF-007: dispose recursivo de scene + renderer + caches globales para
+      // evitar fugas de GPU/VRAM al desmontar (existían meshes/materiales/texturas vivos).
+      try {
+        const scene = sceneRef.current;
+        if (scene) {
+          scene.traverse((obj) => {
+            if (obj.geometry && obj.geometry.dispose) {
+              try { obj.geometry.dispose(); } catch {}
+            }
+            if (obj.material) {
+              const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+              mats.forEach((m) => {
+                if (m && m.map && m.map.dispose) { try { m.map.dispose(); } catch {} }
+                if (m && m.dispose) { try { m.dispose(); } catch {} }
+              });
+            }
+          });
+          // Vaciar la escena
+          while (scene.children.length > 0) scene.remove(scene.children[0]);
+        }
+      } catch {}
+
+      try {
+        // Vaciar cache global de texturas de números
+        textureCache.forEach((tex) => { if (tex && tex.dispose) { try { tex.dispose(); } catch {} } });
+        textureCache.clear();
+        textureCacheOrder.length = 0;
+      } catch {}
+
+      try {
+        if (rendererRef.current) {
+          if (rendererRef.current.dispose) rendererRef.current.dispose();
+          if (rendererRef.current.forceContextLoss) {
+            try { rendererRef.current.forceContextLoss(); } catch {}
+          }
+        }
+      } catch {}
+
+      rendererRef.current = null;
+      sceneRef.current = null;
+      cameraRef.current = null;
+      glRef.current = null;
     };
   }, []); // Solo ejecutar una vez, usar camStateRef para valores actuales
 
@@ -4085,10 +4173,6 @@ const handleZoomButton = useCallback((direction) => {
                   return;
                 }
                 
-                if (isGuest) {
-                  openModal('registration');
-                  return;
-                }
                 if (!authReady) {
                   showAlert(t('cube.waitTitle'), t('cube.connectingBody'));
                   showHudToast(t('cube.toastConnecting'));
@@ -4304,29 +4388,9 @@ const handleZoomButton = useCallback((direction) => {
                           console.warn('Failed to write mine history entry', e);
                         }
 
-                        // Si el episodio terminó, registrar cierre con el siguiente número
-                        if (resp?.episodeComplete) {
-                          try {
-                            await runTransaction(db, async (tx) => {
-                              const counterSnap = await tx.get(counterRef);
-                              const seq = ((counterSnap.exists() ? counterSnap.data()?.seq : 0) || 0) + 1;
-                              const histRef = doc(historyColRef);
-                              tx.set(histRef, {
-                                type: 'episode_complete',
-                                seq,
-                                ts: serverTimestamp(),
-                                uid: uid || null,
-                                displayName: userDisplayNameRef.current,
-                                episodeNumber: resp?.episodeNumber ?? null,
-                                serverId: serverId ?? null,
-                                totalMined: totalMinedCount + 1,
-                              });
-                              tx.set(counterRef, { seq }, { merge: true });
-                            });
-                          } catch (e) {
-                            console.warn('Failed to write episode_complete history entry', e);
-                          }
-                        }
+                        // SEC-A1: el cierre de episodio se registra desde el backend
+                        // (closeEpisode) para evitar que cualquier miembro escriba
+                        // su uid como "ganador". El cliente NO debe escribir aquí.
                       }
                     } catch (e) {
                       console.warn('Failed to write chain history', e);
@@ -4368,11 +4432,13 @@ const handleZoomButton = useCallback((direction) => {
                   }
                 } catch (e) {
                   console.error('❌ ERROR calling mineCube:', e);
-                  console.error('❌ Error details:', { 
-                    message: e?.message, 
-                    code: e?.code, 
-                    stack: e?.stack?.substring(0, 200) 
+                  console.error('❌ Error details:', {
+                    message: e?.message,
+                    code: e?.code,
+                    stack: e?.stack?.substring(0, 200)
                   });
+                  // CRASH-003: reportar al backend errorLog para tener visibilidad
+                  logError('DynamicCube201.mineCube', e, { apiId, serverId });
                   try {
                     const code = e?.code || (e?.message === 'timeout' ? 'timeout' : 'unknown');
                     const msg = e?.message || String(e);

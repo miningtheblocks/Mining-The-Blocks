@@ -1,0 +1,14 @@
+{
+  "android": {
+    "modules": [
+      "!react-native-reanimated",
+      "!react-native-gesture-handler"
+    ]
+  },
+  "ios": {
+    "modules": [
+      "!react-native-reanimated", 
+      "!react-native-gesture-handler"
+    ]
+  }
+}

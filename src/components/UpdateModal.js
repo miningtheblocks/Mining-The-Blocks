@@ -10,8 +10,27 @@ export default function UpdateModal({ visible, forceUpdate, latestVersion, downl
     : (messageEn || t('update.defaultBody'));
 
   const openDownload = () => {
-    const url = downloadUrl || 'https://miningtheblocks.github.io/Mining-The-Blocks/';
-    Linking.openURL(url).catch(() => {});
+    // SEC-B4: validar scheme/host. downloadUrl viene de Firestore config/app — si
+    // Firebase es comprometido, un atacante podría setear http://, intent://, file://
+    // o un host arbitrario y MITMear a todos los usuarios. Linking.openURL acepta
+    // cualquier scheme; acá filtramos a HTTPS + hosts conocidos.
+    const ALLOWED_HOSTS = new Set([
+      'miningtheblocks.github.io',
+      'github.com',
+      'objects.githubusercontent.com',
+    ]);
+    const fallback = 'https://miningtheblocks.github.io/Mining-The-Blocks/';
+    let safeUrl = fallback;
+    try {
+      const raw = (downloadUrl || '').trim();
+      if (raw) {
+        const u = new URL(raw);
+        if (u.protocol === 'https:' && ALLOWED_HOSTS.has(u.hostname)) {
+          safeUrl = u.toString();
+        }
+      }
+    } catch (_) {}
+    Linking.openURL(safeUrl).catch(() => {});
   };
 
   return (

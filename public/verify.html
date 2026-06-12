@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Mining The Blocks — Verificación de email</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0a0a;
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: #141414;
+      border: 1px solid #2a2a2a;
+      border-radius: 16px;
+      max-width: 440px;
+      width: 100%;
+      overflow: hidden;
+    }
+    .header {
+      background: linear-gradient(135deg, #1a1a1a 0%, #222 100%);
+      padding: 32px 32px 24px;
+      text-align: center;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    .header .icon { font-size: 40px; margin-bottom: 10px; }
+    .header h1 { color: #fff; font-size: 22px; font-weight: 900; letter-spacing: -0.5px; }
+    .header p { color: #666; font-size: 13px; margin-top: 6px; }
+    .body { padding: 36px 32px 32px; text-align: center; }
+    .status-icon { font-size: 52px; margin-bottom: 16px; }
+    .title { color: #fff; font-size: 20px; font-weight: 800; margin-bottom: 10px; }
+    .subtitle { color: #aaa; font-size: 15px; line-height: 1.6; margin-bottom: 24px; }
+    .highlight { color: #22c55e; font-weight: 700; }
+    .steps {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 16px 20px;
+      text-align: left;
+      margin-top: 8px;
+    }
+    .steps p { color: #888; font-size: 12px; margin-bottom: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; }
+    .steps ol { padding-left: 20px; }
+    .steps li { color: #ccc; font-size: 14px; line-height: 1.8; }
+    .error-box {
+      background: #1a0a0a;
+      border: 1px solid #4a1a1a;
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-top: 8px;
+    }
+    .error-box span { color: #f87171; font-size: 14px; line-height: 1.6; }
+    .footer {
+      padding: 14px 32px 20px;
+      border-top: 1px solid #1e1e1e;
+      text-align: center;
+    }
+    .footer p { color: #333; font-size: 11px; margin-top: 4px; }
+    .spinner {
+      display: inline-block;
+      width: 36px; height: 36px;
+      border: 3px solid #2a2a2a;
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <div class="icon">&#9935;</div>
+      <h1>Mining The Blocks</h1>
+      <p>Verificaci&#243;n de cuenta</p>
+    </div>
+
+    <div class="body" id="body-content">
+      <!-- Loading shown by default; JS replaces content -->
+      <div class="spinner"></div>
+      <p class="subtitle">Verificando tu email&hellip;</p>
+    </div>
+
+    <div class="footer">
+      <p>&copy; 2025 Mining The Blocks</p>
+      <p>Si no creaste esta cuenta, ignor&#225; este email.</p>
+    </div>
+  </div>
+
+  <script>
+    var API_KEY = 'AIzaSyDRCpXkNWupz2PmoOG6XcuFENYaU5xIUps';
+
+    function getParam(name) {
+      var search = window.location.search;
+      var re = new RegExp('[?&]' + name + '=([^&]*)');
+      var m = search.match(re);
+      return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : null;
+    }
+
+    function showSuccess() {
+      document.getElementById('body-content').innerHTML =
+        '<div class="status-icon">&#9989;</div>' +
+        '<p class="title">¡Email verificado!</p>' +
+        '<p class="subtitle">Tu cuenta está activa. <span class="highlight">Ya podés iniciar sesión</span> en la app.</p>' +
+        '<div class="steps">' +
+          '<p>Próximos pasos</p>' +
+          '<ol>' +
+            '<li>Abrí la app <strong style="color:#fff">Mining The Blocks</strong></li>' +
+            '<li>Tocá <strong style="color:#fff">"Iniciar sesión"</strong> en la pantalla de registro</li>' +
+            '<li>Ingresá con tu email y contraseña</li>' +
+          '</ol>' +
+        '</div>';
+    }
+
+    function showError(msg) {
+      document.getElementById('body-content').innerHTML =
+        '<div class="status-icon">&#10060;</div>' +
+        '<p class="title">No se pudo verificar</p>' +
+        '<div class="error-box"><span>' + msg + '</span></div>';
+    }
+
+    var mode = getParam('mode');
+    var oobCode = getParam('oobCode');
+
+    if (!mode || !oobCode) {
+      showError('Link inválido. Pedí uno nuevo desde la app tocando "Reenviar email".');
+    } else if (mode !== 'verifyEmail') {
+      showError('Acción no reconocida. Pedí un nuevo link de verificación desde la app.');
+    } else {
+      fetch(
+        'https://identitytoolkit.googleapis.com/v1/accounts:update?key=' + API_KEY,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ oobCode: oobCode })
+        }
+      )
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        if (data.error) {
+          var code = (data.error.message || '').toString();
+          if (code === 'EXPIRED_OOB_CODE') {
+            showError('El link expiró. Pedí uno nuevo desde la app tocando "Reenviar email".');
+          } else if (code === 'INVALID_OOB_CODE') {
+            showError('El link ya fue usado o no es válido. Pedí uno nuevo desde la app.');
+          } else if (code === 'USER_DISABLED') {
+            showError('Esta cuenta fue deshabilitada. Contactá soporte.');
+          } else {
+            showSuccess();
+          }
+        } else {
+          showSuccess();
+        }
+      })
+      .catch(function() {
+        showError('Error de red. Verificá tu conexión e intentá de nuevo.');
+      });
+    }
+  </script>
+</body>
+</html>

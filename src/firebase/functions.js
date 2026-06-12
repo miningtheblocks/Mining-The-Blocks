@@ -3,7 +3,7 @@ import 'react-native-get-random-values';
 import 'react-native-url-polyfill/auto';
 // src/firebase/functions.js
 import { app } from './client';
-import { getFunctions, httpsCallableFromURL, httpsCallable, connectFunctionsEmulator } from 'firebase/functions';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 // Use default region where functions were deployed (us-central1)
 const functions = getFunctions(app, 'us-central1');
@@ -12,14 +12,6 @@ const functions = getFunctions(app, 'us-central1');
 // try {
 //   if (__DEV__) connectFunctionsEmulator(functions, 'localhost', 5001);
 // } catch {}
-
-export async function callInitLayerRewards(layer) {
-  // Direct callable URL (v2) to avoid any auto-discovery issues
-  const url = 'https://initlayerrewards-vavj7ufcja-uc.a.run.app';
-  const fn = httpsCallableFromURL(functions, url);
-  const res = await fn({ layer });
-  return res.data;
-}
 
 export async function callCreateServer(name) {
   const fn = httpsCallable(functions, 'createServer');
@@ -61,24 +53,10 @@ export async function callClaimDailyPick() {
   return res.data; // expect updated status like callGetPeaksStatus
 }
 
-// Claims an ad-based pick if eligible; index: 1 or 2
-export async function callClaimAdPick(index) {
-  const fn = httpsCallable(functions, 'claimAdPick');
-  const res = await fn({ index });
-  return res.data; // expect updated status
-}
-
 // Creates a web ad session (timer page); returns { sessionId, token }
 export async function callCreateAdSession(index) {
   const fn = httpsCallable(functions, 'createAdSession');
   const res = await fn({ index });
-  return res.data;
-}
-
-// Sends a test push notification to the current user's stored Expo push token
-export async function callSendTestPush() {
-  const fn = httpsCallable(functions, 'sendTestPush');
-  const res = await fn({});
   return res.data;
 }
 
@@ -116,6 +94,19 @@ export async function callApplyReferral(code) {
   return res.data;
 }
 
+// SEC-N-005: setear walletAddress server-side (rules bloquean escritura directa)
+export async function callSetUserWallet(walletAddress) {
+  const fn = httpsCallable(functions, 'setUserWallet');
+  const res = await fn({ walletAddress });
+  return res.data;
+}
+
+export async function callCheckUsername(username) {
+  const fn = httpsCallable(functions, 'checkUsername');
+  const res = await fn({ username });
+  return res.data; // { available: bool, reason?: string }
+}
+
 export async function callCheckReferralCode(code) {
   const fn = httpsCallable(functions, 'checkReferralCode');
   const res = await fn({ code });
@@ -149,5 +140,13 @@ export async function callSendVerificationEmail() {
 export async function callReportProblem({ userType, reportType, description, email }) {
   const fn = httpsCallable(functions, 'reportProblem');
   const res = await fn({ userType, reportType, description, email });
+  return res.data;
+}
+
+// P1-8: reporta un error no-fatal del cliente para que quede registrado server-side.
+// El backend rate-limita por uid para evitar spam.
+export async function callLogClientError({ scope, msg, ctx }) {
+  const fn = httpsCallable(functions, 'logClientError');
+  const res = await fn({ scope, msg, ctx });
   return res.data;
 }

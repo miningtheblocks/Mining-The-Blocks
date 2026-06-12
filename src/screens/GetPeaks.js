@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking, AppState, Share, Modal } from 'react-native';
 import { useAppAlert } from '../components/AppAlert';
-import { ensureAnonLogin, auth, db } from '../firebase/client';
+import { ensureUser, auth, db } from '../firebase/client';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { callGetPeaksStatus, callClaimDailyPick, callCreateAdSession } from '../firebase/functions';
 import { useI18n } from '../utils/i18n';
@@ -44,9 +44,11 @@ export default function GetPeaks({ asModal = false, onClose }) {
   };
 
   const refresh = async () => {
+    // FIX-P1: si no hay user, no llamamos la function (devolvería unauthenticated)
+    if (!auth.currentUser) { setLoading(false); return; }
     try {
       setLoading(true);
-      await ensureAnonLogin();
+      await ensureUser();
       const data = await callGetPeaksStatus();
       setPicks(Number(data?.picks || 0));
       setServerNow(Number(data?.serverNow || Date.now()));
@@ -73,7 +75,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
     let unsub = null;
     (async () => {
       try {
-        await ensureAnonLogin();
+        await ensureUser();
         const u = auth.currentUser;
         if (!u) return;
         unsub = onSnapshot(doc(db, 'users', u.uid), (snap) => {
@@ -163,7 +165,9 @@ export default function GetPeaks({ asModal = false, onClose }) {
   const getInviteMsg = () => {
     const code = userData?.referralCode || '';
     const url = 'https://miningtheblocks.github.io/Mining-The-Blocks/';
-    return `Veni a minar conmigo y obtené 5 picos extra con el código ${code}\nDescargá el juego desde: ${url}\nCuando instalás, creá la cuenta e ingresá el código de referido.`;
+    // CQ-007: template viene de i18n y se interpola con code+url
+    const tpl = t('peaks.inviteMessage') || '';
+    return tpl.replace('{code}', code).replace('{url}', url);
   };
 
   const copyReferralCode = async () => {
@@ -211,16 +215,16 @@ export default function GetPeaks({ asModal = false, onClose }) {
           <View style={styles.examplesBox}>
             <Text style={styles.examplesTitle}>{t('peaks.adExamplesTitle')}</Text>
             <Text style={styles.examplesTxt}>
-              {'• "¡Ganaste un iPhone 15!" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
-              {'• "Sos el visitante Nº 1.000.000" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
-              {'• "¡Tu número fue seleccionado!" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
-              {'• "Completá una encuesta y ganá $500" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
-              {'• "Canje de puntos, reclamá $1000" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
-              {'• "Ganaste un auto, hacé clic aquí" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
-              {'• "Tu teléfono tiene un virus" → '}<Text style={styles.fakeTag}>FALSO</Text>{'\n'}
-              {'• Páginas que piden tu número de teléfono → '}<Text style={styles.fakeTag}>NO ingreses</Text>{'\n'}
-              {'• Botones "Descargar" o "Instalar" → '}<Text style={styles.fakeTag}>NO toques</Text>{'\n'}
-              {'• Botón "X" que abre más anuncios → '}<Text style={styles.cautionTag}>CUIDADO</Text>
+              {'• ' + t('peaks.adExamples.iphone')    + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
+              {'• ' + t('peaks.adExamples.visitor')   + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
+              {'• ' + t('peaks.adExamples.selected')  + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
+              {'• ' + t('peaks.adExamples.survey')    + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
+              {'• ' + t('peaks.adExamples.points')    + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
+              {'• ' + t('peaks.adExamples.car')       + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
+              {'• ' + t('peaks.adExamples.virus')     + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
+              {'• ' + t('peaks.adExamples.phone')     + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagDont')}</Text>{'\n'}
+              {'• ' + t('peaks.adExamples.installBtn')+ ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagSkip')}</Text>{'\n'}
+              {'• ' + t('peaks.adExamples.closeBtn')  + ' → '}<Text style={styles.cautionTag}>{t('peaks.adExamples.tagCaution')}</Text>
             </Text>
             <TouchableOpacity style={styles.examplesCloseBtn} onPress={() => setShowExamples(false)} activeOpacity={0.85}>
               <Text style={styles.examplesCloseTxt}>{t('peaks.adExamplesClose')}</Text>
@@ -320,10 +324,10 @@ export default function GetPeaks({ asModal = false, onClose }) {
                 onPress={copyReferralCode}
                 activeOpacity={0.85}
               >
-                <Text style={styles.copyBtnTxt}>{copied ? '✓ Copiado' : '📋 Copiar invitación'}</Text>
+                <Text style={styles.copyBtnTxt}>{copied ? t('peaks.copied') : `📋 ${t('peaks.copy')}`}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.shareBtn} onPress={shareReferralCode} activeOpacity={0.85}>
-                <Text style={styles.shareBtnTxt}>↑ Compartir</Text>
+                <Text style={styles.shareBtnTxt}>↑ {t('peaks.share')}</Text>
               </TouchableOpacity>
             </View>
             <Text style={styles.referralHint}>{t('peaks.referralHint')}</Text>

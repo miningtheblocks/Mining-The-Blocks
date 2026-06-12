@@ -1,0 +1,38 @@
+{
+  "name": "MTB Alejandrita #5",
+  "description": "Mining The Blocks — Alejandrita. Tier 5 gem discovered by mining the community cube. Fixed redemption value: $5 USD. Redeem your code at miningtheblocks.com or hold as NFT.",
+  "image": "ipfs://bafkreicksqnirjzfblrqlfkfnu3tlv4yfffijomccbrdi5oyo6puvw5riq",
+  "external_url": "https://miningtheblocks.com",
+  "attributes": [
+    {
+      "trait_type": "Gem Name",
+      "value": "Alejandrita"
+    },
+    {
+      "trait_type": "Tier",
+      "value": 5,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Rarity",
+      "value": "Uncommon"
+    },
+    {
+      "trait_type": "Redemption Value",
+      "value": "$5 USD"
+    },
+    {
+      "trait_type": "Quantity/Server",
+      "value": 100,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Game",
+      "value": "Mining The Blocks"
+    },
+    {
+      "trait_type": "Blockchain",
+      "value": "Polygon"
+    }
+  ]
+}

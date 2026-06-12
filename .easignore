@@ -1,0 +1,51 @@
+# ─── Build artifacts (gigantes) ───────────────────────────────────────────────
+node_modules
+functions/node_modules
+functions/functions
+android/app/build
+android/build
+android/.gradle
+android/app/.cxx
+.git
+final_complete_apk
+DEV_FILES
+BUILDS_ANTERIORES
+BACKUP_OBSOLETOS
+*.apk
+*.aab
+
+# ─── Scripts/docs locales (no necesarios en build) ─────────────────────────────
+*.ps1
+fix_encoding.js
+INFORME_OPTIMIZACION_COMPLETO.md
+REPORTE_LIMPIEZA_COMPLETADA.md
+SOLUCION_BUILD_RUTAS_LARGAS.md
+BUILD_INSTRUCTIONS.md
+AUDITORIA_PROFESIONAL.md
+docs/archive/
+
+# ─── Backend (Firebase Functions) — no se buildea en EAS ──────────────────────
+functions/
+scripts/
+
+# ─── Smart contracts (Solidity) — no van en el APK ────────────────────────────
+contracts/
+
+# ─── Firebase config (deploy es por separado) ─────────────────────────────────
+firebase.json
+.firebaserc
+firestore.rules
+firestore.indexes.json
+.firebase/
+
+# ─── Sensitivos (defense-in-depth) ────────────────────────────────────────────
+*.keystore
+.env*
+
+# ─── IDE / cache ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+.expo/
+.gstack/
+.claude/
+*.log

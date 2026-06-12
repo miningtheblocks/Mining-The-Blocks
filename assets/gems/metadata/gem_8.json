@@ -1,0 +1,38 @@
+{
+  "name": "MTB Diamante rosa #8",
+  "description": "Mining The Blocks — Diamante rosa. Tier 8 gem discovered by mining the community cube. Fixed redemption value: $0.5 USD. Redeem your code at miningtheblocks.com or hold as NFT.",
+  "image": "ipfs://bafkreihfsqo66ssqmx2fimpk4eunamc5smajgp74x56pxoykarlnofa4ka",
+  "external_url": "https://miningtheblocks.com",
+  "attributes": [
+    {
+      "trait_type": "Gem Name",
+      "value": "Diamante rosa"
+    },
+    {
+      "trait_type": "Tier",
+      "value": 8,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Rarity",
+      "value": "Common"
+    },
+    {
+      "trait_type": "Redemption Value",
+      "value": "$0.5 USD"
+    },
+    {
+      "trait_type": "Quantity/Server",
+      "value": 4000,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Game",
+      "value": "Mining The Blocks"
+    },
+    {
+      "trait_type": "Blockchain",
+      "value": "Polygon"
+    }
+  ]
+}

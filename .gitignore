@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Firebase
+.firebase/
+.firebaserc
+
+# Android builds
+android/app/build/
+*.apk
+*.aab
+
+# iOS builds
+ios/build/
+*.ipa
+
+# Keystores (NUNCA commitear, sobre todo el release)
+debug.keystore
+*.keystore
+*.jks
+mtb-release.*
+
+# Service accounts y credenciales
+service-account*.json
+firebase-adminsdk-*.json
+credentials.json
+google-services-private.json
+
+# Mapping de ProGuard/R8 (subir a Sentry/Crashlytics separadamente)
+android/app/build/outputs/mapping/
+
+# EAS
+.eas.json
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup / temp files
+BACKUP_OBSOLETOS/
+BUILDS_ANTERIORES/
+DEV_FILES/
+final_complete_apk/

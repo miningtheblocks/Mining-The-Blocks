@@ -10,9 +10,6 @@ export default function ReportProblem({ onClose }) {
   const { showAlert, AlertComponent } = useAppAlert();
 
   const u = auth.currentUser;
-  const detectedType = u && !u.isAnonymous ? 'registered' : 'anonymous';
-
-  const [userType, setUserType] = useState(detectedType);
   const [reportType, setReportType] = useState('bug');
   const [description, setDescription] = useState('');
   const [email, setEmail] = useState(u?.email || '');
@@ -20,9 +17,7 @@ export default function ReportProblem({ onClose }) {
   const [sent, setSent] = useState(false);
 
   useEffect(() => {
-    const u2 = auth.currentUser;
-    setUserType(u2 && !u2.isAnonymous ? 'registered' : 'anonymous');
-    setEmail(u2?.email || '');
+    setEmail(auth.currentUser?.email || '');
   }, []);
 
   const onSend = async () => {
@@ -33,7 +28,7 @@ export default function ReportProblem({ onClose }) {
     setSending(true);
     try {
       await callReportProblem({
-        userType,
+        userType: 'registered',
         reportType,
         description: description.trim(),
         email: email.trim() || null,
@@ -62,29 +57,6 @@ export default function ReportProblem({ onClose }) {
 
   return (
     <View style={styles.container}>
-      {/* User type */}
-      <Text style={styles.label}>{t('report.userTypeLabel')}</Text>
-      <View style={styles.toggleRow}>
-        <TouchableOpacity
-          style={[styles.toggleBtn, userType === 'registered' && styles.toggleBtnActive]}
-          onPress={() => setUserType('registered')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.toggleTxt, userType === 'registered' && styles.toggleTxtActive]}>
-            {t('report.registered')}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.toggleBtn, userType === 'anonymous' && styles.toggleBtnActive]}
-          onPress={() => setUserType('anonymous')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.toggleTxt, userType === 'anonymous' && styles.toggleTxtActive]}>
-            {t('report.anonymous')}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
       {/* Report type */}
       <Text style={styles.label}>{t('report.reportTypeLabel')}</Text>
       <View style={styles.toggleRow}>

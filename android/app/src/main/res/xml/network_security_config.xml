@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SEC-A3: Network security config para sideload.
+
+  Sin Play Integrity, un atacante con cert root instalado en el teléfono
+  del usuario (vía VPN maliciosa, perfil de configuración, etc.) puede
+  MITMear la app. Esta config:
+    - prohíbe cleartext (HTTP) globalmente en release
+    - confía sólo en CAs del sistema (no en las del usuario)
+
+  Pinning de Google CAs NO está habilitado por defecto: Google rota CAs
+  ocasionalmente y un pin mal calibrado rompe la app sin OTA. Si querés
+  habilitar pinning, descomentá el bloque <domain-config> de abajo y
+  verificá las huellas vigentes en https://pki.goog antes del release.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false">
+    <trust-anchors>
+      <certificates src="system"/>
+    </trust-anchors>
+  </base-config>
+
+  <!--
+  <domain-config>
+    <domain includeSubdomains="true">firebaseio.com</domain>
+    <domain includeSubdomains="true">firestore.googleapis.com</domain>
+    <domain includeSubdomains="true">cloudfunctions.net</domain>
+    <domain includeSubdomains="true">a.run.app</domain>
+    <pin-set expiration="2027-12-31">
+      <pin digest="SHA-256">hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Gc=</pin>
+      <pin digest="SHA-256">VfBmh1V4DRk0SrlUFqHkqNgEKJxWk0VnGw9HHmDjmJk=</pin>
+    </pin-set>
+  </domain-config>
+  -->
+</network-security-config>

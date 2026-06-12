@@ -3,35 +3,32 @@ import {
   View, Text, FlatList, TouchableOpacity, TextInput,
   StyleSheet, ActivityIndicator, Modal,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppAlert } from '../components/AppAlert';
 import { useNavigation } from '@react-navigation/native';
 import { collection, query, orderBy, limit, onSnapshot, doc, deleteDoc } from 'firebase/firestore';
-import { db, auth, ensureAnonLogin } from '../firebase/client';
-import { signOut, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
+import { db, auth } from '../firebase/client';
+import { signOut, onAuthStateChanged } from 'firebase/auth';
 import { callCreateServer, callJoinServer, callCheckServerAccess } from '../firebase/functions';
 import { useServer } from '../utils/serverContext';
 import { useI18n } from '../utils/i18n';
-import { useAuth } from '../utils/authContext';
 import { useOverlayModals } from '../components/OverlayModalsProvider';
 import audioManager from '../utils/audioManager';
 import UpdateModal from '../components/UpdateModal';
+import { APP_VERSION, compareVersions } from '../constants';
+import { logError } from '../utils/logError';
 
-const APP_VERSION = '1.0.4';
-function compareVersions(v1, v2) {
-  const a = (v1 || '0').split('.').map(Number);
-  const b = (v2 || '0').split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((a[i] || 0) < (b[i] || 0)) return -1;
-    if ((a[i] || 0) > (b[i] || 0)) return 1;
-  }
-  return 0;
-}
+// SEC-A7: anti-downgrade. Cacheamos el máximo latestVersion visto históricamente.
+// Si Firebase es comprometido y un atacante setea latestVersion a una versión
+// vieja+vulnerable con su downloadUrl, ignoramos el "update" porque < max visto.
+const LATEST_VERSION_KEY = '@mtb/lastSeenLatestVersion';
+// P2-11: cache del último config/app conocido (fallback si Firebase tiene outage)
+const CONFIG_CACHE_KEY = '@mtb/cachedConfigApp';
 
 export default function ServerList() {
   const navigation = useNavigation();
   const { t } = useI18n();
   const { openModal } = useOverlayModals();
-  const { isGuest } = useAuth();
   const [menuVisible, setMenuVisible] = useState(false);
   const { setActiveServer } = useServer();
   const [servers, setServers] = useState([]);
@@ -60,19 +57,66 @@ export default function ServerList() {
 
   // Real-time version check — blocks access if a newer version exists
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'config', 'app'), (snap) => {
-      if (!snap.exists()) return;
-      const cfg = snap.data();
-      const { minVersion, latestVersion, downloadUrl, forceUpdate, updateMessageEn, updateMessageEs } = cfg;
+    // SEC-A7: anti-downgrade. Cargamos el cache ANTES de suscribirnos al snapshot
+    // para evitar el race en el que el primer fire de Firebase llega con
+    // cachedMax=null y "envenena" el storage con un latestVersion bajo malicioso.
+    // P2-11: además cacheamos la config completa por si Firebase tiene un outage
+    // al abrir la app (sino el cliente queda esperando para siempre la primera
+    // snapshot y no muestra el listado de servers).
+    let cachedMax = null;
+    let unsub = null;
+    let cancelled = false;
+    let firstSnapshotArrived = false;
+
+    const processConfig = (cfg, fromCache) => {
+      const { minVersion, latestVersion, downloadUrl, forceUpdate, updateMessageEn, updateMessageEs } = cfg || {};
+      let effectiveLatest = latestVersion;
+      if (latestVersion) {
+        if (cachedMax && compareVersions(latestVersion, cachedMax) < 0) {
+          effectiveLatest = cachedMax;
+        } else if (!cachedMax || compareVersions(latestVersion, cachedMax) > 0) {
+          cachedMax = latestVersion;
+          if (!fromCache) AsyncStorage.setItem(LATEST_VERSION_KEY, latestVersion).catch(() => {});
+        }
+      }
       const needsForce = minVersion && compareVersions(APP_VERSION, minVersion) < 0;
-      const needsSoft  = latestVersion && compareVersions(APP_VERSION, latestVersion) < 0;
+      const needsSoft  = effectiveLatest && compareVersions(APP_VERSION, effectiveLatest) < 0;
       if (needsForce || needsSoft) {
-        setUpdateInfo({ forceUpdate: needsForce || !!forceUpdate, latestVersion, downloadUrl, messageEn: updateMessageEn, messageEs: updateMessageEs });
+        setUpdateInfo({ forceUpdate: needsForce || !!forceUpdate, latestVersion: effectiveLatest, downloadUrl, messageEn: updateMessageEn, messageEs: updateMessageEs });
       } else {
         setUpdateInfo(null);
       }
-    }, () => {});
-    return () => unsub();
+    };
+
+    (async () => {
+      try {
+        cachedMax = await AsyncStorage.getItem(LATEST_VERSION_KEY);
+      } catch (_) {}
+      if (cancelled) return;
+
+      // Fallback inmediato si tenemos config cacheado (Firebase offline u outage)
+      try {
+        const cachedRaw = await AsyncStorage.getItem(CONFIG_CACHE_KEY);
+        if (cachedRaw && !firstSnapshotArrived) {
+          processConfig(JSON.parse(cachedRaw), true);
+        }
+      } catch (_) {}
+      if (cancelled) return;
+
+      unsub = onSnapshot(doc(db, 'config', 'app'), (snap) => {
+        if (!snap.exists()) return;
+        firstSnapshotArrived = true;
+        const cfg = snap.data();
+        processConfig(cfg, false);
+        // Cache para próximo cold start
+        AsyncStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(cfg)).catch(() => {});
+      }, (err) => { logError('ServerList.configSnapshot', err); });
+    })();
+
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
   }, []);
 
   useEffect(() => {
@@ -85,8 +129,11 @@ export default function ServerList() {
 
   useEffect(() => {
     if (!currentUid) { setJoinedServerIds(new Set()); return; }
+    // PERF-009: limit(200) — soporta hasta 200 servers joineados; si crece,
+    // paginar.  Sin límite, usuarios con historia larga descargan todo en cada
+    // snapshot.
     const unsub = onSnapshot(
-      collection(db, 'users', currentUid, 'serverAccess'),
+      query(collection(db, 'users', currentUid, 'serverAccess'), limit(200)),
       (snap) => setJoinedServerIds(new Set(snap.docs.map(d => d.id))),
       () => {},
     );
@@ -95,8 +142,10 @@ export default function ServerList() {
 
   useEffect(() => {
     if (!currentUid) return;
+    // PERF-009: limit(50) — notificaciones recientes; el cliente las borra al
+    // mostrarlas, así que 50 cubre con creces el caso normal.
     const unsub = onSnapshot(
-      collection(db, 'users', currentUid, 'notifications'),
+      query(collection(db, 'users', currentUid, 'notifications'), limit(50)),
       (snap) => {
         const referrerNotif = snap.docs.find(d => d.data().type === 'referral_bonus');
         if (referrerNotif) setReferralBonusNotif({ id: referrerNotif.id });
@@ -129,31 +178,21 @@ export default function ServerList() {
   }, []);
 
   const refreshAuth = async () => {
-    if (!auth.currentUser) {
-      await signInAnonymously(auth);
-      return;
-    }
+    // V1.1.0: sin anonymous. Si no hay user, App.js ya está mostrando Login.
+    if (!auth.currentUser) return;
     try {
       await auth.currentUser.getIdToken(true);
-    } catch {
-      // Token irrecuperable (cuenta anónima vencida) → nueva sesión anónima
-      if (auth.currentUser.isAnonymous) {
-        await signInAnonymously(auth);
-      }
-      // email users: onAuthStateChanged will redirect to Login automatically
+    } catch (e) {
+      logError('ServerList.refreshAuth', e);
+      // Token irrecuperable → forzar signOut, App.js redirige a Login.
+      try { await signOut(auth); } catch (signErr) { logError('ServerList.refreshAuth.signOut', signErr); }
     }
   };
 
   const goToRegister = () => openModal('registration');
 
   const joinServer = async (server) => {
-    if (isGuest) {
-      // Guests can view the cube but not mine — let them in directly
-      setActiveServer(server);
-      navigation.navigate('GameDrawer');
-      return;
-    }
-    if (currentUser?.isAnonymous) { goToRegister(); return; }
+    if (!currentUser) { goToRegister(); return; }
     setJoining(server.id);
     const doJoin = async () => {
       const { hasAccess, serverCredits } = await callCheckServerAccess(server.id);
@@ -195,13 +234,14 @@ export default function ServerList() {
         navigation.navigate('GameDrawer');
       }
     } catch (e) {
+      logError('ServerList.joinServer', e, { serverId: server?.id });
       const msg = e?.message || '';
       const code = e?.code || '';
       if (msg.includes('server_full')) {
         showAlert(t('serverList.serverFullTitle'), t('serverList.serverFullMsg'));
       } else if (code === 'functions/unauthenticated') {
         showAlert(t('serverList.sessionExpiredTitle'), t('serverList.sessionExpiredMsg'), [
-          { text: 'OK', style: 'destructive', onPress: async () => { try { await signOut(auth); } catch {} } },
+          { text: 'OK', style: 'destructive', onPress: async () => { try { await signOut(auth); } catch (signErr) { logError('ServerList.signOut', signErr); } } },
         ]);
       } else if (code === 'functions/permission-denied') {
         showAlert(t('serverList.noCreditsTitle'), msg || t('serverList.errorJoin'));
@@ -214,7 +254,7 @@ export default function ServerList() {
   };
 
   const handleCreate = async () => {
-    if (isGuest || currentUser?.isAnonymous) { goToRegister(); return; }
+    if (!currentUser) { goToRegister(); return; }
     const name = serverName.trim();
     if (!name) return;
     setCreating(true);
@@ -294,6 +334,8 @@ export default function ServerList() {
               onPress={() => joinServer(item)}
               activeOpacity={0.8}
               disabled={joining === item.id}
+              accessibilityRole="button"
+              accessibilityLabel={typeof label === 'string' ? label : t('serverList.join')}
             >
               {joining === item.id
                 ? <ActivityIndicator size="small" color="#fff" />
@@ -346,7 +388,10 @@ export default function ServerList() {
 
   const openItem = (key) => {
     setMenuVisible(false);
-    if (key === 'buyCredits' && (isGuest || currentUser?.isAnonymous)) { goToRegister(); return; }
+    if (key === 'buyCredits' && !currentUser) { goToRegister(); return; }
+    // CQ-013: el menú ya no tiene 'subscribe' (era redundante con Login).
+    // Si en el futuro reaparece, navegar a Login screen en lugar de openModal.
+    if (key === 'login') { navigation.navigate('Login'); return; }
     openModal(key);
   };
 
@@ -356,7 +401,7 @@ export default function ServerList() {
       {/* Blocking update modal */}
       <UpdateModal
         visible={!!updateInfo}
-        forceUpdate={true}
+        forceUpdate={!!updateInfo?.forceUpdate}
         latestVersion={updateInfo?.latestVersion}
         downloadUrl={updateInfo?.downloadUrl}
         messageEn={updateInfo?.messageEn}
@@ -392,7 +437,7 @@ export default function ServerList() {
       <Modal transparent animationType="fade" visible={menuVisible} onRequestClose={() => setMenuVisible(false)}>
         <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
           <View style={styles.menuPanel}>
-            <Text style={styles.menuHeader}>Menu</Text>
+            <Text style={styles.menuHeader}>{t('drawer.menu')}</Text>
             {[
               { label: t('drawer.getPeaks'),  key: 'peaks' },
               { label: t('drawer.gems'),      key: 'gems' },
@@ -400,8 +445,8 @@ export default function ServerList() {
               { label: t('drawer.config'),    key: 'config' },
               { label: t('drawer.howToPlay'), key: 'howToPlay' },
               { label: t('drawer.buyCredits'), key: 'buyCredits' },
-              ...(!currentUser || currentUser.isAnonymous
-                ? [{ label: t('drawer.subscribe'), key: 'subscribe' }]
+              ...(!currentUser
+                ? [{ label: t('drawer.signIn') || 'Sign in', key: 'login' }]
                 : []),
             ].map((item) => (
               <TouchableOpacity key={item.key} style={styles.menuItem} onPress={() => openItem(item.key)} activeOpacity={0.8}>
@@ -412,7 +457,7 @@ export default function ServerList() {
             <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); openModal('report'); }} activeOpacity={0.8}>
               <Text style={[styles.menuItemTxt, { color: '#888' }]}>⚠ {t('login.report')}</Text>
             </TouchableOpacity>
-            {currentUser && !currentUser.isAnonymous && (
+            {currentUser && (
               <>
                 <View style={styles.menuSep} />
                 <TouchableOpacity style={styles.menuItem} onPress={handleSignOut} activeOpacity={0.8}>

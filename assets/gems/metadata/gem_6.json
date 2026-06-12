@@ -1,0 +1,38 @@
+{
+  "name": "MTB Rubí sangre de paloma #6",
+  "description": "Mining The Blocks — Rubí sangre de paloma. Tier 6 gem discovered by mining the community cube. Fixed redemption value: $2 USD. Redeem your code at miningtheblocks.com or hold as NFT.",
+  "image": "ipfs://bafkreiek5sw7p7ez3bnf7pfzegjukem5rx2lbz7gted3nucgv2wqpq3xv4",
+  "external_url": "https://miningtheblocks.com",
+  "attributes": [
+    {
+      "trait_type": "Gem Name",
+      "value": "Rubí sangre de paloma"
+    },
+    {
+      "trait_type": "Tier",
+      "value": 6,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Rarity",
+      "value": "Common"
+    },
+    {
+      "trait_type": "Redemption Value",
+      "value": "$2 USD"
+    },
+    {
+      "trait_type": "Quantity/Server",
+      "value": 500,
+      "display_type": "number"
+    },
+    {
+      "trait_type": "Game",
+      "value": "Mining The Blocks"
+    },
+    {
+      "trait_type": "Blockchain",
+      "value": "Polygon"
+    }
+  ]
+}

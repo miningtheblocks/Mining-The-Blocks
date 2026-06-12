@@ -1,14 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Share, ActivityIndicator, Linking } from 'react-native';
 import { useAppAlert } from '../components/AppAlert';
-
-const TERMS_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/terms.html';
+import { TERMS_URL } from '../constants';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db, auth } from '../firebase/client';
 import { callCreateCryptoPayment } from '../firebase/functions';
 import { useI18n } from '../utils/i18n';
+import { logError } from '../utils/logError';
 
-const PAYMENT_WALLET = '0x61f7E9df2113Ac2E4a3D18f802AF2EE77cFAAD4f';
+// SEC-B2: PAYMENT_WALLET viene del backend (createCryptoPayment response).
+// NO hardcodear en cliente — un APK modificado podría reemplazar la constante
+// y redirigir todos los pagos al wallet del atacante.
 
 function formatTimer(ms) {
   if (ms <= 0) return '00:00';
@@ -66,6 +68,7 @@ export default function BuyCredits({ onClose }) {
       setPayment(result);
       setStatus('waiting');
     } catch (e) {
+      logError('BuyCredits.generatePayment', e);
       showAlert('Error', e?.message || t('buyCredits.errorGenerate'));
     } finally {
       setLoading(false);
@@ -144,8 +147,8 @@ export default function BuyCredits({ onClose }) {
 
           {/* Wallet */}
           <Text style={[s.fieldLabel, { marginTop: 16 }]}>{t('buyCredits.toAddress')}</Text>
-          <TouchableOpacity style={s.copyRow} onPress={() => copyToClipboard(PAYMENT_WALLET, 'wallet')} activeOpacity={0.75}>
-            <Text style={s.walletTxt} numberOfLines={1} ellipsizeMode="middle">{PAYMENT_WALLET}</Text>
+          <TouchableOpacity style={s.copyRow} onPress={() => copyToClipboard(payment.wallet, 'wallet')} activeOpacity={0.75}>
+            <Text style={s.walletTxt} numberOfLines={1} ellipsizeMode="middle">{payment.wallet}</Text>
             <View style={s.copyBtn}><Text style={s.copyTxt}>{t('buyCredits.copy')}</Text></View>
           </TouchableOpacity>
 

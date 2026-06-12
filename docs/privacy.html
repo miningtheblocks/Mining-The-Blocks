@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="index, follow">
+<title>Política de Privacidad — Mining The Blocks</title>
+<style>
+  body { margin:0; padding:0; background:#0a0a0a; color:#ddd; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; line-height:1.65; }
+  .container { max-width:760px; margin:0 auto; padding:40px 24px 60px; }
+  h1 { color:#fff; font-size:28px; margin:0 0 8px; }
+  h2 { color:#fff; font-size:20px; margin:32px 0 12px; padding-bottom:8px; border-bottom:1px solid #2a2a2a; }
+  h3 { color:#ffd700; font-size:15px; margin:20px 0 8px; }
+  p, li { font-size:14px; color:#bbb; }
+  a { color:#5dade2; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .meta { color:#666; font-size:12px; margin-bottom:24px; }
+  .lang-toggle { text-align:right; font-size:12px; margin-bottom:8px; }
+  .footer { margin-top:48px; padding-top:24px; border-top:1px solid #2a2a2a; color:#666; font-size:12px; text-align:center; }
+  ul { padding-left:22px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="lang-toggle"><a href="#en">English</a></div>
+
+  <h1>Política de Privacidad</h1>
+  <p class="meta">Última actualización: 11 de junio de 2026</p>
+
+  <p>Esta política describe qué datos recolecta la app <strong>Mining The Blocks</strong> ("MTB", "nosotros") y cómo los usamos. Al instalar o usar la app aceptás esta política.</p>
+
+  <h2>1. Datos que recolectamos</h2>
+
+  <h3>1.1 Identificación de cuenta</h3>
+  <ul>
+    <li><strong>Email</strong> (si te registrás con email/contraseña). Para login y notificaciones críticas.</li>
+    <li><strong>Identificador de usuario anónimo</strong> (Firebase Auth UID) cuando jugás sin registrarte.</li>
+    <li><strong>Nombre de usuario</strong> (displayName) que vos elegís — visible para otros jugadores en el feed.</li>
+  </ul>
+
+  <h3>1.2 Datos de juego</h3>
+  <ul>
+    <li>Créditos, picks, capas minadas, gemas obtenidas, historial de jugadas.</li>
+    <li>Servidores en los que te uniste y rol (creador / miembro).</li>
+    <li>Código de referido (si aplicaste uno o tenés invitados).</li>
+  </ul>
+
+  <h3>1.3 Datos de pago crypto</h3>
+  <ul>
+    <li><strong>Dirección de wallet</strong> (0x…) que pegás vos en la app — para mintear NFTs de tus gemas.</li>
+    <li><strong>Identificador del pago USDC</strong> que generamos por sesión.</li>
+    <li>No almacenamos claves privadas, frases semilla, ni datos de tarjetas de crédito.</li>
+  </ul>
+
+  <h3>1.4 Datos para canje de premios (formulario web)</h3>
+  <ul>
+    <li>Nombre, email, teléfono y wallet que ingresás al canjear una gema en miningtheblocks.github.io.</li>
+    <li>Esos datos quedan en Firestore (<code>gemClaims</code>) sólo para procesar tu premio.</li>
+  </ul>
+
+  <h3>1.5 Datos técnicos</h3>
+  <ul>
+    <li>Token de notificaciones push (Expo / FCM) si las activás.</li>
+    <li>Versión de la app, idioma del dispositivo (en/es).</li>
+    <li>Logs de errores que la app genera durante uso normal (sin datos personales identificables).</li>
+  </ul>
+
+  <h3>1.6 Publicidad</h3>
+  <ul>
+    <li>Usamos <strong>Google AdMob</strong> para mostrar anuncios premiados (rewarded ads). AdMob puede recolectar identificadores publicitarios anónimos del dispositivo (AD_ID) según su propia política: <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">policies.google.com/privacy</a>.</li>
+  </ul>
+
+  <h2>2. Para qué usamos los datos</h2>
+  <ul>
+    <li>Operar el juego (autenticación, persistir progreso, sincronizar entre dispositivos).</li>
+    <li>Distribuir premios (gemas, créditos, referidos).</li>
+    <li>Procesar pagos crypto y mintear NFTs en Polygon.</li>
+    <li>Enviar notificaciones (referidos, gemas listas, episodio terminado).</li>
+    <li>Prevenir fraude, abuso y bots.</li>
+    <li>Mejorar la app (anonimizado).</li>
+  </ul>
+
+  <h2>3. Con quién compartimos datos</h2>
+  <ul>
+    <li><strong>Google / Firebase</strong> (Auth, Firestore, Cloud Functions, FCM, AdMob): infraestructura.</li>
+    <li><strong>Polygon Network</strong> (blockchain pública): tu dirección de wallet y el NFT minteado quedan registrados on-chain.</li>
+    <li><strong>Pinata / IPFS</strong>: metadata pública de los NFTs.</li>
+    <li>No vendemos tus datos a terceros. No compartimos con anunciantes individuales.</li>
+  </ul>
+
+  <h2>4. Retención</h2>
+  <ul>
+    <li>Datos de cuenta: mientras tu cuenta exista.</li>
+    <li>Logs de errores y feeds de actividad: máximo 90 días.</li>
+    <li>Registros de canje de gemas: hasta 5 años (para auditoría fiscal).</li>
+    <li>Transacciones blockchain: permanentes (no las podemos borrar).</li>
+  </ul>
+
+  <h2>5. Tus derechos</h2>
+  <ul>
+    <li><strong>Acceso:</strong> podés ver tus datos desde la app (perfil, gemas, historial).</li>
+    <li><strong>Eliminación:</strong> escribinos a <a href="mailto:miningtheblocks@gmail.com">miningtheblocks@gmail.com</a> para borrar tu cuenta. Procesamos en <30 días.</li>
+    <li><strong>Rectificación:</strong> podés editar tu displayName desde la app.</li>
+    <li><strong>Portabilidad:</strong> solicitanos un export de tus datos.</li>
+    <li>Si residís en la UE/Brasil/Argentina, también tenés derechos bajo GDPR/LGPD/Ley 25.326.</li>
+  </ul>
+
+  <h2>6. Seguridad</h2>
+  <p>Usamos Firebase Auth con tokens JWT, TLS 1.2+ en todas las conexiones, y Firestore Rules para que cada usuario sólo acceda a sus propios datos. Las claves privadas de la wallet de empresa están en Google Secret Manager.</p>
+
+  <h2>7. Menores de edad</h2>
+  <p>La app no está dirigida a menores de 18 años. Si descubrís que un menor está usándola, contactanos para eliminar su cuenta.</p>
+
+  <h2>8. Cambios a esta política</h2>
+  <p>Si actualizamos esta política, te notificaremos via la app antes de que aplique.</p>
+
+  <h2>9. Contacto</h2>
+  <p>Email: <a href="mailto:miningtheblocks@gmail.com">miningtheblocks@gmail.com</a></p>
+
+  <hr style="border:none; border-top:1px solid #2a2a2a; margin:48px 0">
+
+  <h1 id="en">Privacy Policy (English)</h1>
+  <p class="meta">Last updated: June 11, 2026</p>
+
+  <p>This policy describes what data the <strong>Mining The Blocks</strong> app ("MTB", "we") collects and how we use it. By installing or using the app you accept this policy.</p>
+
+  <h2>1. Data we collect</h2>
+  <ul>
+    <li><strong>Account ID</strong>: email (if you register) or anonymous Firebase Auth UID.</li>
+    <li><strong>Game data</strong>: credits, picks, mined layers, gems, history, joined servers, referral code.</li>
+    <li><strong>Crypto payment data</strong>: wallet address you paste in the app, USDC payment session ID. We never store private keys.</li>
+    <li><strong>Prize claim data</strong>: name, email, phone, wallet you enter at miningtheblocks.github.io to claim a gem.</li>
+    <li><strong>Technical data</strong>: push token, app version, language, error logs.</li>
+    <li><strong>Ads</strong>: Google AdMob may collect anonymous ad identifiers per their own policy.</li>
+  </ul>
+
+  <h2>2. How we use it</h2>
+  <ul>
+    <li>Run the game (auth, sync progress).</li>
+    <li>Distribute rewards (gems, credits, referrals).</li>
+    <li>Process crypto payments and mint NFTs on Polygon.</li>
+    <li>Send push notifications.</li>
+    <li>Prevent fraud and abuse.</li>
+    <li>Improve the app (anonymized).</li>
+  </ul>
+
+  <h2>3. Sharing</h2>
+  <ul>
+    <li><strong>Google / Firebase</strong> (infra): Auth, Firestore, Cloud Functions, FCM, AdMob.</li>
+    <li><strong>Polygon Network</strong>: your wallet and minted NFT are recorded on-chain (public).</li>
+    <li><strong>Pinata / IPFS</strong>: public NFT metadata.</li>
+    <li>We do not sell your data. We do not share with individual advertisers.</li>
+  </ul>
+
+  <h2>4. Retention</h2>
+  <ul>
+    <li>Account data: as long as your account exists.</li>
+    <li>Error logs and activity feeds: max 90 days.</li>
+    <li>Gem claim records: up to 5 years (audit).</li>
+    <li>Blockchain transactions: permanent.</li>
+  </ul>
+
+  <h2>5. Your rights</h2>
+  <ul>
+    <li><strong>Access, deletion, rectification, portability</strong>: contact <a href="mailto:miningtheblocks@gmail.com">miningtheblocks@gmail.com</a>. We process within 30 days.</li>
+    <li>EU/Brazil/Argentina residents have additional rights under GDPR/LGPD/Law 25.326.</li>
+  </ul>
+
+  <h2>6. Security</h2>
+  <p>Firebase Auth (JWT), TLS 1.2+, Firestore Rules per-user access, secrets in Google Secret Manager.</p>
+
+  <h2>7. Minors</h2>
+  <p>This app is not directed at users under 18.</p>
+
+  <h2>8. Changes</h2>
+  <p>We will notify you in the app before any change to this policy applies.</p>
+
+  <h2>9. Contact</h2>
+  <p>Email: <a href="mailto:miningtheblocks@gmail.com">miningtheblocks@gmail.com</a></p>
+
+  <div class="footer">
+    <p>&copy; 2026 Mining The Blocks</p>
+    <p><a href="https://miningtheblocks.github.io/Mining-The-Blocks/terms.html">Terms of Service</a> · <a href="mailto:miningtheblocks@gmail.com">Contact</a></p>
+  </div>
+</div>
+</body>
+</html>

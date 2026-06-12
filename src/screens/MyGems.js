@@ -10,6 +10,7 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import { useI18n } from '../utils/i18n';
 import GemPixelArt from '../components/GemPixelArt';
 import { useAppAlert } from '../components/AppAlert';
+import { logError } from '../utils/logError';
 
 const STATUS_COLORS = {
   unclaimed: '#888',
@@ -22,7 +23,7 @@ function shortenAddress(addr) {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-export default function MyGems({ asModal = false, onClose }) {
+export default function MyGems({ asModal = false, visible = true, onClose }) {
   const { t, language } = useI18n();
   const { showAlert, AlertComponent } = useAppAlert();
   const [gems, setGems]         = useState([]);
@@ -43,6 +44,8 @@ export default function MyGems({ asModal = false, onClose }) {
   }, []);
 
   const loadGems = useCallback(async () => {
+    const u = auth.currentUser;
+    if (!u) { setLoading(false); return; }
     setLoading(true);
     try {
       const { gems: list } = await callGetUserGems();
@@ -54,7 +57,10 @@ export default function MyGems({ asModal = false, onClose }) {
     }
   }, []);
 
-  useEffect(() => { loadGems(); }, [loadGems]);
+  // Load when modal opens (visible goes true) or on standalone mount
+  useEffect(() => {
+    if (asModal ? visible : true) loadGems();
+  }, [visible]);
 
   const copyCode = async (code) => {
     try { await Share.share({ message: code }); } catch {}
@@ -70,6 +76,7 @@ export default function MyGems({ asModal = false, onClose }) {
       await callClaimGemNFT(gem.id, wallet);
       await loadGems();
     } catch (e) {
+      logError('MyGems.handleClaimNFT', e, { gemId: gem.id, tier: gem.gemTier });
       showAlert('Error', e?.message || t('myGems.errorClaim'));
     } finally {
       setClaiming(null);

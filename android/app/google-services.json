@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "581259503872",
+    "project_id": "miningtheblocks-669f6",
+    "storage_bucket": "miningtheblocks-669f6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:581259503872:android:cf3e404b9f4229d892abe5",
+        "android_client_info": {
+          "package_name": "com.bissi.miningtheblocks"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAtC4ItAQ5PpyKzzW7O6xIeh1xRkyW3pwo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
