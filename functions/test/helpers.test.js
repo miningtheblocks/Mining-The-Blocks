@@ -134,11 +134,14 @@ describe('generateGemCode', () => {
   test('tier en el prefijo coincide', () => {
     expect(generateGemCode('s1', 50, 100, 7, 'uid')).toMatch(/^MTB7-/);
   });
-  test('hashHex es determinista por serverId+K+cube+tier+uid', () => {
-    // El salt varía con Date.now() pero el hashHex no
+  test('códigos son únicos con mismos inputs (randomBytes, no derivable)', () => {
+    // FIX-P1: generateGemCode usa crypto.randomBytes — códigos no predecibles
+    // aun conociendo todos los inputs. El tier sí se mantiene en el prefijo.
     const a = generateGemCode('s1', 50, 100, 3, 'uid');
     const b = generateGemCode('s1', 50, 100, 3, 'uid');
-    expect(a.slice(0, 13)).toBe(b.slice(0, 13)); // "MTB3-XXXXXXXX"
+    expect(a).not.toBe(b);
+    expect(a.slice(0, 5)).toBe('MTB3-');
+    expect(b.slice(0, 5)).toBe('MTB3-');
   });
 });
 
