@@ -196,8 +196,8 @@ describe('config/app (downloadUrl protection)', () => {
   test('read autenticado: OK', async () => {
     await assertSucceeds(dbAs('uid1').doc('config/app').get());
   });
-  test('read anónimo: FALLA', async () => {
-    await assertFails(dbAnon().doc('config/app').get());
+  test('read anónimo: OK (force-update modal debe funcionar logged-out)', async () => {
+    await assertSucceeds(dbAnon().doc('config/app').get());
   });
   test('write desde cliente: FALLA (incluso authed)', async () => {
     await assertFails(dbAs('uid1').doc('config/app').update({
