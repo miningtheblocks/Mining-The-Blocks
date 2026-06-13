@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  lint-and-test:
+    name: Lint + Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'functions/package-lock.json'
+
+      - name: Setup Java (for Firestore emulator)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install firebase-tools
+        run: npm install -g firebase-tools
+
+      - name: Install functions dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Lint
+        working-directory: functions
+        run: npm run lint
+
+      - name: Unit tests (helpers)
+        working-directory: functions
+        run: npm test
+
+      - name: Firestore rules tests
+        working-directory: functions
+        run: npm run test:rules
+
+  security-checks:
+    name: Security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify keystore NOT committed
+        run: |
+          if git ls-files | grep -E '\.(keystore|jks)$|mtb-release\.'; then
+            echo "❌ ERROR: keystore or release artifact committed!"
+            exit 1
+          fi
+          echo "✅ No keystore committed"
+
+      - name: Verify .env NOT committed (besides example)
+        run: |
+          if git ls-files | grep -E '^\.env$|^\.env\.local$|service-account.*\.json'; then
+            echo "❌ ERROR: secret file committed!"
+            exit 1
+          fi
+          echo "✅ No secret files committed"
+
+      - name: Scan for obvious hardcoded secrets
+        run: |
+          if grep -rEn "(['\"])[A-Za-z0-9+/]{40,}\1" --include="*.js" \
+              src/firebase/client.js functions/index.js functions/constants.js 2>/dev/null \
+              | grep -vE "AIzaSy|firebaseapp|us-central1-|policies\.google|exp\.host|/Mining-The-Blocks/" \
+              | head -5 \
+              | grep .; then
+            echo "⚠️  Possible hardcoded secret(s) above — review."
+            exit 1
+          fi
+          echo "✅ No obvious hardcoded secrets"
