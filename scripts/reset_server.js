@@ -9,11 +9,12 @@
  */
 
 const admin = require('/run/media/code/c3c2291c-9fa2-4d6a-925f-b7f7876f676a/MTB/functions/node_modules/firebase-admin');
+const { getFirestore, FieldValue } = require('/run/media/code/c3c2291c-9fa2-4d6a-925f-b7f7876f676a/MTB/functions/node_modules/firebase-admin/firestore');
 const { confirmDestructive } = require('./_confirm');
 
 const PROJECT = 'miningtheblocks-669f6';
 admin.initializeApp({ projectId: PROJECT });
-const db = admin.firestore();
+const db = getFirestore();
 
 const STARTING_LAYER = 100;
 
@@ -82,7 +83,7 @@ async function main() {
     completedAt: null,
     status: 'active',
     episodeNumber: 1,
-    memberCount: admin.firestore.FieldValue.delete(), // se recalcula al unirse
+    memberCount: FieldValue.delete(), // se recalcula al unirse
   });
   // Recrear capa inicial
   await serverRef.collection('layers').doc(String(K)).set({

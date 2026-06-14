@@ -10,11 +10,12 @@
 // Con --yes-i-am-sure salta el prompt (NO recomendado para producción).
 
 const admin = require('../functions/node_modules/firebase-admin');
+const { getFirestore, FieldValue } = require('../functions/node_modules/firebase-admin/firestore');
 const { confirmDestructive } = require('./_confirm');
 
 const PROJECT = 'miningtheblocks-669f6';
 admin.initializeApp({ projectId: PROJECT });
-const db = admin.firestore();
+const db = getFirestore();
 
 const SERVER_ID_RE = /^[A-Za-z0-9_-]{6,40}$/;
 
@@ -47,7 +48,7 @@ async function logAdminAction(action, payload) {
       action,
       payload,
       operator: process.env.USER || 'unknown',
-      ts: admin.firestore.FieldValue.serverTimestamp(),
+      ts: FieldValue.serverTimestamp(),
     });
   } catch (e) {
     console.warn('No se pudo loguear adminAction:', e.message);

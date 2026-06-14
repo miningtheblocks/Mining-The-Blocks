@@ -7,6 +7,11 @@ const { setGlobalOptions } = require("firebase-functions/v2");
 const { defineSecret } = require("firebase-functions/params");
 const { ethers } = require("ethers");
 const admin = require("firebase-admin");
+// firebase-admin v14: namespace default ya no expone .firestore/.auth/.messaging
+// como métodos. Hay que usar imports modulares.
+const {getFirestore, FieldValue, Timestamp, FieldPath} = require("firebase-admin/firestore");
+const {getAuth} = require("firebase-admin/auth");
+const {getMessaging} = require("firebase-admin/messaging");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 
@@ -27,7 +32,7 @@ try {
   admin.initializeApp();
 } catch (_e) {/* already initialized */}
 
-const db = admin.firestore();
+const db = getFirestore();
 
 // ─── Constantes y helpers extraídos ─────────────────────────────────────────
 
@@ -106,7 +111,7 @@ async function generateUniqueReferralCode() {
 async function requireAdminFresh(request) {
   if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "Login required");
   try {
-    const user = await admin.auth().getUser(request.auth.uid);
+    const user = await getAuth().getUser(request.auth.uid);
     if (!user.customClaims || !user.customClaims.admin) {
       throw new HttpsError("permission-denied", "Admin only");
     }
@@ -374,7 +379,7 @@ exports.createServer = onCall(async (request) => {
     });
 
     // Bienvenida: 5 picos al pagar la entrada
-    tx.set(userRef, { picks: admin.firestore.FieldValue.increment(5) }, { merge: true });
+    tx.set(userRef, { picks: FieldValue.increment(5) }, { merge: true });
   });
 
   writeActivity("player_joined", {
@@ -452,7 +457,7 @@ exports.joinServer = onCall(async (request) => {
     tx.set(accessRef, { serverId, chainId: serverChainId, episodeNumber, joinedAt: Date.now(), role: 'member' });
 
     // Bienvenida: 5 picos al pagar la entrada
-    tx.set(userRef, { picks: admin.firestore.FieldValue.increment(5) }, { merge: true });
+    tx.set(userRef, { picks: FieldValue.increment(5) }, { merge: true });
 
     // Incrementar memberCount
     tx.set(serverRef, { memberCount: (serverData.memberCount || 0) + 1 }, { merge: true });
@@ -485,8 +490,8 @@ exports.joinServer = onCall(async (request) => {
         if (!freshU.exists) return;
         const fud = freshU.data();
         if (fud.referralBonusPaid) return; // ya pagado
-        tx.set(uRef, { picks: admin.firestore.FieldValue.increment(5), referralBonusPaid: true }, { merge: true });
-        tx.set(rRef, { picks: admin.firestore.FieldValue.increment(5) }, { merge: true });
+        tx.set(uRef, { picks: FieldValue.increment(5), referralBonusPaid: true }, { merge: true });
+        tx.set(rRef, { picks: FieldValue.increment(5) }, { merge: true });
         bonusGranted = true;
       });
       if (bonusGranted) {
@@ -748,15 +753,15 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
       userUpdate.picks = 4 + reward;
       userUpdate.picksLastResetAt = episodeStartAt;
     } else {
-      userUpdate.picks = admin.firestore.FieldValue.increment(-1 + reward);
+      userUpdate.picks = FieldValue.increment(-1 + reward);
     }
     tx.set(userRef, userUpdate, { merge: true });
 
     const mapped = cubeNumberToFaceGridForK(n, K) || {};
     tx.set(minedRef, { by: uid, ts: Date.now(), K, rewardPicks: reward, gem: gem || 0, ...mapped });
-    tx.set(layerRef, { K, totalCubes: TOTAL_CUBES_K, stats: { mined: admin.firestore.FieldValue.increment(1) } }, { merge: true });
+    tx.set(layerRef, { K, totalCubes: TOTAL_CUBES_K, stats: { mined: FieldValue.increment(1) } }, { merge: true });
 
-    const serverUpdate = { totalMined: admin.firestore.FieldValue.increment(1) };
+    const serverUpdate = { totalMined: FieldValue.increment(1) };
 
     if (episodeComplete) {
       serverUpdate.status = 'completed';
@@ -924,7 +929,7 @@ exports.claimDailyPick = onCall(async (request) => {
     if (!snap.exists) tx.set(userRef, data, { merge: true });
     const status = buildStatus(data, nowMs);
     if (nowMs < status.nextDailyAt) throw new HttpsError("failed-precondition", "Daily not ready");
-    tx.set(userRef, { picks: admin.firestore.FieldValue.increment(1), lastDailyAt: nowMs }, { merge: true });
+    tx.set(userRef, { picks: FieldValue.increment(1), lastDailyAt: nowMs }, { merge: true });
     const updated = Object.assign({}, data, { picks: (data.picks || 0) + 1, lastDailyAt: nowMs });
     return buildStatus(updated, nowMs);
   });
@@ -962,7 +967,7 @@ exports.createAdSession = onCall(async (request) => {
   const now = Date.now();
   await db.collection("adSessions").doc(sessionId).set({
     uid, index, token, createdAt: now, used: false,
-    expiresAt: admin.firestore.Timestamp.fromMillis(now + 24 * 60 * 60 * 1000),
+    expiresAt: Timestamp.fromMillis(now + 24 * 60 * 60 * 1000),
   });
   return { sessionId, token };
 });
@@ -1017,7 +1022,7 @@ exports.claimAdSession = onRequest(async (req, res) => {
       if (nowMs < lastVal + DAY_MS) throw new Error("not_ready");
 
       tx.set(sessionRef, { used: true, claimedAt: nowMs }, { merge: true });
-      tx.set(userRef, { picks: admin.firestore.FieldValue.increment(1), [lastKey]: nowMs }, { merge: true });
+      tx.set(userRef, { picks: FieldValue.increment(1), [lastKey]: nowMs }, { merge: true });
     });
     res.json({ ok: true });
   } catch (e) {
@@ -1061,7 +1066,7 @@ async function sendPushToUser(uid, titles, bodies) {
     // eslint-disable-next-line security/detect-object-injection -- lang validado a 'es'|'en' arriba
     const body = typeof bodies === 'object' ? (bodies[lang] || bodies.en) : bodies;
     if (tokenType === 'fcm') {
-      await admin.messaging().send({
+      await getMessaging().send({
         token,
         notification: { title, body },
         android: { priority: "high", notification: { sound: "default" } },
@@ -1496,7 +1501,7 @@ async function runCryptoPaymentProcessing() {
             return;
           }
           const userRef = db.collection("users").doc(uid);
-          tx.set(userRef, { serverCredits: admin.firestore.FieldValue.increment(1) }, { merge: true });
+          tx.set(userRef, { serverCredits: FieldValue.increment(1) }, { merge: true });
           tx.set(paymentDoc.ref, {
             status: "completed",
             txHash: txHash,
@@ -1510,7 +1515,7 @@ async function runCryptoPaymentProcessing() {
             amount,
             paymentId: paymentDoc.id,
             processedAt: Date.now(),
-            expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            expiresAt: Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
           });
         });
         if (alreadyProcessed) continue;
@@ -1527,9 +1532,9 @@ async function runCryptoPaymentProcessing() {
             if (referredBy && !referralBonusPaid) {
               bonusReferredBy = referredBy;
               const referrerRef = db.collection("users").doc(referredBy);
-              tx.set(referrerRef, { picks: admin.firestore.FieldValue.increment(5) }, { merge: true });
+              tx.set(referrerRef, { picks: FieldValue.increment(5) }, { merge: true });
               tx.set(userRef, {
-                picks: admin.firestore.FieldValue.increment(5),
+                picks: FieldValue.increment(5),
                 referralBonusPaid: true,
               }, { merge: true });
             }
@@ -1619,7 +1624,7 @@ exports.notifyAllUsers = onCall(async (request) => {
     let q = db.collection("users")
         .where("pushToken", "!=", null)
         .orderBy("pushToken")
-        .orderBy(admin.firestore.FieldPath.documentId())
+        .orderBy(FieldPath.documentId())
         .limit(BATCH);
     if (lastDoc) q = q.startAfter(lastDoc);
     const snap = await q.get();
@@ -1778,7 +1783,7 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
   const uid = request.auth && request.auth.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
 
-  const user = await admin.auth().getUser(uid);
+  const user = await getAuth().getUser(uid);
   const email = user.email;
   if (!email) throw new HttpsError("failed-precondition", "No email on account");
   if (user.emailVerified) return { ok: true, alreadyVerified: true };
@@ -1787,7 +1792,7 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
     url: "https://miningtheblocks-669f6.web.app/verify",
     handleCodeInApp: false,
   };
-  let verificationLink = await admin.auth().generateEmailVerificationLink(email, actionCodeSettings);
+  let verificationLink = await getAuth().generateEmailVerificationLink(email, actionCodeSettings);
   // Redirect directly to our custom page instead of Firebase's default action handler
   verificationLink = verificationLink.replace(
       /^https:\/\/[^?]+\/__\/auth\/action/,
@@ -1896,7 +1901,7 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
     if (!m) {
       return res.status(401).json({ error: "unauthenticated" });
     }
-    const decoded = await admin.auth().verifyIdToken(m[1]);
+    const decoded = await getAuth().verifyIdToken(m[1]);
     authUid = decoded.uid;
   } catch (authErr) {
     // ALTO-001: NO loguear authErr.message — puede contener fragmentos del
@@ -2040,7 +2045,7 @@ exports.logClientError = onCall(async (request) => {
       uid: uid || null,
       ts: Date.now(),
       // TTL: borrar después de 30 días via TTL policy en Firestore Console.
-      expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      expiresAt: Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
     });
   } catch (e) {
     console.error("logClientError write failed:", e.message);

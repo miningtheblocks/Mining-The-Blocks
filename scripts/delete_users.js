@@ -1,4 +1,6 @@
 const admin = require('../functions/node_modules/firebase-admin');
+const { getAuth } = require('../functions/node_modules/firebase-admin/auth');
+const { getFirestore, FieldValue } = require('../functions/node_modules/firebase-admin/firestore');
 const https = require('https');
 const fs = require('fs');
 const { confirmDestructive } = require('./_confirm');
@@ -14,7 +16,7 @@ admin.initializeApp({
   },
   projectId: PROJECT,
 });
-const auth = admin.auth();
+const auth = getAuth();
 
 // --- Firestore REST API helpers ---
 function httpsReq(method, path, body) {
@@ -115,13 +117,13 @@ async function countAuth() {
 
 async function logAdminAction(action, payload) {
   try {
-    const db = admin.firestore();
+    const db = getFirestore();
     await db.collection('adminActions').add({
       action,
       payload,
       operator: process.env.USER || 'unknown',
       script: 'delete_users.js',
-      ts: admin.firestore.FieldValue.serverTimestamp(),
+      ts: FieldValue.serverTimestamp(),
     });
   } catch (e) {
     console.warn('No se pudo loguear adminAction:', e.message);

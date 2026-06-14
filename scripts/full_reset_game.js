@@ -11,6 +11,7 @@
  */
 
 const admin = require('../functions/node_modules/firebase-admin');
+const { getAuth } = require('../functions/node_modules/firebase-admin/auth');
 const https = require('https');
 const fs = require('fs');
 const { confirmDestructive } = require('./_confirm');
@@ -27,7 +28,7 @@ admin.initializeApp({
   },
   projectId: PROJECT,
 });
-const auth = admin.auth();
+const auth = getAuth();
 
 // --- Firestore REST API helpers ---
 function httpsReq(method, path, body) {

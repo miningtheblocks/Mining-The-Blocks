@@ -17,6 +17,8 @@
  */
 
 const admin = require('../functions/node_modules/firebase-admin');
+const { getAuth } = require('../functions/node_modules/firebase-admin/auth');
+const { getFirestore } = require('../functions/node_modules/firebase-admin/firestore');
 const fs = require('fs');
 const { confirmDestructive } = require('./_confirm');
 
@@ -43,7 +45,7 @@ async function main() {
   // Verificar que el user exista
   let user;
   try {
-    user = await admin.auth().getUser(targetUid);
+    user = await getAuth().getUser(targetUid);
   } catch (e) {
     console.error(`Usuario ${targetUid} no encontrado en Auth.`);
     process.exit(1);
@@ -73,10 +75,10 @@ async function main() {
   if (revoke) delete newClaims.admin;
   else newClaims.admin = true;
 
-  await admin.auth().setCustomUserClaims(targetUid, newClaims);
+  await getAuth().setCustomUserClaims(targetUid, newClaims);
 
   // Audit log
-  await admin.firestore().collection('adminActions').add({
+  await getFirestore().collection('adminActions').add({
     action: revoke ? 'revoke_admin' : 'grant_admin',
     adminUid: 'cli',
     targetUid,
