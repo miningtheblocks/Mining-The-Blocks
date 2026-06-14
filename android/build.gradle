@@ -6,9 +6,12 @@ buildscript {
     mavenCentral()
   }
   dependencies {
-    classpath('com.android.tools.build:gradle')
+    // BAJO-23: pin de versiones para reproducibilidad y auditoría.
+    // Resueltas con `./gradlew buildEnvironment` el 2026-06-14 contra Expo SDK 54.
+    // Cuando bumpeen Expo SDK, verificar nuevas versiones con el mismo comando.
+    classpath('com.android.tools.build:gradle:8.11.0')
     classpath('com.facebook.react:react-native-gradle-plugin')
-    classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
+    classpath('org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.20')
     classpath('com.google.gms:google-services:4.4.2')
   }
 }
