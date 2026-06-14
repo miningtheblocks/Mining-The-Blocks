@@ -12,6 +12,10 @@ module.exports = {
   extends: [
     "eslint:recommended",
     "google",
+    // MEDIO-L-02: detecta antipatterns de seguridad (eval, child_process,
+    // ReDoS, fs path traversal, etc.). Plugin no-overzealous — solo warn por
+    // defecto en algunas reglas para no romper código legítimo.
+    "plugin:security/recommended-legacy",
   ],
   rules: {
     "no-restricted-globals": ["error", "name", "length"],

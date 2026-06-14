@@ -26,6 +26,7 @@
     "@firebase/rules-unit-testing": "^3.0.4",
     "eslint": "^8.15.0",
     "eslint-config-google": "^0.14.0",
+    "eslint-plugin-security": "^4.0.1",
     "firebase-functions-test": "^3.1.0",
     "jest": "^29.7.0"
   },

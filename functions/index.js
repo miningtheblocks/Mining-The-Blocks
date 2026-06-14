@@ -10,6 +10,7 @@ const { defineSecret } = require("firebase-functions/params");
 const { ethers } = require("ethers");
 const admin = require("firebase-admin");
 const nodemailer = require("nodemailer");
+const crypto = require("crypto");
 
 // OPS-8: reducir CPU por función para entrar en el quota de Cloud Run.
 // Con 31 funciones × 1 vCPU = 31 vCPUs reservados, agotaba el quota default.
@@ -553,6 +554,7 @@ exports.getServers = onCall(async (request) => {
   const servers = snap.docs.map((d) => {
     const data = d.data() || {};
     const out = { id: d.id };
+    // eslint-disable-next-line security/detect-object-injection -- k de whitelist constante PUBLIC_FIELDS
     for (const k of PUBLIC_FIELDS) if (k in data) out[k] = data[k];
     return out;
   });
@@ -949,11 +951,11 @@ exports.createAdSession = onCall(async (request) => {
   if (userSnap.exists) {
     const data = userSnap.data() || {};
     const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
+    // eslint-disable-next-line security/detect-object-injection -- lastKey de literal whitelist
     const lastVal = toMillis(data[lastKey]) || 0;
     if (Date.now() < lastVal + DAY_MS) throw new HttpsError("failed-precondition", `Ad ${index} not ready`);
   }
 
-  const crypto = require("crypto");
   const token = crypto.randomBytes(24).toString("hex");
   const sessionId = crypto.randomBytes(16).toString("hex");
   // OPS-7: expiresAt para TTL — sesiones se borran 1 día después de crear.
@@ -996,7 +998,15 @@ exports.claimAdSession = onRequest(async (req, res) => {
       const sessionSnap = await tx.get(sessionRef);
       if (!sessionSnap.exists) throw new Error("not_found");
       const session = sessionSnap.data();
-      if (session.token !== token) throw new Error("invalid_token");
+      // BAJO (ESLint security/detect-possible-timing-attacks): comparación
+      // constant-time del token. `!==` short-circuita y leakea info via
+      // timing analysis (no práctico para 192-bit tokens vía internet, pero
+      // defense-in-depth). timingSafeEqual exige Buffers del mismo length.
+      const a = Buffer.from(String(session.token || ''), 'utf8');
+      const b = Buffer.from(String(token || ''), 'utf8');
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        throw new Error("invalid_token");
+      }
       if (session.used) throw new Error("already_used");
       if (nowMs - session.createdAt > 12 * 60 * 1000) throw new Error("expired"); // 12 min
 
@@ -1006,6 +1016,7 @@ exports.claimAdSession = onRequest(async (req, res) => {
       const userSnap = await tx.get(userRef);
       const data = userSnap.exists ? (userSnap.data() || {}) : { picks: 0 };
       const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
+      // eslint-disable-next-line security/detect-object-injection -- lastKey de literal whitelist
       const lastVal = toMillis(data[lastKey]) || 0;
       if (nowMs < lastVal + DAY_MS) throw new Error("not_ready");
 
@@ -1049,7 +1060,9 @@ async function sendPushToUser(uid, titles, bodies) {
     const tokenType = data.pushTokenType || 'expo';
     if (!token) return;
     const lang = (data && data.settings && data.settings.language) === 'es' ? 'es' : 'en';
+    // eslint-disable-next-line security/detect-object-injection -- lang validado a 'es'|'en' arriba
     const title = typeof titles === 'object' ? (titles[lang] || titles.en) : titles;
+    // eslint-disable-next-line security/detect-object-injection -- lang validado a 'es'|'en' arriba
     const body = typeof bodies === 'object' ? (bodies[lang] || bodies.en) : bodies;
     if (tokenType === 'fcm') {
       await admin.messaging().send({

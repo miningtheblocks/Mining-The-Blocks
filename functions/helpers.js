@@ -130,6 +130,7 @@ function generateReferralCode() {
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
   const bytes = crypto.randomBytes(8);
   let s = '';
+  // eslint-disable-next-line security/detect-object-injection -- índice acotado por % length
   for (let i = 0; i < 8; i++) s += chars[bytes[i] % chars.length];
   return s;
 }
@@ -141,6 +142,7 @@ function generateGemCode(serverId, K, cubeNumber, gemTier, uid) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const saltBytes = crypto.randomBytes(6);
   let salt = '';
+  // eslint-disable-next-line security/detect-object-injection -- índice acotado por % length
   for (let i = 0; i < 6; i++) salt += chars[saltBytes[i] % chars.length];
   return `MTB${gemTier}-${hashHex}-${salt}`;
 }
