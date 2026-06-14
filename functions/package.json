@@ -23,7 +23,7 @@
     "nodemailer": "^8.0.10"
   },
   "devDependencies": {
-    "@firebase/rules-unit-testing": "^3.0.4",
+    "@firebase/rules-unit-testing": "^5.0.1",
     "eslint": "^8.15.0",
     "eslint-config-google": "^0.14.0",
     "eslint-plugin-security": "^4.0.1",
