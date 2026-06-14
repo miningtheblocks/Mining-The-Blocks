@@ -17,16 +17,21 @@ const GEM_UNLOCK_THRESHOLDS = [
   54167, 45834, 41667, 37500, 33334, 29167, 25000, 20834, 12500,
 ];
 
+// CRIT-20: CIDs actualizados 2026-06-14 — JSON metadata corregidos con valores
+// correctos ($100k/$50k/.../$15) + external_url a miningtheblocks.github.io.
+// Los CIDs viejos (con $500/$0.25 y external_url a miningtheblocks.com) NUNCA
+// fueron usados por mints reales (verificado vía Polygon eth_getLogs: 0 NFTs
+// minteados antes del 2026-06-14).
 const GEM_TOKEN_URIS = [
-  'ipfs://bafkreiazqr5ll6frb27jxl6n6pp7c7jrfy2stcezwl7r3hr4iyyqxctl5m',
-  'ipfs://bafkreiggojefjwtthfjpxg454euhzf3zajjadlw3q6nv3tttorvu3frndq',
-  'ipfs://bafkreif4ysa3pwnrpuqqmtk4647a26vfwyfp3tbpe5ypcivjytptr3b7he',
-  'ipfs://bafkreicc4vvma5xb3u65poxnncqj63z3jke5q3zo53s2vfc3vzjcxpefaa',
-  'ipfs://bafkreiggrq4ipierqj2eyfzg7qm4gfuyl5ve6hhpknqvjnqzy7vg6ijpdm',
-  'ipfs://bafkreigxc6uqc7co6qcu4mzaq2tnkqwcsngfet63eczmmgwfzbyhmmpogq',
-  'ipfs://bafkreidex4rj7rofevpe45u2sdvvnq5hkovxulqjtpjjj2xjakxvuzpbi4',
-  'ipfs://bafkreiaujynahu64ui75bihvggjh5thoesn7ewgjqgqgafjf24osdb4lci',
-  'ipfs://bafkreiabkbvz5g3b3alkh3omymgg2urw47bgtal3sd7kudxtebohk2pzta',
+  'ipfs://bafkreiemxipdlvqezbtb4xtr57u5bttt6lf4nwtyjytjc3po5icyuuhopm',
+  'ipfs://bafkreidci6pki2umr2tzg6ss6w55ys7uxipwpna24fg4v67pu6rj7ogdja',
+  'ipfs://bafkreiap2xu6hcaed6zxtxv2yealxay3v5cde5xuk55rscbief3x3i63n4',
+  'ipfs://bafkreige2d3j2flwmz2sq432iwji7i72yx42c7kbxiue75pkhjk54nwjsu',
+  'ipfs://bafkreiblecr5ggrb33xw2qwe7p3dkvzctxmb7airb7s6nhlog2h6l3ieaa',
+  'ipfs://bafkreidsd7rypvd6tz22eyqaanugjlydexbr26w3jn6eblwa4je7ymowem',
+  'ipfs://bafkreietbkcigg37pxropkd4web4xtgbfzkz6mz3thgc4j7wnizi7is7gu',
+  'ipfs://bafkreiesew44ay2l5gj6lic74ylmor6mnai532dxla6sfxy6bt6x6muclq',
+  'ipfs://bafkreibx455uher6cdea6sm3fagj4qdu6u4rfu3w52leptffoorrmzdd5y',
 ];
 
 const MTBGEMS_CONTRACT = process.env.MTBGEMS_CONTRACT || '0x54c2859411afCb51fcfE42054aDcA3484B3f29E6';
