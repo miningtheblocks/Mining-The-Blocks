@@ -18,7 +18,7 @@
   "main": "index.js",
   "dependencies": {
     "ethers": "^6.16.0",
-    "firebase-admin": "^12.7.0",
+    "firebase-admin": "^14.0.0",
     "firebase-functions": "^7.2.5",
     "nodemailer": "^8.0.10"
   },
