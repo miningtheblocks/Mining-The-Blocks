@@ -153,17 +153,27 @@ El contrato actual (`0x54c2859411afCb51fcfE42054aDcA3484B3f29E6`) tiene **owner 
 **Fix parcial ya aplicado en código** (sin redeploy): `renounceOwnership` deshabilitado, reentrancy guard, CEI. Esto solo vale para el próximo redeploy.
 
 ### 12. Bumpear dependencias outdated
+
+**Hechos (2026-06-14):**
+- ✅ `jest` 29 → 30 — funcionó out-of-the-box
+- ✅ `@firebase/rules-unit-testing` 3 → 5 — 42/42 tests pasan
+- ❌ `firebase-admin` 12 → 14 — **REVERTED**. Breaking changes: v14 no expone
+  `admin.firestore`/`admin.auth` como métodos directos del namespace default,
+  rompe todo el código que usa `admin.firestore.Timestamp.fromMillis()`,
+  `admin.firestore.FieldValue.increment()`, `admin.firestore.FieldPath.documentId()`,
+  `admin.auth().getUser()`, etc. Migración requiere refactor a imports
+  modulares: `import { getFirestore, Timestamp, FieldValue, FieldPath } from
+  'firebase-admin/firestore'`. ~2-3h de refactor + tests.
+
+**Pendiente futuro:**
 ```bash
-# Functions
 cd functions
-npm i firebase-admin@^14
-npm i @firebase/rules-unit-testing@^5
-npm i eslint@^9 --save-dev  # requires flat config migration
-npm test  # verificar que nada rompió
+npm i eslint@^9 --save-dev  # requires flat config migration (eslint.config.js)
+# firebase-admin@14: scope grande, postergar hasta tener tiempo dedicado
 
 # Cliente — bloqueado por Expo SDK 54. Agendar bump a Expo SDK 55+ cuando esté estable
 cd ..
-npm outdated  # revisar
+npm outdated
 ```
 
 ### 13. Agregar `eslint-plugin-security`
