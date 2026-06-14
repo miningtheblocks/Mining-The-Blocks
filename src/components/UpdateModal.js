@@ -17,17 +17,18 @@ export default function UpdateModal({ visible, forceUpdate, latestVersion, downl
     // ALTO-57: sacamos github.com del allowlist porque permite que un
     // atacante suba un release a OTRA cuenta de github (e.g. /malicious/x/releases)
     // y lo apunte desde config/app.downloadUrl. Sólo aceptamos URLs de
-    // miningtheblocks.github.io (org de la app) y de objects.githubusercontent.com
-    // PERO sólo si el path empieza con `/MTB/` o `/Mining-The-Blocks/` (releases
-    // del repo oficial).
-    const fallback = 'https://miningtheblocks.github.io/Mining-The-Blocks/';
+    // miningtheblocks.com (dominio nuevo, primary) o miningtheblocks.github.io
+    // (legacy — sigue válido porque GitHub Pages auto-redirige a .com).
+    const fallback = 'https://miningtheblocks.com/';
     let safeUrl = fallback;
     try {
       const raw = (downloadUrl || '').trim();
       if (raw) {
         const u = new URL(raw);
         if (u.protocol !== 'https:') throw new Error('scheme');
-        const okHost = u.hostname === 'miningtheblocks.github.io';
+        const okHost = u.hostname === 'miningtheblocks.com' ||
+                       u.hostname === 'www.miningtheblocks.com' ||
+                       u.hostname === 'miningtheblocks.github.io';
         // objects.githubusercontent.com es el CDN de release assets; los paths
         // incluyen el repo ID — no hay garantía path-based. Mantenerlo afuera y
         // forzar que el atacante use el host del org.

@@ -144,7 +144,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
       // queda parseable y previene inyección via params.
       const sid = encodeURIComponent(session.sessionId || '');
       const tok = encodeURIComponent(session.token || '');
-      const url = `https://miningtheblocks.github.io/Mining-The-Blocks/adpick.html?sid=${sid}&t=${tok}`;
+      const url = `https://miningtheblocks.com/adpick.html?sid=${sid}&t=${tok}`;
       await Linking.openURL(url);
       // Cuando el usuario vuelva a la app, refrescar picks
       if (adStateSubRef.current) adStateSubRef.current.remove();
@@ -169,7 +169,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
 
   const getInviteMsg = () => {
     const code = userData?.referralCode || '';
-    const url = 'https://miningtheblocks.github.io/Mining-The-Blocks/';
+    const url = 'https://miningtheblocks.com/';
     // CQ-007: template viene de i18n y se interpola con code+url
     const tpl = t('peaks.inviteMessage') || '';
     return tpl.replace('{code}', code).replace('{url}', url);

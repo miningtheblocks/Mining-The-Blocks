@@ -14,8 +14,8 @@ export const APP_VERSION =
   Constants?.manifest?.version ||
   FALLBACK_APP_VERSION;
 
-export const TERMS_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/terms.html';
-export const PRIVACY_URL = 'https://miningtheblocks.github.io/Mining-The-Blocks/privacy.html';
+export const TERMS_URL = 'https://miningtheblocks.com/terms.html';
+export const PRIVACY_URL = 'https://miningtheblocks.com/privacy.html';
 
 // Comparación semver simple — devuelve -1, 0 o 1.
 // MEDIO-CONST-05: strip de sufijos prerelease/build (e.g. "1.2.3-beta.1" → "1.2.3")

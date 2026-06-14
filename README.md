@@ -6,7 +6,7 @@ Stack: React Native 0.81 + Expo SDK 54 (managed) · Three.js (expo-gl/expo-three
 
 ## Instalación (usuarios)
 
-Descargá el APK desde [miningtheblocks.github.io](https://miningtheblocks.github.io/Mining-The-Blocks/) o desde la pestaña **Releases** de este repo.
+Descargá el APK desde [miningtheblocks.com](https://miningtheblocks.com/) o desde la pestaña **Releases** de este repo.
 
 **Antes de instalar — verificar checksum** (recomendado):
 
@@ -21,7 +21,7 @@ sha256sum -c MTB-v1.1.0.apk.sha256
    - Ajustes → Apps → tu navegador → "Instalar apps desconocidas" → activar.
 2. Abrí el APK descargado y tocá **Instalar**.
 3. La app pide los permisos mínimos: red, audio (notificaciones) y almacenamiento (avatar).
-4. Privacy policy: [privacy.html](https://miningtheblocks.github.io/Mining-The-Blocks/privacy.html) · Términos: [terms.html](https://miningtheblocks.github.io/Mining-The-Blocks/terms.html)
+4. Privacy policy: [privacy.html](https://miningtheblocks.com/privacy.html) · Términos: [terms.html](https://miningtheblocks.com/terms.html)
 
 ## Distribución (mantenedor)
 

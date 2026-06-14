@@ -38,7 +38,7 @@ export default function Profile({ asModal = false, onClose }) {
   const shareReferralCode = async () => {
     const code = data?.referralCode;
     if (!code) return;
-    const url = `https://miningtheblocks.github.io/Mining-The-Blocks/?ref=${code}`;
+    const url = `https://miningtheblocks.com/?ref=${code}`;
     const msg = t('profile.referralShareMsg').replace('{code}', code).replace('{url}', url);
     try {
       await Share.share({ message: msg });

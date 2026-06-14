@@ -2,7 +2,7 @@
 
 **Versión:** 1.0.4
 **Fecha:** 2026-06-11
-**Distribución:** sideload desde `miningtheblocks.github.io` (Android-only, sin Play Store)
+**Distribución:** sideload desde `miningtheblocks.com` (Android-only, sin Play Store)
 
 ---
 

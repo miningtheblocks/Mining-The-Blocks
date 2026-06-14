@@ -25,7 +25,7 @@ Sólo la última versión publicada (`config/app.latestVersion` en Firestore) re
 ## Scope
 
 **In-scope:**
-- App Android (APK distribuido via miningtheblocks.github.io)
+- App Android (APK distribuido via miningtheblocks.com)
 - Cloud Functions en `functions/`
 - Firestore Rules + Storage Rules
 - Smart contract `contracts/MTBGems.sol` (deployado en Polygon)

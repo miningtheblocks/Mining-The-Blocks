@@ -55,13 +55,11 @@ GEMS.forEach((gem) => {
       `Mining The Blocks — ${gem.name}. ` +
       `Tier ${gem.tier} gem discovered by mining the community cube. ` +
       `Fixed redemption value: $${gem.price} USD. ` +
-      // CRIT-20: usar el dominio efectivamente poseído (github.io), no
-      // miningtheblocks.com que podría no estar registrado por la empresa
-      // (un atacante podría comprarlo y phishear holders del NFT desde
-      // OpenSea via external_url).
-      `Redeem your code at miningtheblocks.github.io or hold as NFT.`,
+      // Dominio propio comprado en Cloudflare Registrar (2026-06-14).
+      // github.io sigue funcionando via 301 redirect.
+      `Redeem your code at miningtheblocks.com or hold as NFT.`,
     image: imageUri,
-    external_url: 'https://miningtheblocks.github.io/Mining-The-Blocks/',
+    external_url: 'https://miningtheblocks.com/',
     attributes: [
       { trait_type: 'Gem Name',        value: gem.name },
       { trait_type: 'Tier',            value: gem.tier,          display_type: 'number' },
