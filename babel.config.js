@@ -1,5 +1,8 @@
 module.exports = function (api) {
-  api.cache(true);
+  // Cache invalidado cuando cambian env vars que controlan el strip de console.
+  // Sin esto, api.cache(true) congelaba la decisión yes/no y el plugin nunca
+  // activaba en EAS production.
+  api.cache.using(() => `${process.env.NODE_ENV}-${process.env.BABEL_ENV}-${process.env.STRIP_CONSOLE}`);
   // MEDIO-BBL-01: en production strip los console.* para reducir bundle, ruido
   // en Logcat y leaks de info de debug. Opt-in via STRIP_CONSOLE=1 para no
   // romper builds sin el plugin instalado. Ver ACCIONES_MANUALES.md tarea #26.

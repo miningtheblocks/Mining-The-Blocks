@@ -16,6 +16,11 @@
       }
     },
     "production": {
+      "env": {
+        "STRIP_CONSOLE": "1",
+        "BABEL_ENV": "production",
+        "NODE_ENV": "production"
+      },
       "android": {
         "buildType": "app-bundle"
       }
