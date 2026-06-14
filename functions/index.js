@@ -1494,12 +1494,14 @@ async function runCryptoPaymentProcessing() {
             completedAt: Date.now(),
           }, { merge: true });
           // Marcar tx como consumida con TTL ~30 días (cleanup por TTL policy).
+          // expiresAt DEBE ser Timestamp (no int64) para que Firestore TTL la
+          // purgue automáticamente.
           tx.set(processedTxRef, {
             uid,
             amount,
             paymentId: paymentDoc.id,
             processedAt: Date.now(),
-            expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+            expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
           });
         });
         if (alreadyProcessed) continue;
