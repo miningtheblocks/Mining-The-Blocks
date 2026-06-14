@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Image, ScrollView } from 'rea
 import { ensureUser, auth, db } from '../firebase/client';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { useI18n, languages } from '../utils/i18n';
-import { navigate } from '../utils/navigationRef';
+// BAJO-CFG-07: import `navigate` removido — no se usa en este archivo.
 import audioManager from '../utils/audioManager';
 export default function Config({ asModal = false, onClose }) {
   const { t, language, setLanguage } = useI18n();
@@ -69,6 +69,18 @@ export default function Config({ asModal = false, onClose }) {
   };
 
   useEffect(() => { load(); }, []);
+
+  // BAJO-CFG-03: limpiar sliderSaveTimer en unmount para no escribir a Firestore
+  // después de que el modal de Config se cerró (puede dispararse con uid del
+  // usuario anterior si hubo sign-out entre el slider move y el debounce de 400ms).
+  useEffect(() => {
+    return () => {
+      if (sliderSaveTimer.current) {
+        clearTimeout(sliderSaveTimer.current);
+        sliderSaveTimer.current = null;
+      }
+    };
+  }, []);
 
   const toggle = async (key, value) => {
     if (key === 'notifyAdReady') setNotifyAdReady(value);

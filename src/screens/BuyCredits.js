@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Share, ActivityIndicator, Linking } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppAlert } from '../components/AppAlert';
 import { TERMS_URL } from '../constants';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -7,6 +9,10 @@ import { db, auth } from '../firebase/client';
 import { callCreateCryptoPayment } from '../firebase/functions';
 import { useI18n } from '../utils/i18n';
 import { logError } from '../utils/logError';
+
+// ALTO-49: persistir paymentId activo en AsyncStorage para recuperar el
+// estado si el usuario cierra la app a mitad del pago.
+const PAYMENT_CACHE_KEY = '@mtb/activePayment';
 
 // SEC-B2: PAYMENT_WALLET viene del backend (createCryptoPayment response).
 // NO hardcodear en cliente — un APK modificado podría reemplazar la constante
@@ -67,19 +73,65 @@ export default function BuyCredits({ onClose }) {
       const result = await callCreateCryptoPayment();
       setPayment(result);
       setStatus('waiting');
+      // ALTO-49: persistir para recovery si el user cierra la app.
+      try {
+        await AsyncStorage.setItem(PAYMENT_CACHE_KEY, JSON.stringify({
+          paymentId: result.paymentId,
+          expiresAt: result.expiresAt,
+        }));
+      } catch {}
     } catch (e) {
       logError('BuyCredits.generatePayment', e);
-      showAlert('Error', e?.message || t('buyCredits.errorGenerate'));
+      // No revelar mensaje crudo del backend al UI.
+      showAlert('Error', t('buyCredits.errorGenerate'));
     } finally {
       setLoading(false);
     }
   };
 
+  // ALTO-49: al montar, recuperar paymentId activo si no expiró.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(PAYMENT_CACHE_KEY);
+        if (cancelled || !raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed?.expiresAt && parsed.expiresAt > Date.now() && parsed.paymentId) {
+          // Restaurar listener; el snapshot lo va a mostrar como waiting/completed/expired.
+          setPayment({ paymentId: parsed.paymentId, expiresAt: parsed.expiresAt, amount: null, wallet: null });
+          setStatus('waiting');
+        } else {
+          AsyncStorage.removeItem(PAYMENT_CACHE_KEY).catch(() => {});
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Limpiar cache cuando el pago sale del estado waiting (completed/expired/cancelled).
+  useEffect(() => {
+    if (status && status !== 'waiting') {
+      AsyncStorage.removeItem(PAYMENT_CACHE_KEY).catch(() => {});
+    }
+  }, [status]);
+
+  // MEDIO-C20: copiar al portapapeles en lugar de Share.share. Share abre el
+  // selector de apps para "compartir" — el usuario podía mandar el wallet/
+  // monto a una app maliciosa accidentalmente. Clipboard es directo.
   const copyToClipboard = async (text, label) => {
     try {
-      await Share.share({ message: text });
-    } catch {}
+      await Clipboard.setStringAsync(String(text || ''));
+    } catch (e) {
+      try { (await import('../utils/logError')).default('BuyCredits.copy', e, { label }); } catch {}
+    }
   };
+
+  // MEDIO-C21: validar wallet del backend antes de mostrar/usar. Si el backend
+  // devolviera un wallet con caracteres unicode RTL/look-alike (`0х...` cirílica),
+  // el usuario podría copiar visualmente correcto pero enviar a otro destino.
+  const ETH_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+  const safeWallet = payment && ETH_ADDR_RE.test(String(payment.wallet || '')) ? payment.wallet : null;
 
   if (status === 'completed') {
     // Show bonus on first purchase: referredBy set and bonus not yet processed (will fire in background)
@@ -145,10 +197,10 @@ export default function BuyCredits({ onClose }) {
           </TouchableOpacity>
           <Text style={s.warning}>⚠️ {t('buyCredits.exactWarning')}</Text>
 
-          {/* Wallet */}
+          {/* Wallet — MEDIO-C21: solo mostrar si pasa validación de formato. */}
           <Text style={[s.fieldLabel, { marginTop: 16 }]}>{t('buyCredits.toAddress')}</Text>
-          <TouchableOpacity style={s.copyRow} onPress={() => copyToClipboard(payment.wallet, 'wallet')} activeOpacity={0.75}>
-            <Text style={s.walletTxt} numberOfLines={1} ellipsizeMode="middle">{payment.wallet}</Text>
+          <TouchableOpacity style={s.copyRow} onPress={() => safeWallet && copyToClipboard(safeWallet, 'wallet')} activeOpacity={0.75}>
+            <Text style={s.walletTxt} numberOfLines={1} ellipsizeMode="middle">{safeWallet || '(inválido)'}</Text>
             <View style={s.copyBtn}><Text style={s.copyTxt}>{t('buyCredits.copy')}</Text></View>
           </TouchableOpacity>
 

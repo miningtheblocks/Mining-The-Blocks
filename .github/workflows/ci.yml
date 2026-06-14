@@ -1,15 +1,26 @@
 name: CI
 
+# Principio de menor privilegio (recomendación GitHub).
+permissions:
+  contents: read
+
+# Evitar runs duplicados en el mismo branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [master, main]
   pull_request:
     branches: [master, main]
+  workflow_dispatch:
 
 jobs:
   lint-and-test:
     name: Lint + Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -48,35 +59,54 @@ jobs:
   security-checks:
     name: Security checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Verify keystore NOT committed
         run: |
           if git ls-files | grep -E '\.(keystore|jks)$|mtb-release\.'; then
-            echo "❌ ERROR: keystore or release artifact committed!"
+            echo "ERROR: keystore or release artifact committed!"
             exit 1
           fi
-          echo "✅ No keystore committed"
+          echo "OK: No keystore committed"
 
       - name: Verify .env NOT committed (besides example)
         run: |
           if git ls-files | grep -E '^\.env$|^\.env\.local$|service-account.*\.json'; then
-            echo "❌ ERROR: secret file committed!"
+            echo "ERROR: secret file committed!"
             exit 1
           fi
-          echo "✅ No secret files committed"
+          echo "OK: No secret files committed"
+
+      # CRIT-24: docs/verify.html debe NUNCA existir. El flow de verificación
+      # de email vive en public/verify.html (Firebase Hosting). Si una copia
+      # vieja sin el fix XSS termina en docs/ (GitHub Pages), reabre el agujero.
+      - name: Verify docs/verify.html does NOT exist
+        run: |
+          if [ -f docs/verify.html ]; then
+            echo "ERROR: docs/verify.html debe NO existir. El verify lo sirve Firebase Hosting (public/verify.html)."
+            exit 1
+          fi
+          echo "OK: docs/verify.html not present"
 
       - name: Scan for obvious hardcoded secrets
         run: |
           # Excluye: API keys públicas Firebase (AIzaSy*), domains públicos,
           # direcciones Ethereum (0x[40hex] son públicas on-chain), URLs.
           if grep -rEn "(['\"])[A-Za-z0-9+/]{40,}\1" --include="*.js" \
-              src/firebase/client.js functions/index.js functions/constants.js 2>/dev/null \
+              src/firebase/client.js functions/index.js functions/constants.js functions/helpers.js 2>/dev/null \
               | grep -vE "AIzaSy|firebaseapp|us-central1-|policies\.google|exp\.host|/Mining-The-Blocks/|'0x[a-fA-F0-9]{40}'" \
               | head -5 \
               | grep .; then
-            echo "⚠️  Possible hardcoded secret(s) above — review."
+            echo "WARN: Possible hardcoded secret(s) above — review."
             exit 1
           fi
-          echo "✅ No obvious hardcoded secrets"
+          echo "OK: No obvious hardcoded secrets"
+
+      # Audit dependencies (warning-only para no romper CI por vulns transitivas
+      # en dev-deps, pero queda visible en logs).
+      - name: npm audit (functions)
+        working-directory: functions
+        run: npm audit --omit=dev --audit-level=high || true
+        continue-on-error: true

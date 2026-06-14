@@ -143,7 +143,11 @@ export default function Registration({ asModal = false, onClose }) {
           showAlert(t('registration.needValidEmailTitle'), t('registration.needValidEmailBody'));
           return;
         }
-        if (!password || password.length < 6) {
+        // ALTO-43: complejidad mínima — antes era solo `length < 6`. Ahora
+        // exigimos >= 8 chars con al menos una letra y un número. Esto
+        // bloquea "123456", "password", "qwerty" y similares que Firebase
+        // Auth aceptaría.
+        if (!password || password.length < 8 || !/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
           showAlert(t('registration.weakPasswordTitle'), t('registration.weakPasswordBody'));
           return;
         }
@@ -238,7 +242,10 @@ export default function Registration({ asModal = false, onClose }) {
         ]);
       }
     } catch (e) {
-      console.warn('save profile error', e);
+      // ALTO-46: NO mostrar stack/code crudo al UI. Antes el branch default
+      // mostraba `${code} ${e.message}` que filtraba paths internos y reglas
+      // de Firestore. Lo logueamos remoto (logError) y mostramos texto genérico.
+      try { (await import('../utils/logError')).default('Registration.save', e); } catch {}
       const code = e?.code || '';
       let msg;
       if (code === 'auth/email-already-in-use') {
@@ -249,7 +256,8 @@ export default function Registration({ asModal = false, onClose }) {
       } else if (code === 'auth/invalid-email') {
         msg = t('registration.needValidEmailBody');
       } else {
-        msg = (e && (e.message || code)) ? `${t('registration.couldNotSave')}\n\n${code} ${e.message || ''}`.trim() : t('registration.couldNotSave');
+        // Sólo un texto genérico al usuario — el detalle ya quedó en logError.
+        msg = t('registration.couldNotSave');
       }
       showAlert(t('registration.errorTitle'), msg);
     } finally {

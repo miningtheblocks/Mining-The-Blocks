@@ -7,21 +7,26 @@ import * as THREE from 'three';
 let lastDetectedFace = null;
 let lastFaceChangeTime = 0;
 
+// BAJO-ALTO-12: array de caras a nivel módulo (antes se creaba cada llamada
+// = 18 Vector3 por call × 60Hz = ~1080/s de GC). Ahora reutilizamos.
+const FACES_DET = [
+  { name: 'front',  normal: new THREE.Vector3(0, 0, 1),  position: new THREE.Vector3(0, 0, 100),  index: 0 },
+  { name: 'back',   normal: new THREE.Vector3(0, 0, -1), position: new THREE.Vector3(0, 0, -100), index: 1 },
+  { name: 'right',  normal: new THREE.Vector3(1, 0, 0),  position: new THREE.Vector3(100, 0, 0),  index: 2 },
+  { name: 'left',   normal: new THREE.Vector3(-1, 0, 0), position: new THREE.Vector3(-100, 0, 0), index: 3 },
+  { name: 'top',    normal: new THREE.Vector3(0, 1, 0),  position: new THREE.Vector3(0, 100, 0),  index: 4 },
+  { name: 'bottom', normal: new THREE.Vector3(0, -1, 0), position: new THREE.Vector3(0, -100, 0), index: 5 },
+];
+const _scratchCubeCenter = new THREE.Vector3();
+const _scratchDir = new THREE.Vector3();
+
 // Función corregida para encontrar la cara más paralela a la pantalla
 export function findClosestFaceFixed(cameraPosition, cubePosition) {
-  const faces = [
-    { name: 'front', normal: new THREE.Vector3(0, 0, 1), position: new THREE.Vector3(0, 0, 100), index: 0 },
-    { name: 'back', normal: new THREE.Vector3(0, 0, -1), position: new THREE.Vector3(0, 0, -100), index: 1 },
-    { name: 'right', normal: new THREE.Vector3(1, 0, 0), position: new THREE.Vector3(100, 0, 0), index: 2 },
-    { name: 'left', normal: new THREE.Vector3(-1, 0, 0), position: new THREE.Vector3(-100, 0, 0), index: 3 },
-    { name: 'top', normal: new THREE.Vector3(0, 1, 0), position: new THREE.Vector3(0, 100, 0), index: 4 },
-    { name: 'bottom', normal: new THREE.Vector3(0, -1, 0), position: new THREE.Vector3(0, -100, 0), index: 5 }
-  ];
-  
   // Calcular dirección DESDE EL CUBO HACIA LA CÁMARA
   // (necesitamos encontrar la cara cuya normal apunta hacia la cámara)
-  const cubeCenter = cubePosition || new THREE.Vector3(0, 0, 0);
-  const cameraDirection = cameraPosition.clone().sub(cubeCenter).normalize();
+  const cubeCenter = cubePosition || _scratchCubeCenter.set(0, 0, 0);
+  const cameraDirection = _scratchDir.copy(cameraPosition).sub(cubeCenter).normalize();
+  const faces = FACES_DET;
   
   let mostParallelFace = faces[0];
   let maxDotProduct = -Infinity;

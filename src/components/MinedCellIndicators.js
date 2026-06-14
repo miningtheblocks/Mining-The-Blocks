@@ -4,6 +4,19 @@ import * as THREE from 'three';
 // Cache para evitar recrear texturas
 const indicatorCache = new Map();
 
+// MEDIO-26: helper para limpiar cache al unmount global. Aunque el cache es
+// pequeño (~10 entradas), las texturas son GPU resources y deberían disponerse.
+export function clearIndicatorCache() {
+  try {
+    indicatorCache.forEach((tex) => {
+      if (tex && typeof tex.dispose === 'function') {
+        try { tex.dispose(); } catch (_) {}
+      }
+    });
+    indicatorCache.clear();
+  } catch (_) {}
+}
+
 /**
  * Dibuja texto usando la MISMA función que los números (fuente bitmap 5x7)
  * COPIA EXACTA de drawTextOnTexture de DynamicCube201.js

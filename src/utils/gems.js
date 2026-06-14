@@ -1,6 +1,17 @@
+// CRIT-18: economía de las gemas (price, quantityPerServer, unlockAt) está
+// también en `functions/constants.js` (GEM_PRICES + GEM_UNLOCK_THRESHOLDS).
+// La fuente de verdad para credit/payout es SIEMPRE el backend — el cliente
+// solo usa estos valores para mostrar UI. Un APK modificado puede mentirle
+// al usuario sobre el premio pero NO puede cambiar lo que efectivamente paga
+// la empresa (el backend lee de `functions/constants.js`, no del cliente).
+// IMPORTANTE: si cambian estos valores, actualizar EN BLOQUE los 3 lugares:
+//   - src/utils/gems.js (este archivo, UI client)
+//   - functions/constants.js (GEM_PRICES + GEM_UNLOCK_THRESHOLDS, backend)
+//   - assets/gems/metadata/*.json (NFT metadata, on-chain)
+
 // Shared 10×10 faceted gem shape
 // 0 = transparent, 1 = brightest highlight → 5 = deepest shadow
-export const GEM_SHAPE = [
+const _GEM_SHAPE_RAW = [
   [0, 0, 1, 2, 2, 2, 2, 1, 0, 0],
   [0, 1, 2, 3, 3, 3, 3, 2, 1, 0],
   [1, 2, 3, 3, 4, 4, 3, 3, 2, 1],
@@ -129,3 +140,19 @@ export const GEMS = [
     borderColor: '#009933',
   },
 ];
+
+// CRIT-18: deep-freeze para prevenir mutación accidental por consumidores.
+const _deepFreeze = (obj) => {
+  if (obj === null || typeof obj !== 'object' || Object.isFrozen(obj)) return obj;
+  Object.values(obj).forEach(_deepFreeze);
+  return Object.freeze(obj);
+};
+_deepFreeze(GEMS);
+export const GEM_SHAPE = _deepFreeze(_GEM_SHAPE_RAW);
+
+// Helper para acceso seguro por tier (1..9). Evita crashes con tier inválido.
+export function getGemDef(tier) {
+  const idx = Number(tier) - 1;
+  if (!Number.isInteger(idx) || idx < 0 || idx >= GEMS.length) return GEMS[0];
+  return GEMS[idx];
+}

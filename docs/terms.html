@@ -3,6 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- CRIT-23: CSP via meta tag (GitHub Pages no aplica firebase.json headers). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+  <meta http-equiv="X-Frame-Options" content="DENY">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>Mining The Blocks — Terms &amp; Conditions</title>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -272,7 +276,7 @@
   <h3>14.3 Help Resources</h3>
   <p>If you or someone you know has a gambling problem, contact these organizations:</p>
   <ul>
-    <li><strong>International:</strong> <a href="https://www.gamblingtherapy.org" target="_blank">GamblingTherapy.org</a></li>
+    <li><strong>International:</strong> <a href="https://www.gamblingtherapy.org" target="_blank" rel="noopener noreferrer">GamblingTherapy.org</a></li>
     <li><strong>USA:</strong> National Problem Gambling Helpline: 1-800-522-4700</li>
     <li><strong>Argentina:</strong> CNZF — Centro Nacional de Zonas Fuera (CNZF)</li>
   </ul>
@@ -542,8 +546,8 @@
   <h3>14.3 Recursos de Ayuda</h3>
   <p>Si vos o alguien que conocés tiene un problema con el juego de azar:</p>
   <ul>
-    <li><strong>Internacional:</strong> <a href="https://www.gamblingtherapy.org" target="_blank">GamblingTherapy.org</a></li>
-    <li><strong>Argentina:</strong> Jugadores Anónimos: <a href="https://www.jugadoresanonimos.org.ar" target="_blank">jugadoresanonimos.org.ar</a></li>
+    <li><strong>Internacional:</strong> <a href="https://www.gamblingtherapy.org" target="_blank" rel="noopener noreferrer">GamblingTherapy.org</a></li>
+    <li><strong>Argentina:</strong> Jugadores Anónimos: <a href="https://www.jugadoresanonimos.org.ar" target="_blank" rel="noopener noreferrer">jugadoresanonimos.org.ar</a></li>
     <li><strong>México:</strong> CONADIC — Centro de Orientación Telefónica: 800 911 2000</li>
   </ul>
   <h3>14.4 Protección de Menores</h3>

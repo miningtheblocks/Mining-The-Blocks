@@ -84,10 +84,11 @@ function EventRow({ item, t }) {
           </View>
         </View>
         <View style={styles.rowBody}>
-          <Text style={[styles.rowTitle, { color }]}>
+          <Text style={[styles.rowTitle, { color }]} numberOfLines={1}>
             {t('chainHistory.episodeComplete').replace('{n}', item.episodeNumber ?? '—')}
           </Text>
-          <Text style={styles.rowSub}>
+          {/* BAJO-CH-03: numberOfLines=1 para evitar que displayName larguísimo rompa layout */}
+          <Text style={styles.rowSub} numberOfLines={2} ellipsizeMode="tail">
             {t('chainHistory.winner').replace('{name}', item.displayName || t('chainHistory.player'))}
             {item.totalMined ? `  ${t('chainHistory.blocks').replace('{n}', item.totalMined)}` : ''}
           </Text>
@@ -130,7 +131,9 @@ export default function ChainHistoryScreen() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!chainId) return;
+    // BAJO-CH-01: si no hay chainId, igual hay que dejar loading=false sino
+    // queda spinner infinito.
+    if (!chainId) { setLoading(false); setEvents([]); return; }
     setLoading(true);
     const q = query(
       collection(db, 'serverChains', chainId, 'history'),
@@ -140,7 +143,12 @@ export default function ChainHistoryScreen() {
     const unsub = onSnapshot(q, (snap) => {
       setEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setLoading(false);
-    }, () => setLoading(false));
+    }, (err) => {
+      // BAJO-CH-02: loguear el error en lugar de tragarlo — útil para distinguir
+      // "lista vacía" vs "permission-denied".
+      try { (async () => (await import('../utils/logError')).default('ChainHistory.snapshot', err, { chainId }))(); } catch (_) {}
+      setLoading(false);
+    });
     return () => unsub();
   }, [chainId]);
 

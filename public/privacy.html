@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="index, follow">
+<!-- CRIT-23: GitHub Pages no respeta firebase.json headers; CSP via meta. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+<meta http-equiv="X-Frame-Options" content="DENY">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>Política de Privacidad — Mining The Blocks</title>
 <style>
   body { margin:0; padding:0; background:#0a0a0a; color:#ddd; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; line-height:1.65; }
@@ -67,7 +71,7 @@
 
   <h3>1.6 Publicidad</h3>
   <ul>
-    <li>Usamos <strong>Google AdMob</strong> para mostrar anuncios premiados (rewarded ads). AdMob puede recolectar identificadores publicitarios anónimos del dispositivo (AD_ID) según su propia política: <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">policies.google.com/privacy</a>.</li>
+    <li>Usamos <strong>Google AdMob</strong> para mostrar anuncios premiados (rewarded ads). AdMob puede recolectar identificadores publicitarios anónimos del dispositivo (AD_ID) según su propia política: <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer">policies.google.com/privacy</a>.</li>
   </ul>
 
   <h2>2. Para qué usamos los datos</h2>
@@ -109,7 +113,10 @@
   <p>Usamos Firebase Auth con tokens JWT, TLS 1.2+ en todas las conexiones, y Firestore Rules para que cada usuario sólo acceda a sus propios datos. Las claves privadas de la wallet de empresa están en Google Secret Manager.</p>
 
   <h2>7. Menores de edad</h2>
-  <p>La app no está dirigida a menores de 18 años. Si descubrís que un menor está usándola, contactanos para eliminar su cuenta.</p>
+  <p>La app está restringida a usuarios de <strong>18 años o más</strong> y NO recolecta intencionalmente datos de menores. AdMob está configurado con los flags <code>tagForChildDirectedTreatment=false</code> (no es servicio dirigido a niños, conforme a COPPA / FTC) y <code>tagForUnderAgeOfConsent=false</code>. Si descubrís que un menor está usando la app, contactanos para eliminar su cuenta inmediatamente.</p>
+
+  <h2>7.1 COPPA &amp; CCPA</h2>
+  <p>No recolectamos a sabiendas información personal de menores de 13 años (COPPA, EE.UU.). Si residís en California, podés ejercer tus derechos bajo CCPA / CPRA (acceso, eliminación, opt-out de venta de datos — nosotros NO vendemos datos) escribiéndonos al email de contacto.</p>
 
   <h2>8. Cambios a esta política</h2>
   <p>Si actualizamos esta política, te notificaremos via la app antes de que aplique.</p>
@@ -170,7 +177,10 @@
   <p>Firebase Auth (JWT), TLS 1.2+, Firestore Rules per-user access, secrets in Google Secret Manager.</p>
 
   <h2>7. Minors</h2>
-  <p>This app is not directed at users under 18.</p>
+  <p>This app is restricted to users <strong>18 years of age or older</strong> and does not knowingly collect data from minors. AdMob is configured with <code>tagForChildDirectedTreatment=false</code> (not child-directed per COPPA/FTC) and <code>tagForUnderAgeOfConsent=false</code>. If you discover a minor using the app, contact us to delete the account immediately.</p>
+
+  <h2>7.1 COPPA &amp; CCPA</h2>
+  <p>We do not knowingly collect personal information from children under 13 (COPPA, US). California residents may exercise their CCPA / CPRA rights (access, deletion, opt-out of sale — we do NOT sell data) by emailing the contact address.</p>
 
   <h2>8. Changes</h2>
   <p>We will notify you in the app before any change to this policy applies.</p>

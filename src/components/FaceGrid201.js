@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { View, Dimensions, PanResponder, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { useI18n } from '../utils/i18n';
 import Svg, { Line, Polygon, G } from 'react-native-svg';
@@ -278,6 +278,15 @@ export default function FaceGrid201() {
       setCamera({ ...cameraRef.current });
     });
   };
+
+  // BAJO-MEDIO-39: cancelar el RAF en unmount para evitar setCamera() después
+  // de desmontar (warning React) y leak del callback hasta el próximo frame.
+  useEffect(() => () => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  }, []);
 
   const panResponder = useMemo(
     () =>

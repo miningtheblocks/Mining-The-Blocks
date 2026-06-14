@@ -9,10 +9,13 @@ service firebase.storage {
     // Lectura pública (la URL firmada se sirve desde Firestore en users/{uid}.avatarUrl).
     match /avatars/{file} {
       allow read: if true;
+      // MEDIO-F20: restringir contentType a JPEG/PNG. Antes `image/.*` aceptaba
+      // SVG/HEIC/AVIF que pueden embeber scripts u otros payloads si la app o
+      // una webview los renderiza fuera de `<Image>`. Cap a 5MB se mantiene.
       allow write: if request.auth != null
         && file.matches('^' + request.auth.uid + '_[0-9]+\\.jpg$')
         && request.resource.size < 5 * 1024 * 1024
-        && request.resource.contentType.matches('image/.*');
+        && (request.resource.contentType == 'image/jpeg' || request.resource.contentType == 'image/png');
       allow delete: if request.auth != null
         && file.matches('^' + request.auth.uid + '_.*');
     }

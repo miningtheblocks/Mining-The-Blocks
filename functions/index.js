@@ -63,10 +63,59 @@ const {
   setRestrictedCorsHeaders,
 } = require("./helpers");
 
+// BAJO-H18: validar formato + tamaño de IDs (serverId, chainId, gemId, etc.).
+// Antes el código solo verificaba !id (truthy) — un id de 1500 bytes pasaba
+// y forzaba lookups Firestore costosos sin valor real.
+const FIRESTORE_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+function assertValidId(id, label) {
+  if (typeof id !== "string" || !FIRESTORE_ID_RE.test(id)) {
+    throw new HttpsError("invalid-argument", `${label}_invalid`);
+  }
+}
+
 function requireRegistered(request) {
   if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "Login required");
   const provider = request.auth.token && request.auth.token.firebase && request.auth.token.firebase.sign_in_provider;
   if (provider === "anonymous") throw new HttpsError("permission-denied", "Registro requerido para jugar");
+  // ALTO-30: exigir email verificado en operaciones de juego (mining, payments,
+  // gem claim). Providers OAuth (google.com, etc.) ya verifican email upstream,
+  // se aceptan sin recheck. Solo email/password necesita el flag.
+  if (provider === "password" && request.auth.token && request.auth.token.email_verified === false) {
+    throw new HttpsError("permission-denied", "email_not_verified");
+  }
+}
+
+// MEDIO-H15: generateReferralCode con check de unicidad. Espacio = 31^8 ≈ 8.5e11
+// y birthday-paradox a 1M users ≈ 0.06%. No crítico pero defensivo. 5 retries
+// y si fallan, fallback al código generado (improbable colisión real).
+async function generateUniqueReferralCode() {
+  for (let i = 0; i < 5; i++) {
+    const code = generateReferralCode();
+    try {
+      const exists = await db.collection("users").where("referralCode", "==", code).limit(1).get();
+      if (exists.empty) return code;
+    } catch (_) {
+      return code; // fallback si la query falla
+    }
+  }
+  return generateReferralCode();
+}
+
+// ALTO-31: verificación de admin con freshness real. El custom claim `admin`
+// dura ~1h en el ID token aunque se revoque server-side. Para operaciones
+// destructivas leemos los claims FRESCOS via Admin SDK.
+async function requireAdminFresh(request) {
+  if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "Login required");
+  try {
+    const user = await admin.auth().getUser(request.auth.uid);
+    if (!user.customClaims || !user.customClaims.admin) {
+      throw new HttpsError("permission-denied", "Admin only");
+    }
+  } catch (e) {
+    if (e instanceof HttpsError) throw e;
+    console.error("requireAdminFresh error:", e && e.message);
+    throw new HttpsError("internal", "admin_check_failed");
+  }
 }
 
 // ─── Activity Feed ───────────────────────────────────────────────────────────
@@ -233,11 +282,9 @@ async function consumeServerCredit(uid, transaction) {
 
 // Agregar créditos de acceso a un usuario (llamado por Stripe / token / admin)
 exports.addServerCredit = onCall(async (request) => {
-  const uid = request.auth && request.auth.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "Login required");
-  if (!request.auth.token || !request.auth.token.admin) {
-    throw new HttpsError("permission-denied", "Admin only");
-  }
+  // ALTO-31: verificar admin FRESH (no del token cacheado).
+  await requireAdminFresh(request);
+  const uid = request.auth.uid;
 
   const targetUid = String((request.data && request.data.uid) || '');
   if (!targetUid) throw new HttpsError("invalid-argument", "uid required");
@@ -346,7 +393,7 @@ exports.joinServer = onCall(async (request) => {
   const uid = request.auth.uid;
 
   const serverId = String((request.data && request.data.serverId) || '');
-  if (!serverId) throw new HttpsError("invalid-argument", "serverId required");
+  assertValidId(serverId, "serverId");
 
   const serverRef = db.collection("servers").doc(serverId);
   const userRef = db.collection("users").doc(uid);
@@ -423,7 +470,7 @@ exports.joinServer = onCall(async (request) => {
   const userSnap = await db.collection("users").doc(uid).get();
   const userData = userSnap.exists ? (userSnap.data() || {}) : {};
   if (!userData.referralCode) {
-    await db.collection("users").doc(uid).set({ referralCode: generateReferralCode() }, { merge: true });
+    await db.collection("users").doc(uid).set({ referralCode: await generateUniqueReferralCode() }, { merge: true });
   }
 
   // SEC-M1: referral bonus con check DENTRO de la TX (anteriormente se leía
@@ -475,7 +522,7 @@ exports.checkServerAccess = onCall(async (request) => {
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
 
   const serverId = String((request.data && request.data.serverId) || '');
-  if (!serverId) throw new HttpsError("invalid-argument", "serverId required");
+  assertValidId(serverId, "serverId");
 
   const [accessSnap, userSnap] = await Promise.all([
     db.collection("users").doc(uid).collection("serverAccess").doc(serverId).get(),
@@ -518,7 +565,7 @@ exports.getChain = onCall(async (request) => {
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
 
   const chainId = String((request.data && request.data.chainId) || '');
-  if (!chainId) throw new HttpsError("invalid-argument", "chainId required");
+  assertValidId(chainId, "chainId");
 
   const chainRef = db.collection("serverChains").doc(chainId);
   const [chainSnap, episodesSnap] = await Promise.all([
@@ -560,12 +607,19 @@ exports.claimGemNFT = onCall(async (request) => {
   const gemId = String((request.data && request.data.gemId) || '');
   const walletAddress = String((request.data && request.data.walletAddress) || '').trim();
 
-  if (!gemId) throw new HttpsError("invalid-argument", "gemId required");
+  assertValidId(gemId, "gemId");
   if (!/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
     throw new HttpsError("invalid-argument", "Invalid Ethereum wallet address");
   }
 
   const gemRef = db.collection("users").doc(uid).collection("gems").doc(gemId);
+
+  // ALTO-32: idempotency. Antes había una ventana entre TX (gem→minting) y
+  // pendingMints.add donde si el .add fallaba, la gema quedaba atascada en
+  // "minting" para siempre sin poder re-claimar. Ahora: usar docId
+  // determinístico = `${uid}_${gemId}` para que el .add sea idempotente y la
+  // creación del pendingMint ocurra DENTRO de la misma TX.
+  const pendingMintRef = db.collection("pendingMints").doc(`${uid}_${gemId}`);
 
   let gemTier;
   let gemCode;
@@ -580,19 +634,18 @@ exports.claimGemNFT = onCall(async (request) => {
     gemTier = gem.gemTier;
     gemCode = gem.code;
     tx.set(gemRef, { status: "minting", walletAddress, claimedAt: Date.now() }, { merge: true });
-  });
-
-  // Encolar para minteo (procesado por el backend de NFT — Polygon)
-  await db.collection("pendingMints").add({
-    uid,
-    gemId,
-    gemTier,
-    gemCode,
-    tokenURI: GEM_TOKEN_URIS[(gemTier - 1)] || null,
-    walletAddress,
-    priceUSD: GEM_PRICES[(gemTier - 1)] || 0,
-    createdAt: Date.now(),
-    status: "pending",
+    // Crear el pendingMint en la misma TX — atómico con el cambio de status.
+    tx.set(pendingMintRef, {
+      uid,
+      gemId,
+      gemTier,
+      gemCode,
+      tokenURI: GEM_TOKEN_URIS[(gemTier - 1)] || null,
+      walletAddress,
+      priceUSD: GEM_PRICES[(gemTier - 1)] || 0,
+      createdAt: Date.now(),
+      status: "pending",
+    });
   });
 
   return { ok: true, walletAddress };
@@ -613,7 +666,7 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
   const cubeNumber = String(n); // forma canónica para docId
 
   const serverId = String((request.data && request.data.serverId) || '');
-  if (!serverId) throw new HttpsError("invalid-argument", "serverId required");
+  assertValidId(serverId, "serverId");
 
   const serverRef = db.collection("servers").doc(serverId);
   const userRef = db.collection("users").doc(uid);
@@ -655,7 +708,13 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
       }
     }
 
-    if (minedSnap.exists) return { ok: true, alreadyMined: true };
+    if (minedSnap.exists) {
+      // ALTO-36: actualizar lastMineAt aunque ya esté minado para que el
+      // rate-limit aplique al ganador del race. Antes el perdedor podía
+      // minar otro cubo inmediatamente porque no se actualizaba.
+      tx.set(userRef, { lastMineAt: Date.now() }, { merge: true });
+      return { ok: true, alreadyMined: true };
+    }
 
     let picks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
     if (!userSnap.exists) {
@@ -955,7 +1014,15 @@ exports.claimAdSession = onRequest(async (req, res) => {
     });
     res.json({ ok: true });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    // INF-001: NO devolver e.message al cliente — eso permite enumerar estados
+    // internos (invalid_token, already_used, expired, not_ready, ALREADY_CLOSING).
+    // Mapeamos a un set chico de códigos públicos.
+    const KNOWN_PUBLIC = new Set(["invalid_token", "already_used", "expired", "not_ready", "not_found"]);
+    const code = KNOWN_PUBLIC.has(e && e.message) ? e.message : "bad_request";
+    if (!KNOWN_PUBLIC.has(code)) {
+      console.error("claimAdSession internal error:", e && e.message);
+    }
+    res.status(400).json({ error: code });
   }
 });
 
@@ -1009,6 +1076,14 @@ async function runMintProcessing() {
     console.error("COMPANY_WALLET_KEY no configurada");
     return { ok: false, processed: 0, failed: 0 };
   }
+  // MEDIO-002: validar formato antes de pasarlo a ethers para que un secret
+  // corrupto/mal-pegado falle fast con un error legible en logs, en vez de
+  // dar el error críptico de ethers ("invalid private key").
+  // Formato esperado: 0x + 64 hex chars (32 bytes).
+  if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+    console.error("COMPANY_WALLET_KEY tiene formato inválido (esperado 0x + 64 hex)");
+    return { ok: false, processed: 0, failed: 0, error: "invalid_key_format" };
+  }
 
   const snap = await db.collection("pendingMints")
       .where("status", "==", "pending")
@@ -1043,6 +1118,28 @@ async function runMintProcessing() {
     } catch (e) {
       if (e.message === 'SKIP') continue;
       throw e;
+    }
+
+    // ALTO-34: validar bounds del doc ANTES de pasar al contrato. Defense in
+    // depth: aunque las rules bloquean writes directos a pendingMints, un bug
+    // futuro o un admin compromised podría crear docs malformados.
+    if (!Number.isInteger(data.gemTier) || data.gemTier < 1 || data.gemTier > 9) {
+      console.error("Invalid gemTier in pendingMint:", { mintId, tier: data.gemTier });
+      await mintRef.set({ status: 'failed', error: 'invalid_tier', failedAt: Date.now() }, { merge: true });
+      failed++;
+      continue;
+    }
+    if (typeof data.walletAddress !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(data.walletAddress)) {
+      console.error("Invalid walletAddress in pendingMint:", { mintId });
+      await mintRef.set({ status: 'failed', error: 'invalid_wallet', failedAt: Date.now() }, { merge: true });
+      failed++;
+      continue;
+    }
+    if (typeof data.gemCode !== 'string' || data.gemCode.length === 0 || data.gemCode.length > 50) {
+      console.error("Invalid gemCode in pendingMint:", { mintId });
+      await mintRef.set({ status: 'failed', error: 'invalid_code', failedAt: Date.now() }, { merge: true });
+      failed++;
+      continue;
     }
 
     try {
@@ -1130,9 +1227,8 @@ async function runMintProcessing() {
 
 // Llamable manualmente (solo admin)
 exports.processPendingMints = onCall({ secrets: [companyWalletKey, gmailAppPassword] }, async (request) => {
-  if (!request.auth || !request.auth.token || !request.auth.token.admin) {
-    throw new HttpsError("permission-denied", "Admin only");
-  }
+  // ALTO-31: check admin fresco (Admin SDK), no token cacheado.
+  await requireAdminFresh(request);
   return runMintProcessing();
 });
 
@@ -1177,6 +1273,13 @@ exports.checkReferralCode = onCall(async (request) => {
 
 // SEC-N-005: setear walletAddress del usuario via Cloud Function (las rules
 // bloquean escritura directa). Valida formato y limpia el field si se pasa null.
+//
+// ALTO-35: cooldown anti-hot-swap. Si un atacante toma temporalmente control
+// de la cuenta y cambia la wallet, hay un periodo en que los NFTs futuros se
+// envían a su wallet. Aplicamos cooldown de 24h entre cambios. El primer set
+// (cuando walletAddress es null) no tiene cooldown.
+const WALLET_CHANGE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
 exports.setUserWallet = onCall(async (request) => {
   requireRegistered(request);
   const uid = request.auth.uid;
@@ -1188,8 +1291,25 @@ exports.setUserWallet = onCall(async (request) => {
   if (addr !== null && !/^0x[a-fA-F0-9]{40}$/.test(addr)) {
     throw new HttpsError("invalid-argument", "invalid_wallet");
   }
-  await db.collection("users").doc(uid).set({
+
+  // ALTO-35: chequear cooldown solo si ya había wallet previa Y se cambia a otra distinta.
+  const userRef = db.collection("users").doc(uid);
+  const userSnap = await userRef.get();
+  if (userSnap.exists) {
+    const data = userSnap.data() || {};
+    const prevAddr = data.walletAddress || null;
+    const lastChangeAt = Number(data.walletChangedAt || 0);
+    // Solo aplicar cooldown si: hay wallet previa Y la nueva es distinta (incluido cambiar a null).
+    const isChange = prevAddr && addr !== prevAddr;
+    if (isChange && lastChangeAt && Date.now() - lastChangeAt < WALLET_CHANGE_COOLDOWN_MS) {
+      const remainHours = Math.ceil((WALLET_CHANGE_COOLDOWN_MS - (Date.now() - lastChangeAt)) / (60 * 60 * 1000));
+      throw new HttpsError("resource-exhausted", `wallet_cooldown:${remainHours}`);
+    }
+  }
+
+  await userRef.set({
     walletAddress: addr,
+    walletChangedAt: Date.now(),
     updatedAt: Date.now(),
   }, { merge: true });
   return { ok: true, walletAddress: addr };
@@ -1288,11 +1408,21 @@ exports.createCryptoPayment = onCall(async (request) => {
   throw new HttpsError("resource-exhausted", "try_again");
 });
 
+// CRIT-01..03: hardening del flow de pagos crypto:
+// - SAFE_CONFIRMATIONS: solo consumir eventos con >=30 confirmaciones para
+//   evitar acreditar TXs que luego revierten por reorgs en Polygon.
+// - processedTxs/{txHash}: registro idempotente para evitar doble-crédito si
+//   el mismo evento aparece en runs solapados (200 bloques ≈ 7 min, vs run
+//   cada 5 min) o en escenarios de reorg.
+const SAFE_CONFIRMATIONS = 30;
+
 // Escanea Polygon cada 5 min buscando transferencias USDC al wallet de pagos
 async function runCryptoPaymentProcessing() {
   const provider = new ethers.JsonRpcProvider("https://polygon-bor-rpc.publicnode.com");
   const currentBlock = await provider.getBlockNumber();
-  const fromBlock = currentBlock - 200; // ~6-7 min de bloques en Polygon
+  // CRIT-02: solo considerar bloques con SAFE_CONFIRMATIONS confirmaciones.
+  const safeBlock = currentBlock - SAFE_CONFIRMATIONS;
+  const fromBlock = safeBlock - 200; // ventana de ~6-7 min de bloques en Polygon
 
   // Cargar pagos pendientes vigentes
   const pendingSnap = await db.collection("pendingCryptoPayments")
@@ -1318,9 +1448,11 @@ async function runCryptoPaymentProcessing() {
     try {
       const mkFilter = contract.filters["Transfer"];
       const transferFilter = mkFilter(null, PAYMENT_WALLET);
+      // CRIT-02: cerrar la query en safeBlock (no currentBlock) para evitar
+      // procesar eventos en bloques no confirmados.
       events = await contract.queryFilter(
           transferFilter,
-          fromBlock, currentBlock,
+          fromBlock, safeBlock,
       );
     } catch (e) {
       console.warn("Error querying USDC transfers:", e.message);
@@ -1335,10 +1467,20 @@ async function runCryptoPaymentProcessing() {
       docs.sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0));
       const paymentDoc = docs.shift();
       const { uid } = paymentDoc.data();
+      const txHash = event.transactionHash;
 
       try {
         let alreadyProcessed = false;
         await db.runTransaction(async (tx) => {
+          // CRIT-03: idempotency global por txHash. Si ya procesamos este
+          // hash (en este o pasado run), saltamos. Crear y leer en la misma
+          // TX garantiza atomicidad incluso bajo concurrencia.
+          const processedTxRef = db.collection("processedTxs").doc(txHash);
+          const processedSnap = await tx.get(processedTxRef);
+          if (processedSnap.exists) {
+            alreadyProcessed = true;
+            return;
+          }
           const freshPayment = await tx.get(paymentDoc.ref);
           if (!freshPayment.exists || freshPayment.data().status !== "waiting") {
             alreadyProcessed = true;
@@ -1348,9 +1490,17 @@ async function runCryptoPaymentProcessing() {
           tx.set(userRef, { serverCredits: admin.firestore.FieldValue.increment(1) }, { merge: true });
           tx.set(paymentDoc.ref, {
             status: "completed",
-            txHash: event.transactionHash,
+            txHash: txHash,
             completedAt: Date.now(),
           }, { merge: true });
+          // Marcar tx como consumida con TTL ~30 días (cleanup por TTL policy).
+          tx.set(processedTxRef, {
+            uid,
+            amount,
+            paymentId: paymentDoc.id,
+            processedAt: Date.now(),
+            expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+          });
         });
         if (alreadyProcessed) continue;
 
@@ -1429,9 +1579,8 @@ async function runCryptoPaymentProcessing() {
 
 // Envía push notification a todos los usuarios que tengan token registrado (solo admin)
 exports.notifyAllUsers = onCall(async (request) => {
-  if (!request.auth || !request.auth.token || !request.auth.token.admin) {
-    throw new HttpsError("permission-denied", "Admin only");
-  }
+  // ALTO-31: check admin fresco (Admin SDK).
+  await requireAdminFresh(request);
 
   // SEC-M4 + P2-12: rate-limit 1 broadcast/hora por admin para evitar abuso si la
   // cuenta admin se compromete (spam a toda la base) o uso accidental.
@@ -1451,13 +1600,23 @@ exports.notifyAllUsers = onCall(async (request) => {
   let lastDoc = null;
 
   for (;;) {
-    let q = db.collection("users").where("pushToken", "!=", null).limit(BATCH);
+    // MEDIO-H12: paginar con orderBy explícito para garantizar consistencia.
+    // El where("pushToken","!=",null) impone un orderBy implícito por pushToken;
+    // sin orderBy adicional sobre documentId(), startAfter(lastDoc) puede
+    // saltarse usuarios o repetirlos cuando varios docs comparten el mismo
+    // pushToken value (improbable con tokens únicos pero defensivo).
+    let q = db.collection("users")
+        .where("pushToken", "!=", null)
+        .orderBy("pushToken")
+        .orderBy(admin.firestore.FieldPath.documentId())
+        .limit(BATCH);
     if (lastDoc) q = q.startAfter(lastDoc);
     const snap = await q.get();
     if (snap.empty) break;
     snap.docs.forEach((d) => {
       const token = d.data().pushToken;
-      if (token) tokens.push(token);
+      // MEDIO-F33: validar que es string válido (no objeto raro ni vacío).
+      if (token && typeof token === 'string' && token.length > 10) tokens.push(token);
     });
     if (snap.size < BATCH) break;
     lastDoc = snap.docs[snap.docs.length - 1];
@@ -1623,6 +1782,15 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
       /^https:\/\/[^?]+\/__\/auth\/action/,
       "https://miningtheblocks-669f6.web.app/verify",
   );
+  // BAJO-001 + MEDIO-001: validar shape post-replace y escapar para HTML.
+  // Si Firebase cambia el formato del link, no enviamos un email con un URL
+  // arbitrario. Y aunque verificationLink es server-generated, lo escapamos
+  // antes de meterlo en el template HTML (defense-in-depth).
+  if (!/^https:\/\/miningtheblocks-669f6\.web\.app\/verify\?/.test(verificationLink)) {
+    console.error("sendVerificationEmail: unexpected link shape", { prefix: verificationLink.slice(0, 80) });
+    throw new HttpsError("internal", "link_generation_failed");
+  }
+  const safeLink = esc(verificationLink);
 
   const appPassword = gmailAppPassword.value();
   if (!appPassword) throw new HttpsError("internal", "Email service not configured");
@@ -1666,7 +1834,7 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
                   <table width="100%" cellpadding="0" cellspacing="0">
                     <tr>
                       <td align="center" style="padding:8px 0 24px">
-                        <a href="${verificationLink}"
+                        <a href="${safeLink}"
                            style="display:inline-block;background:#ffffff;color:#000000;text-decoration:none;font-weight:900;font-size:15px;padding:16px 40px;border-radius:10px;letter-spacing:0.3px">
                           ✅ Verificar mi cuenta
                         </a>
@@ -1675,7 +1843,7 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
                   </table>
                   <p style="margin:0 0 8px;color:#555;font-size:12px;text-align:center">Si el botón no funciona, copiá este link:</p>
                   <p style="margin:0;background:#1e1e1e;border-radius:8px;padding:10px 12px;word-break:break-all;font-size:11px;color:#4a9eff;font-family:monospace">
-                    ${verificationLink}
+                    ${safeLink}
                   </p>
                 </td>
               </tr>
@@ -1720,7 +1888,9 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
     const decoded = await admin.auth().verifyIdToken(m[1]);
     authUid = decoded.uid;
   } catch (authErr) {
-    console.error("submitGemClaim auth error:", authErr.message);
+    // ALTO-001: NO loguear authErr.message — puede contener fragmentos del
+    // token o detalles internos del SDK. Solo guardamos un código corto.
+    console.error("submitGemClaim auth error: invalid_token (code=" + (authErr && authErr.code ? authErr.code : "unknown") + ")");
     return res.status(401).json({ error: "invalid_token" });
   }
 
@@ -1881,16 +2051,19 @@ exports.reportProblem = onCall({ secrets: [gmailAppPassword] }, async (request) 
     throw new HttpsError("invalid-argument", "Description too short");
   }
 
-  // Rate-limit: 1 reporte cada 5 minutos por usuario (campo aparte para no
-  // ensuciar el doc principal del usuario ni colisionar con sus reglas).
+  // Rate-limit: 1 reporte cada 5 minutos por usuario. BAJO-H27: usar transacción
+  // para que el check+set sea atómico (antes dos calls simultáneos podían pasar
+  // ambos el check y enviar dos emails).
   const RATE_LIMIT_MS = 5 * 60 * 1000;
   const rateRef = db.collection("userMeta").doc(uid);
-  const rateSnap = await rateRef.get();
-  const lastReportAt = (rateSnap.exists ? (rateSnap.data().lastReportAt || 0) : 0);
-  if (Date.now() - lastReportAt < RATE_LIMIT_MS) {
-    throw new HttpsError("resource-exhausted", "rate_limited");
-  }
-  await rateRef.set({ lastReportAt: Date.now() }, { merge: true });
+  await db.runTransaction(async (tx) => {
+    const rateSnap = await tx.get(rateRef);
+    const lastReportAt = (rateSnap.exists ? (rateSnap.data().lastReportAt || 0) : 0);
+    if (Date.now() - lastReportAt < RATE_LIMIT_MS) {
+      throw new HttpsError("resource-exhausted", "rate_limited");
+    }
+    tx.set(rateRef, { lastReportAt: Date.now() }, { merge: true });
+  });
 
   const userType = (data.userType || "unknown").toString().slice(0, 20);
   const reportType = (data.reportType || "bug").toString().slice(0, 20);

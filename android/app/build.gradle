@@ -110,6 +110,17 @@ android {
             def storePass    = System.getenv('MTB_STORE_PASSWORD') ?: project.findProperty('MTB_STORE_PASSWORD')
             def alias        = System.getenv('MTB_KEY_ALIAS') ?: project.findProperty('MTB_KEY_ALIAS')
             def keyPass      = System.getenv('MTB_KEY_PASSWORD') ?: project.findProperty('MTB_KEY_PASSWORD')
+            // ALTO-69: si falta cualquier env var Y la build incluye :assembleRelease,
+            // fallar EARLY con error claro. AGP 8+ no necesariamente falla si la
+            // signingConfig es null — podía producir un APK sin firmar utilizable
+            // via `adb install -r`.
+            def buildingRelease = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }
+            if (buildingRelease && !(keystorePath && storePass && alias && keyPass)) {
+                throw new GradleException(
+                  'MTB release keystore env vars missing — refuse to build unsigned release. ' +
+                  'Set MTB_KEYSTORE_PATH / MTB_STORE_PASSWORD / MTB_KEY_ALIAS / MTB_KEY_PASSWORD.'
+                )
+            }
             if (keystorePath && storePass && alias && keyPass) {
                 storeFile file(keystorePath)
                 storePassword storePass

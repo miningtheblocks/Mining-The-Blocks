@@ -60,33 +60,68 @@ function RootApp() {
       }
     };
     
-    // Delay notifications setup to ensure React Native is fully ready
-    setTimeout(setupNotifications, 1000);
+    // BAJO-APP-02: guardar el id del timer para limpiarlo en cleanup. Sin esto,
+    // si el componente se desmonta en el primer segundo (hot-reload, navegación
+    // muy rápida), setupNotifications corre con árbol React desmontado.
+    const notifSetupTimer = setTimeout(setupNotifications, 1000);
 
     MobileAds().initialize().catch(e => console.warn('MobileAds init failed:', e?.message));
 
-    // Version check against Firestore config/app
+    // CRIT-14: version check con anti-downgrade + cache (mismo patrón que
+    // ServerList.js). Antes era getDoc one-shot sin protección: si Firebase
+    // se compromete (o hay MITM al primer fetch en cold-start), un atacante
+    // puede colocar un `latestVersion` inferior y desactivar la barrera.
+    const VERSION_CACHE_KEY = '@mtb/lastSeenLatestVersion';
+    const CONFIG_CACHE_KEY = '@mtb/cachedConfigApp';
+    let cachedMax = null;
+
+    const processConfig = (cfg, fromCache) => {
+      const { minVersion, latestVersion, downloadUrl, forceUpdate, updateMessageEn, updateMessageEs } = cfg || {};
+      let effectiveLatest = latestVersion;
+      if (latestVersion) {
+        if (cachedMax && compareVersions(latestVersion, cachedMax) < 0) {
+          // Anti-downgrade: ignorar latestVersion menor al máximo histórico visto.
+          effectiveLatest = cachedMax;
+        } else if (!cachedMax || compareVersions(latestVersion, cachedMax) > 0) {
+          cachedMax = latestVersion;
+          if (!fromCache) AsyncStorage.setItem(VERSION_CACHE_KEY, latestVersion).catch(() => {});
+        }
+      }
+      const needsForce = minVersion && compareVersions(APP_VERSION, minVersion) < 0;
+      const needsSoft  = effectiveLatest && compareVersions(APP_VERSION, effectiveLatest) < 0;
+      if (needsForce || needsSoft) {
+        setUpdateInfo({ forceUpdate: needsForce || !!forceUpdate, latestVersion: effectiveLatest, downloadUrl, messageEn: updateMessageEn, messageEs: updateMessageEs });
+      }
+    };
+
     const checkVersion = async () => {
       try {
+        if (!cachedMax) {
+          try { cachedMax = await AsyncStorage.getItem(VERSION_CACHE_KEY); } catch {}
+          // Fallback config cacheado (offline / Firebase outage al cold start)
+          try {
+            const cachedRaw = await AsyncStorage.getItem(CONFIG_CACHE_KEY);
+            if (cachedRaw) processConfig(JSON.parse(cachedRaw), true);
+          } catch {}
+        }
         const snap = await getDoc(doc(db, 'config', 'app'));
         if (!snap.exists()) return;
         const cfg = snap.data();
-        const { minVersion, latestVersion, downloadUrl, forceUpdate, updateMessageEn, updateMessageEs } = cfg;
-        const needsForce = minVersion && compareVersions(APP_VERSION, minVersion) < 0;
-        const needsSoft  = latestVersion && compareVersions(APP_VERSION, latestVersion) < 0;
-        if (needsForce || needsSoft) {
-          setUpdateInfo({ forceUpdate: needsForce || !!forceUpdate, latestVersion, downloadUrl, messageEn: updateMessageEn, messageEs: updateMessageEs });
-        }
+        processConfig(cfg, false);
+        AsyncStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(cfg)).catch(() => {});
       } catch (e) {
-        console.warn('Version check failed:', e.message);
+        console.warn('Version check failed:', e && e.message);
       }
     };
-    // V1.1.0: ya no creamos sesión anónima al boot. Solo chequeamos versión.
     checkVersion();
 
-    // Re-check when app comes back to foreground
+    // Re-check when app comes back to foreground (throttle: 30s mínimo).
+    let lastCheckAt = Date.now();
     const appStateSub = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') checkVersion();
+      if (nextState === 'active' && Date.now() - lastCheckAt > 30000) {
+        lastCheckAt = Date.now();
+        checkVersion();
+      }
     });
 
     // CONFIGURAR PERSISTENCIA DE SESIÓN
@@ -120,6 +155,17 @@ function RootApp() {
             setUser(null);
             return;
           }
+          // ALTO-42: gate también el cold start por email_verified.
+          // Antes solo se gating en eventos posteriores, lo que permitía a un
+          // usuario no verificado que se registró previamente quedar logueado
+          // entre cold starts. Excepción: providers OAuth (google.com, etc.)
+          // que verifican email upstream.
+          const provider = u.providerData && u.providerData[0] && u.providerData[0].providerId;
+          if (provider === 'password' && !u.emailVerified) {
+            await signOut(auth);
+            setUser(null);
+            return;
+          }
           setUser(u);
         } else {
           // Subsequent event (e.g. new account just created).
@@ -134,6 +180,7 @@ function RootApp() {
     });
 
     return () => {
+      clearTimeout(notifSetupTimer);
       appStateSub.remove();
       unsub();
     };

@@ -1,8 +1,8 @@
 {
   "name": "MTB Esmeralda colombiana #9",
-  "description": "Mining The Blocks — Esmeralda colombiana. Tier 9 gem discovered by mining the community cube. Fixed redemption value: $0.25 USD. Redeem your code at miningtheblocks.com or hold as NFT.",
+  "description": "Mining The Blocks — Esmeralda colombiana. Tier 9 gem discovered by mining the community cube. Fixed redemption value: $15 USD. Redeem your code at miningtheblocks.github.io or hold as NFT.",
   "image": "ipfs://bafkreibfeahjeqaxywpmugojcpyvfruvnft3e2khfq5vclehxi6q2temr4",
-  "external_url": "https://miningtheblocks.com",
+  "external_url": "https://miningtheblocks.github.io/Mining-The-Blocks/",
   "attributes": [
     {
       "trait_type": "Gem Name",
@@ -19,7 +19,7 @@
     },
     {
       "trait_type": "Redemption Value",
-      "value": "$0.25 USD"
+      "value": "$15 USD"
     },
     {
       "trait_type": "Quantity/Server",

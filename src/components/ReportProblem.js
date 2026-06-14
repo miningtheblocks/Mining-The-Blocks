@@ -27,15 +27,23 @@ export default function ReportProblem({ onClose }) {
     }
     setSending(true);
     try {
+      // MEDIO-C40: strip caracteres de control (U+0000-U+001F, U+007F)
+      // y colapsar whitespace antes de enviar. Mantiene legibilidad pero
+      // impide payloads de control en emails admin / dashboards HTML.
+      // MEDIO-C41/C42 (defer): el backend debe derivar userType/email
+      // de request.auth en vez de confiar en el cliente.
+      // eslint-disable-next-line no-control-regex
+      const cleanDesc = description.trim().replace(/[\x00-\x1F\x7F]+/g, ' ').slice(0, 1000);
       await callReportProblem({
         userType: auth.currentUser ? 'registered' : 'unregistered',
         reportType,
-        description: description.trim(),
+        description: cleanDesc,
         email: email.trim() || null,
       });
       setSent(true);
     } catch (e) {
-      showAlert(t('report.errorTitle'), e?.message || t('report.sendError'));
+      try { (await import('../utils/logError')).default('ReportProblem.send', e); } catch {}
+      showAlert(t('report.errorTitle'), t('report.sendError'));
     } finally {
       setSending(false);
     }

@@ -106,26 +106,59 @@
       return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : null;
     }
 
+    // SEC-C1: showSuccess y showError construyen DOM via createElement/textContent
+    // en vez de innerHTML para impedir XSS desde error.message del API de Google
+    // (controlable indirectamente por el oobCode del query string).
+    function el(tag, opts) {
+      var node = document.createElement(tag);
+      if (opts && opts.cls) node.className = opts.cls;
+      if (opts && opts.text != null) node.textContent = opts.text;
+      if (opts && opts.html != null) node.innerHTML = opts.html; // sólo para entities estáticas (✅, ❌)
+      if (opts && opts.style) node.setAttribute('style', opts.style);
+      return node;
+    }
+
+    function clearBody() {
+      var body = document.getElementById('body-content');
+      while (body.firstChild) body.removeChild(body.firstChild);
+      return body;
+    }
+
     function showSuccess() {
-      document.getElementById('body-content').innerHTML =
-        '<div class="status-icon">&#9989;</div>' +
-        '<p class="title">¡Email verificado!</p>' +
-        '<p class="subtitle">Tu cuenta está activa. <span class="highlight">Ya podés iniciar sesión</span> en la app.</p>' +
-        '<div class="steps">' +
-          '<p>Próximos pasos</p>' +
-          '<ol>' +
-            '<li>Abrí la app <strong style="color:#fff">Mining The Blocks</strong></li>' +
-            '<li>Tocá <strong style="color:#fff">"Iniciar sesión"</strong> en la pantalla de registro</li>' +
-            '<li>Ingresá con tu email y contraseña</li>' +
-          '</ol>' +
-        '</div>';
+      var body = clearBody();
+      body.appendChild(el('div', { cls: 'status-icon', html: '&#9989;' }));
+      body.appendChild(el('p', { cls: 'title', text: '¡Email verificado!' }));
+
+      var sub = el('p', { cls: 'subtitle' });
+      sub.appendChild(document.createTextNode('Tu cuenta está activa. '));
+      sub.appendChild(el('span', { cls: 'highlight', text: 'Ya podés iniciar sesión' }));
+      sub.appendChild(document.createTextNode(' en la app.'));
+      body.appendChild(sub);
+
+      var steps = el('div', { cls: 'steps' });
+      steps.appendChild(el('p', { text: 'Próximos pasos' }));
+      var ol = el('ol');
+      var li1 = el('li');
+      li1.appendChild(document.createTextNode('Abrí la app '));
+      li1.appendChild(el('strong', { text: 'Mining The Blocks', style: 'color:#fff' }));
+      ol.appendChild(li1);
+      var li2 = el('li');
+      li2.appendChild(document.createTextNode('Tocá '));
+      li2.appendChild(el('strong', { text: '"Iniciar sesión"', style: 'color:#fff' }));
+      li2.appendChild(document.createTextNode(' en la pantalla de registro'));
+      ol.appendChild(li2);
+      ol.appendChild(el('li', { text: 'Ingresá con tu email y contraseña' }));
+      steps.appendChild(ol);
+      body.appendChild(steps);
     }
 
     function showError(msg) {
-      document.getElementById('body-content').innerHTML =
-        '<div class="status-icon">&#10060;</div>' +
-        '<p class="title">No se pudo verificar</p>' +
-        '<div class="error-box"><span>' + msg + '</span></div>';
+      var body = clearBody();
+      body.appendChild(el('div', { cls: 'status-icon', html: '&#10060;' }));
+      body.appendChild(el('p', { cls: 'title', text: 'No se pudo verificar' }));
+      var box = el('div', { cls: 'error-box' });
+      box.appendChild(el('span', { text: String(msg == null ? '' : msg) }));
+      body.appendChild(box);
     }
 
     var mode = getParam('mode');

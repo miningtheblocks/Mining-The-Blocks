@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, FlatList, StyleSheet, SafeAreaView, TouchableOpacity } from 'react-native';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase/client';
@@ -103,6 +103,15 @@ export default function ActivityScreen() {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // BAJO-ACT-02: memoizar renderItem/keyExtractor para que FlatList pueda
+  // reciclar cells correctamente. Antes los closures inline se recreaban en
+  // cada render → todas las filas re-renderizaban con cada cambio de events.
+  const renderEventRow = useCallback(
+      ({ item }) => <EventRow item={item} t={t} language={language} />,
+      [t, language],
+  );
+  const keyExtractor = useCallback((i) => i.id, []);
+
   useEffect(() => {
     const q = query(
       collection(db, 'activityFeed'),
@@ -137,9 +146,12 @@ export default function ActivityScreen() {
       ) : (
         <FlatList
           data={events}
-          keyExtractor={i => i.id}
-          renderItem={({ item }) => <EventRow item={item} t={t} language={language} />}
+          keyExtractor={keyExtractor}
+          renderItem={renderEventRow}
           contentContainerStyle={{ paddingBottom: 32 }}
+          windowSize={7}
+          maxToRenderPerBatch={15}
+          removeClippedSubviews
         />
       )}
     </SafeAreaView>

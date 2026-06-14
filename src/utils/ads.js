@@ -2,8 +2,10 @@ import { RewardedAd, RewardedAdEventType, TestIds } from 'react-native-google-mo
 import { Platform } from 'react-native';
 
 const REWARDED_AD_UNIT_ID_REAL = {
+  // CRIT-17: iOS sin unit real → null. Distribución actual = sólo Android.
+  // Cuando se publique iOS, reemplazar por el real unit ID (`ca-app-pub-…/…`).
   android: 'ca-app-pub-4718826806092770/4752834073',
-  ios:     'ca-app-pub-XXXXXXXXXXXXXXXX/XXXXXXXXXX', // TODO: reemplazar con el real unit ID de iOS antes de publicar en App Store
+  ios: null,
 };
 
 const REWARDED_UNIT_ID = __DEV__
@@ -12,8 +14,14 @@ const REWARDED_UNIT_ID = __DEV__
 
 // Rejects with { userClosed: true } when user closes without reward.
 // Rejects with { loadError: true, message } when the ad fails to load.
+// Rejects with { unsupported: true } when no ad unit ID is configured (iOS pre-launch).
 export function showRewardedAd() {
   return new Promise((resolve, reject) => {
+    // CRIT-17: gate explícito si no hay unit ID (iOS prod hoy).
+    if (!REWARDED_UNIT_ID) {
+      reject({ unsupported: true, message: 'Ad network not configured for this platform' });
+      return;
+    }
     const ad = RewardedAd.createForAdRequest(REWARDED_UNIT_ID, {
       requestNonPersonalizedAdsOnly: false,
     });

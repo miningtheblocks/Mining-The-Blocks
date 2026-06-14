@@ -30,17 +30,23 @@ export default class ErrorBoundary extends React.Component {
     if (!this.state.hasError) return this.props.children;
 
     const e = this.state.err;
-    const msg = e && (e.message || String(e));
+    const rawMsg = e && (e.message || String(e));
+
+    // ALTO-56: NO mostrar el stack/mensaje crudo en producción. Puede
+    // contener paths internos, UIDs, fragmentos de tokens, info de Firestore
+    // rules. En dev (__DEV__) sí mostramos para facilitar debugging.
+    const isDev = typeof __DEV__ !== 'undefined' && __DEV__;
+    const display = isDev ? rawMsg : 'Error desconocido. Si el problema persiste, reportalo desde el menú una vez recuperada la app.';
 
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>⚠️ Algo salió mal</Text>
+        <Text style={styles.title}>Algo salió mal</Text>
         <Text style={styles.subtitle}>
           La app encontró un error inesperado. Probá reintentar; si el problema persiste,
           reportá el bug desde el menú una vez recuperada.
         </Text>
         <ScrollView style={styles.errBox} contentContainerStyle={{ padding: 12 }}>
-          <Text style={styles.errText}>{msg || 'Unknown error'}</Text>
+          <Text style={styles.errText}>{display || 'Unknown error'}</Text>
         </ScrollView>
         <TouchableOpacity style={styles.btn} onPress={this.handleReset} activeOpacity={0.85}>
           <Text style={styles.btnTxt}>Reintentar</Text>

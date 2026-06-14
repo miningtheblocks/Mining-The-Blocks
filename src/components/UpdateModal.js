@@ -10,24 +10,28 @@ export default function UpdateModal({ visible, forceUpdate, latestVersion, downl
     : (messageEn || t('update.defaultBody'));
 
   const openDownload = () => {
-    // SEC-B4: validar scheme/host. downloadUrl viene de Firestore config/app — si
-    // Firebase es comprometido, un atacante podría setear http://, intent://, file://
-    // o un host arbitrario y MITMear a todos los usuarios. Linking.openURL acepta
-    // cualquier scheme; acá filtramos a HTTPS + hosts conocidos.
-    const ALLOWED_HOSTS = new Set([
-      'miningtheblocks.github.io',
-      'github.com',
-      'objects.githubusercontent.com',
-    ]);
+    // SEC-B4 + ALTO-57: validar scheme/host. downloadUrl viene de Firestore
+    // config/app — si Firebase es comprometido, un atacante podría setear
+    // http://, intent://, file:// o un host arbitrario y MITMear a todos.
+    //
+    // ALTO-57: sacamos github.com del allowlist porque permite que un
+    // atacante suba un release a OTRA cuenta de github (e.g. /malicious/x/releases)
+    // y lo apunte desde config/app.downloadUrl. Sólo aceptamos URLs de
+    // miningtheblocks.github.io (org de la app) y de objects.githubusercontent.com
+    // PERO sólo si el path empieza con `/MTB/` o `/Mining-The-Blocks/` (releases
+    // del repo oficial).
     const fallback = 'https://miningtheblocks.github.io/Mining-The-Blocks/';
     let safeUrl = fallback;
     try {
       const raw = (downloadUrl || '').trim();
       if (raw) {
         const u = new URL(raw);
-        if (u.protocol === 'https:' && ALLOWED_HOSTS.has(u.hostname)) {
-          safeUrl = u.toString();
-        }
+        if (u.protocol !== 'https:') throw new Error('scheme');
+        const okHost = u.hostname === 'miningtheblocks.github.io';
+        // objects.githubusercontent.com es el CDN de release assets; los paths
+        // incluyen el repo ID — no hay garantía path-based. Mantenerlo afuera y
+        // forzar que el atacante use el host del org.
+        if (okHost) safeUrl = u.toString();
       }
     } catch (_) {}
     Linking.openURL(safeUrl).catch(() => {});

@@ -119,20 +119,36 @@ async function main() {
   // 5. Borrar registros de mines de usuarios (opcional)
   if (wipeAccess) {
     console.log('8. Borrando serverAccess de usuarios...');
-    const usersSnap = await db.collection('users').get();
+    // ALTO-96: paginar en vez de cargar TODOS los users en memoria.
+    // Antes `db.collection('users').get()` traía decenas de miles a la vez
+    // (OOM o quota explotada).
     let count = 0;
-    for (const userDoc of usersSnap.docs) {
-      const accessRef = userDoc.ref.collection('serverAccess').doc(serverId);
-      const accessSnap = await accessRef.get();
-      if (accessSnap.exists) {
-        await accessRef.delete();
-        count++;
-      }
+    let lastDoc = null;
+    while (true) {
+      let q = db.collection('users').orderBy('__name__').limit(500);
+      if (lastDoc) q = q.startAfter(lastDoc);
+      const usersSnap = await q.get();
+      if (usersSnap.empty) break;
+      // Procesar batch en paralelo con allSettled (no romper por 1 fallo).
+      const results = await Promise.allSettled(usersSnap.docs.map(async (userDoc) => {
+        const accessRef = userDoc.ref.collection('serverAccess').doc(serverId);
+        const accessSnap = await accessRef.get();
+        if (accessSnap.exists) {
+          await accessRef.delete();
+          return true;
+        }
+        return false;
+      }));
+      count += results.filter((r) => r.status === 'fulfilled' && r.value === true).length;
+      lastDoc = usersSnap.docs[usersSnap.docs.length - 1];
+      if (usersSnap.size < 500) break;
     }
-    console.log(`  ✓ Borrado serverAccess de ${count} usuario(s)`);
+    console.log(`  Borrado serverAccess de ${count} usuario(s)`);
   }
 
-  console.log('\n✅ Reset completo. El servidor está listo para una nueva partida.');
+  console.log('\nReset completo. El servidor está listo para una nueva partida.');
 }
 
-main().catch(console.error).finally(() => process.exit(0));
+main()
+    .then(() => process.exit(0))
+    .catch((e) => { console.error('ERROR:', e.message || e); process.exit(1); });

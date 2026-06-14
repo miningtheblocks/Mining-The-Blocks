@@ -383,7 +383,8 @@ export default function ServerList() {
 
   const handleSignOut = async () => {
     setMenuVisible(false);
-    try { await signOut(auth); } catch (e) { console.warn('Sign out error:', e); }
+    // BAJO-SL-11: logError en vez de console.warn — consistencia con resto del archivo.
+    try { await signOut(auth); } catch (e) { logError('ServerList.handleSignOut', e); }
   };
 
   const openItem = (key) => {

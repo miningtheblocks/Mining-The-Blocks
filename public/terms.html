@@ -3,21 +3,619 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="robots" content="noindex, follow">
-  <title>Terms of Service — Mining The Blocks</title>
-  <meta http-equiv="refresh" content="0; url=https://miningtheblocks.github.io/Mining-The-Blocks/terms.html">
-  <link rel="canonical" href="https://miningtheblocks.github.io/Mining-The-Blocks/terms.html">
+  <!-- CRIT-23: CSP via meta tag (GitHub Pages no aplica firebase.json headers). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+  <meta http-equiv="X-Frame-Options" content="DENY">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Mining The Blocks — Terms &amp; Conditions</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#0a0a0a; color:#bbb; padding:40px; text-align:center; }
-    a { color:#5dade2; }
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #fff; color: #111;
+      max-width: 760px; margin: 0 auto; padding: 40px 24px 100px;
+      line-height: 1.7;
+    }
+    .back { display: inline-block; margin-bottom: 28px; font-size: 14px; font-weight: 700; color: #555; text-decoration: none; }
+    .back:hover { color: #111; }
+    .lang-bar { display: flex; gap: 8px; margin-bottom: 28px; }
+    .lang-btn { padding: 6px 14px; border-radius: 20px; border: 1.5px solid #ccc; background: none; font-size: 13px; font-weight: 700; cursor: pointer; color: #555; transition: all 0.15s; }
+    .lang-btn.active { background: #1e293b; color: #fff; border-color: #1e293b; }
+    h1 { font-size: 26px; font-weight: 900; margin-bottom: 4px; }
+    .subtitle { font-size: 13px; color: #777; margin-bottom: 10px; }
+    .version { font-size: 12px; color: #aaa; margin-bottom: 36px; }
+    h2 { font-size: 15px; font-weight: 800; color: #111; margin: 34px 0 8px; padding-bottom: 6px; border-bottom: 1.5px solid #eee; }
+    h3 { font-size: 13px; font-weight: 800; color: #333; margin: 16px 0 6px; }
+    p { font-size: 14px; color: #333; margin-bottom: 10px; }
+    ul, ol { padding-left: 22px; margin: 8px 0 12px; }
+    li { font-size: 14px; color: #444; margin-bottom: 5px; }
+    a { color: #1e293b; font-weight: 600; }
+    strong { color: #111; }
+    .warning {
+      background: #fef9c3; border: 1.5px solid #fde047;
+      border-radius: 10px; padding: 14px 16px; margin: 20px 0;
+      font-size: 13px; color: #713f12; font-weight: 600; line-height: 1.6;
+    }
+    .info-box {
+      background: #f0f9ff; border: 1.5px solid #bae6fd;
+      border-radius: 10px; padding: 14px 16px; margin: 14px 0;
+      font-size: 13px; color: #0c4a6e; font-weight: 500; line-height: 1.6;
+    }
+    .toc { background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 16px 20px; margin-bottom: 32px; }
+    .toc-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #555; margin-bottom: 10px; }
+    .toc ol { margin: 0; padding-left: 18px; }
+    .toc li { font-size: 13px; margin-bottom: 3px; }
+    .toc a { color: #334155; font-weight: 600; text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+    [data-lang] { display: none; }
+    [data-lang].visible { display: block; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+    th { background: #f1f5f9; text-align: left; padding: 8px 12px; font-weight: 800; color: #333; border: 1px solid #e2e8f0; }
+    td { padding: 8px 12px; border: 1px solid #e2e8f0; color: #444; vertical-align: top; }
   </style>
 </head>
 <body>
-  <p>The Terms of Service have moved.</p>
-  <p>If you are not redirected automatically, <a href="https://miningtheblocks.github.io/Mining-The-Blocks/terms.html">click here</a>.</p>
-  <script>
-    // Belt-and-suspenders in case meta refresh is disabled
-    location.replace('https://miningtheblocks.github.io/Mining-The-Blocks/terms.html');
-  </script>
+
+<a class="back" href="index.html">← Mining The Blocks</a>
+
+<div class="lang-bar">
+  <button class="lang-btn" onclick="setLang('es')">ES</button>
+  <button class="lang-btn active" onclick="setLang('en')">EN</button>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ ENGLISH ══ -->
+<div data-lang="en visible">
+  <h1>Terms &amp; Conditions</h1>
+  <p class="subtitle">Mining The Blocks — Official Terms of Service</p>
+  <p class="version">Last updated: June 8, 2026 · Version 2.0</p>
+
+  <div class="warning">⚠️ <strong>IMPORTANT:</strong> Mining The Blocks is a real-money game of chance. Participation involves financial risk. You must be 18 years of age or older, and online gambling must be legal in your jurisdiction. <strong>The $15 USDC entry fee per episode is non-refundable under any circumstances.</strong></div>
+
+  <div class="toc">
+    <div class="toc-title">Table of Contents</div>
+    <ol>
+      <li><a href="#en-1">Acceptance of Terms</a></li>
+      <li><a href="#en-2">Nature of the Service</a></li>
+      <li><a href="#en-3">Age Restriction &amp; Eligibility</a></li>
+      <li><a href="#en-4">Geographic Restrictions</a></li>
+      <li><a href="#en-5">User Accounts &amp; Registration</a></li>
+      <li><a href="#en-6">Entry Fees &amp; Payments</a></li>
+      <li><a href="#en-7">Picks (Mining Turns)</a></li>
+      <li><a href="#en-8">Game Mechanics &amp; Prize Distribution</a></li>
+      <li><a href="#en-9">Gems &amp; Prize Redemption</a></li>
+      <li><a href="#en-10">NFT Minting</a></li>
+      <li><a href="#en-11">Referral Program</a></li>
+      <li><a href="#en-12">Blockchain &amp; Cryptocurrency Risks</a></li>
+      <li><a href="#en-13">Personal Data &amp; Privacy</a></li>
+      <li><a href="#en-14">Responsible Gambling</a></li>
+      <li><a href="#en-15">Prohibited Conduct</a></li>
+      <li><a href="#en-16">Intellectual Property</a></li>
+      <li><a href="#en-17">Disclaimers &amp; Limitation of Liability</a></li>
+      <li><a href="#en-18">Account Suspension &amp; Termination</a></li>
+      <li><a href="#en-19">Modifications to the Service</a></li>
+      <li><a href="#en-20">Governing Law</a></li>
+      <li><a href="#en-21">Contact</a></li>
+    </ol>
+  </div>
+
+  <h2 id="en-1">1. Acceptance of Terms</h2>
+  <p>By downloading, installing, or using the Mining The Blocks mobile application or website (collectively, the "Service"), you ("User") agree to be bound by these Terms &amp; Conditions ("Terms"). If you do not agree with any part of these Terms, do not use the Service.</p>
+  <p>These Terms constitute a legally binding agreement between you and Mining The Blocks ("we," "us," or "Company"), contactable at <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>.</p>
+  <p>During registration in the app, you will be required to check two explicit acknowledgment boxes before creating an account: (1) confirming you are 18 or older, and (2) acknowledging the financial risk of participation. Ticking those boxes constitutes acceptance of these Terms.</p>
+
+  <h2 id="en-2">2. Nature of the Service</h2>
+  <p>Mining The Blocks is a <strong>cooperative online game of chance</strong> with real-money prizes. The game world consists of a 201×201×201-block cube (8,102,601 blocks total) organized in 101 layers and divided into <strong>chains</strong> of 10 sequential episodes each.</p>
+  <p>Players use "picks" (mining turns) to break blocks. Each block may contain a prize gem or nothing. Prize distribution is governed by a deterministic algorithm whose logic is publicly documented. The algorithm is unpredictable to the individual player because the prize placement depends on a combination of server ID, layer, block number, and player count — information not practically combinable in real time.</p>
+  <p><strong>Participation does not guarantee any prize or financial return.</strong> The entry fee is the price of participation, not a purchase of a specific prize.</p>
+
+  <h2 id="en-3">3. Age Restriction &amp; Eligibility</h2>
+  <p>You must be <strong>at least 18 years of age</strong> to use the Service. By using the Service you represent and warrant that:</p>
+  <ul>
+    <li>You are 18 years of age or older.</li>
+    <li>Online gambling (or games of chance with real prizes) is legal in your country, state, province, or other jurisdiction of residence.</li>
+    <li>You are not accessing the Service from a restricted jurisdiction listed in Section 4.</li>
+    <li>You are acting on your own behalf and not on behalf of another person.</li>
+    <li>You have not been previously banned or excluded from the Service.</li>
+  </ul>
+  <p>We reserve the right to require proof of age and identity at any time. Accounts found to belong to minors will be immediately and permanently closed, and any pending prizes forfeited.</p>
+
+  <h2 id="en-4">4. Geographic Restrictions</h2>
+  <p>The Service is <strong>not available</strong> to residents of the following jurisdictions, or to any jurisdiction where real-money games of chance are prohibited or require a license we do not hold:</p>
+  <ul>
+    <li>United States of America (and all states and territories)</li>
+    <li>United Kingdom</li>
+    <li>Australia</li>
+    <li>France</li>
+    <li>Netherlands</li>
+    <li>Belgium</li>
+    <li>Germany</li>
+    <li>Italy</li>
+    <li>Sweden</li>
+    <li>Denmark</li>
+    <li>Spain</li>
+    <li>Portugal</li>
+    <li>Singapore</li>
+    <li>Any other jurisdiction where online gambling is prohibited by law</li>
+  </ul>
+  <p>Using a VPN or other technology to circumvent geographic restrictions is a violation of these Terms and will result in permanent account closure and forfeiture of any prizes.</p>
+  <p><strong>It is solely your responsibility</strong> to verify that use of the Service is legal in your jurisdiction before participating.</p>
+
+  <h2 id="en-5">5. User Accounts &amp; Registration</h2>
+  <h3>5.1 Account Creation</h3>
+  <p>To access core game features, you must create a registered account with a valid email address and password. The app allows initial anonymous access; however, joining a chain, redeeming prizes, or purchasing credits requires a registered account.</p>
+  <p>You agree to provide accurate, current, and complete information during registration, including your full name, date of birth, phone number, and address. Providing false information, including a false date of birth, is grounds for immediate termination.</p>
+  <h3>5.2 Account Security</h3>
+  <p>You are responsible for maintaining the confidentiality of your account credentials. Any activity conducted under your account is your responsibility. Notify us immediately at <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a> if you suspect unauthorized use of your account.</p>
+  <h3>5.3 One Account Per Person</h3>
+  <p>Each person may maintain only one registered account. Creating multiple accounts to circumvent restrictions or exploit bonuses is prohibited and will result in permanent ban and prize forfeiture.</p>
+
+  <h2 id="en-6">6. Entry Fees &amp; Payments</h2>
+  <h3>6.1 Entry Fee</h3>
+  <p>Joining each chain episode costs <strong>$15.00 USDC</strong>, payable via the Polygon (MATIC) network. This fee covers participation in the full episode. Episode 10 of any chain is free for players who participated in all 9 prior episodes of the same chain.</p>
+  <h3>6.2 Non-Refundable</h3>
+  <p>All entry fees are <strong>strictly non-refundable</strong>, without exception. This includes but is not limited to: technical issues, personal change of mind, account closure, or failure to use picks within the episode. By paying the entry fee you accept this policy.</p>
+  <h3>6.3 Payment Method</h3>
+  <p>Payments are made in USDC on the Polygon network only. You must send the <strong>exact amount</strong> displayed (including cents), within the 30-minute payment window. Transactions that are late, incorrect in amount, or sent on the wrong network will not be credited and may not be recoverable.</p>
+  <h3>6.4 Wallet Address Responsibility</h3>
+  <p>You are solely responsible for sending funds to the correct wallet address. We are not responsible for funds sent to an incorrect address.</p>
+  <h3>6.5 Credits</h3>
+  <p>One paid entry corresponds to one "credit" in your account. Credits are non-transferable, non-refundable, and expire if your account is terminated for a violation of these Terms.</p>
+
+  <h2 id="en-7">7. Picks (Mining Turns)</h2>
+  <p>Picks are the in-game currency used to mine blocks. They are not redeemable for cash and have no monetary value outside the game.</p>
+  <ul>
+    <li><strong>Welcome picks:</strong> 5 picks are credited upon joining each episode.</li>
+    <li><strong>Daily pick:</strong> 1 pick is credited every 24 hours.</li>
+    <li><strong>Ad picks:</strong> Up to 2 additional picks per day by watching voluntary advertisements.</li>
+    <li><strong>Referral picks:</strong> 5 picks credited to the referrer when a new player uses their referral code.</li>
+    <li><strong>Prize picks:</strong> Some mined blocks contain 1–5 additional picks as prizes.</li>
+  </ul>
+  <p>Picks do not carry over between episodes unless explicitly stated. Unused picks are not refundable or convertible to cash.</p>
+
+  <h2 id="en-8">8. Game Mechanics &amp; Prize Distribution</h2>
+  <h3>8.1 Algorithm</h3>
+  <p>Prizes are distributed using a deterministic algorithm (FNV-1a hash-based) whose source code is publicly available. Prize placement is fixed per chain/layer/block combination and cannot be altered after a chain is created. The algorithm guarantees that all prizes within each zone will eventually be discoverable as blocks are mined.</p>
+  <h3>8.2 Unlock Thresholds</h3>
+  <p>Higher-value gem prizes only become active once a minimum number of players have joined the chain, ensuring the prize pool is fully funded before that prize can appear. The thresholds are:</p>
+  <table>
+    <tr><th>Gem</th><th>Prize</th><th>Min. Players to Unlock</th></tr>
+    <tr><td>Red Diamond</td><td>$100,000</td><td>54,167</td></tr>
+    <tr><td>Painite</td><td>$50,000</td><td>45,834</td></tr>
+    <tr><td>Musgravite</td><td>$10,000</td><td>41,667</td></tr>
+    <tr><td>Imperial Jadeite</td><td>$1,000</td><td>37,500</td></tr>
+    <tr><td>Alexandrite</td><td>$500</td><td>33,334</td></tr>
+    <tr><td>Pigeon Blood Ruby</td><td>$100</td><td>29,167</td></tr>
+    <tr><td>Blue Diamond</td><td>$50</td><td>25,000</td></tr>
+    <tr><td>Pink Diamond</td><td>$25</td><td>20,834</td></tr>
+    <tr><td>Colombian Emerald</td><td>$15</td><td>12,500</td></tr>
+  </table>
+  <p>If a chain never reaches the threshold for a given gem tier, that gem tier will not appear in that chain, and the prize will not be awarded for that chain. No compensation is offered for prizes not unlocked.</p>
+  <h3>8.3 Chains &amp; Episodes</h3>
+  <p>Each chain consists of 10 sequential episodes. A new episode begins automatically when the previous one completes (the center block of the cube is mined). Each chain supports a maximum of 100,000 players per episode.</p>
+  <h3>8.4 No Guarantee of Prize</h3>
+  <p>Mining a block does not guarantee a prize. The vast majority of blocks contain no prize. Statistical probability is provided for informational purposes only and does not imply any guaranteed outcome.</p>
+
+  <h2 id="en-9">9. Gems &amp; Prize Redemption</h2>
+  <h3>9.1 Gem Codes</h3>
+  <p>When a player mines a block containing a gem, a unique redemption code (format: <code>MTBt-XXXXXXXX-XXXXXX</code>) is generated and stored in their in-app wallet. This code is required to claim the prize.</p>
+  <h3>9.2 Cash Redemption</h3>
+  <p>To redeem a gem for its USD value, the winner must:</p>
+  <ol>
+    <li>Visit <a href="https://miningtheblocks.github.io/Mining-The-Blocks/">miningtheblocks.github.io/Mining-The-Blocks</a></li>
+    <li>Enter the gem code to verify its validity</li>
+    <li>Complete the claim form with full name, email, WhatsApp/phone number, and a valid USDC wallet address on the Polygon network</li>
+  </ol>
+  <p>After submission, you will receive a confirmation and we will contact you within <strong>48 business hours</strong> to process the payment. Prize amounts are paid in USDC on the Polygon network.</p>
+  <h3>9.3 Wallet Responsibility</h3>
+  <p>You are solely responsible for providing a correct and compatible wallet address. <strong>Mining The Blocks is not responsible for funds sent to an incorrect or incompatible wallet address.</strong> Verify your address carefully — transactions on blockchain are irreversible.</p>
+  <h3>9.4 Identity Verification</h3>
+  <p>For prizes of $500 or more, we reserve the right to require identity verification (government-issued ID and proof of residence) before releasing funds. This is to comply with anti-money-laundering regulations and to protect against fraud. Failure to provide requested documents within 14 days will result in prize forfeiture.</p>
+  <h3>9.5 Prize Expiry</h3>
+  <p>Gem codes not redeemed within <strong>12 months</strong> of discovery will expire and the prize will be forfeited. You are responsible for monitoring your gem wallet in the app.</p>
+  <h3>9.6 One Redemption Per Code</h3>
+  <p>Each gem code can only be redeemed once. Once a claim is submitted or an NFT is minted, the code becomes permanently inactive.</p>
+
+  <h2 id="en-10">10. NFT Minting</h2>
+  <p>Instead of redeeming a gem for cash, players may choose to mint it as an ERC-721 NFT on the Polygon blockchain via the MTBGems smart contract.</p>
+  <ul>
+    <li>Minting requires a valid Ethereum/Polygon wallet address linked to your profile.</li>
+    <li>Once minting is initiated, the process cannot be reversed.</li>
+    <li>Gas fees and transaction costs are absorbed by the Company.</li>
+    <li>The NFT has no guaranteed monetary value and is not redeemable for cash after minting.</li>
+    <li>Minting may take up to 24 hours depending on network congestion.</li>
+    <li>We are not responsible for losses due to smart contract bugs, Polygon network issues, wallet incompatibility, or loss of wallet access.</li>
+  </ul>
+  <div class="info-box">ℹ️ NFT minting and cash redemption are mutually exclusive. Once you choose one option for a gem, the other is permanently unavailable.</div>
+
+  <h2 id="en-11">11. Referral Program</h2>
+  <p>Registered players receive a unique referral code. When a new player enters your referral code, <strong>you receive 5 picks</strong> as a reward. Picks are credited immediately upon application.</p>
+  <ul>
+    <li>You may apply only one referral code per account, and only before mining your first block.</li>
+    <li>Self-referral is prohibited.</li>
+    <li>Referral rewards have no monetary value and are not exchangeable for cash.</li>
+    <li>We reserve the right to revoke referral rewards if abuse or fraud is detected.</li>
+  </ul>
+
+  <h2 id="en-12">12. Blockchain &amp; Cryptocurrency Risks</h2>
+  <p>By using the Service you acknowledge and accept the following risks:</p>
+  <ul>
+    <li><strong>Irreversibility:</strong> Cryptocurrency transactions cannot be undone. Incorrect wallet addresses, wrong network selection, or operator error result in permanent loss of funds.</li>
+    <li><strong>Volatility:</strong> The USD value of USDC is generally stable, but we make no warranty regarding its value at the time of payment or payout.</li>
+    <li><strong>Network issues:</strong> Blockchain transactions may be delayed or fail due to network congestion or technical issues beyond our control.</li>
+    <li><strong>Smart contract risk:</strong> Smart contracts may contain unforeseen bugs or vulnerabilities. We will make reasonable efforts to audit contracts but cannot guarantee their absolute security.</li>
+    <li><strong>Regulatory risk:</strong> Cryptocurrency regulations change rapidly. You are responsible for complying with applicable laws regarding cryptocurrency in your jurisdiction.</li>
+    <li><strong>Wallet loss:</strong> Loss of access to your wallet (lost private keys, forgotten seed phrase) means permanent loss of any NFTs or funds therein. We cannot recover lost wallet access.</li>
+  </ul>
+
+  <h2 id="en-13">13. Personal Data &amp; Privacy</h2>
+  <h3>13.1 Data Collected</h3>
+  <p>To provide the Service, we collect and process the following personal data:</p>
+  <ul>
+    <li>Account data: email address, encrypted password</li>
+    <li>Profile data: full name, date of birth, phone number, address, postal code</li>
+    <li>Gameplay data: mining history, pick balance, gems found, episode participation</li>
+    <li>Payment data: USDC wallet addresses, transaction hashes, payment amounts</li>
+    <li>Technical data: app version, device type, push notification tokens</li>
+    <li>Prize claim data: name, email, phone, wallet address provided at redemption</li>
+  </ul>
+  <h3>13.2 Data Use</h3>
+  <p>Your data is used solely to operate the Service, process prizes, comply with legal obligations (including AML/KYC requirements for large prizes), and communicate with you about your account. We do not sell your personal data to third parties.</p>
+  <h3>13.3 Data Retention</h3>
+  <p>Account data is retained for as long as your account exists and for a minimum of 5 years after closure for legal compliance purposes. Prize claim records are retained indefinitely for audit purposes.</p>
+  <h3>13.4 Third-Party Services</h3>
+  <p>The Service uses Google Firebase (authentication, database, cloud functions), Google Cloud Storage (profile photos), and the Polygon blockchain (NFT minting, payment verification). Use of these services is subject to their respective privacy policies.</p>
+  <h3>13.5 Your Rights</h3>
+  <p>Depending on your jurisdiction, you may have rights to access, correct, or delete your personal data. Contact <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a> for any data requests. Note that deletion of account data may result in loss of access to gems and prizes.</p>
+
+  <h2 id="en-14">14. Responsible Gambling</h2>
+  <div class="warning">⚠️ Gambling can be addictive. Only play with money you can afford to lose. Never chase losses. If gambling is affecting your finances, relationships, or mental health, seek help immediately.</div>
+  <h3>14.1 Self-Exclusion</h3>
+  <p>You may request permanent self-exclusion at any time by emailing <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>. Self-exclusion requests will be processed within 48 hours. Self-excluded accounts cannot be reopened.</p>
+  <h3>14.2 Deposit &amp; Participation Limits</h3>
+  <p>We currently do not impose automatic deposit limits but may do so in the future. You are responsible for managing your own participation.</p>
+  <h3>14.3 Help Resources</h3>
+  <p>If you or someone you know has a gambling problem, contact these organizations:</p>
+  <ul>
+    <li><strong>International:</strong> <a href="https://www.gamblingtherapy.org" target="_blank" rel="noopener noreferrer">GamblingTherapy.org</a></li>
+    <li><strong>USA:</strong> National Problem Gambling Helpline: 1-800-522-4700</li>
+    <li><strong>Argentina:</strong> CNZF — Centro Nacional de Zonas Fuera (CNZF)</li>
+  </ul>
+  <h3>14.4 Minor Protection</h3>
+  <p>Parents and guardians are responsible for preventing minors from accessing the Service. We recommend using parental controls on devices where the app is installed.</p>
+
+  <h2 id="en-15">15. Prohibited Conduct</h2>
+  <p>The following conduct is strictly prohibited and will result in immediate account suspension and prize forfeiture:</p>
+  <ul>
+    <li>Using bots, automated scripts, or other tools to mine blocks or claim picks</li>
+    <li>Creating multiple accounts ("multi-accounting")</li>
+    <li>Exploiting bugs or vulnerabilities in the game system</li>
+    <li>Using a VPN to circumvent geographic restrictions</li>
+    <li>Colluding with other players to manipulate prize distribution</li>
+    <li>Money laundering or use of the Service for any illegal purpose</li>
+    <li>Providing false identity or age information</li>
+    <li>Sharing account credentials with others</li>
+    <li>Any attempt to reverse-engineer the prize algorithm to gain unfair advantage</li>
+    <li>Threatening, harassing, or abusing other players or Company staff</li>
+  </ul>
+
+  <h2 id="en-16">16. Intellectual Property</h2>
+  <p>All content within the Service — including but not limited to game graphics, gem artwork, cube design, sounds, text, software code, and branding — is the intellectual property of Mining The Blocks and is protected by copyright and applicable IP laws.</p>
+  <p>When you mint a gem as an NFT, you receive ownership of the NFT token on the Polygon blockchain. This grants you the right to transfer or sell the token. However, you do not receive any copyright, trademark, or other IP rights to the underlying artwork. You may not use gem artwork for commercial purposes without explicit written consent from the Company.</p>
+
+  <h2 id="en-17">17. Disclaimers &amp; Limitation of Liability</h2>
+  <p>The Service is provided "as is" and "as available." To the fullest extent permitted by applicable law:</p>
+  <ul>
+    <li>We make no warranty that the Service will be uninterrupted, error-free, or that prizes will be won.</li>
+    <li>We are not liable for losses resulting from technical failures, server downtime, blockchain issues, or force majeure events.</li>
+    <li>We are not liable for indirect, consequential, incidental, or punitive damages arising from use of the Service.</li>
+    <li>Our total liability to any user in any 12-month period shall not exceed the total entry fees paid by that user in the same period.</li>
+    <li>We are not liable for losses caused by your failure to comply with these Terms.</li>
+  </ul>
+
+  <h2 id="en-18">18. Account Suspension &amp; Termination</h2>
+  <p>We reserve the right to suspend or permanently terminate any account, at our sole discretion, for violation of these Terms. In the event of termination:</p>
+  <ul>
+    <li>Unclaimed prizes will be forfeited if the account was terminated for a violation.</li>
+    <li>Entry fees paid prior to termination are non-refundable.</li>
+    <li>Legitimate account closures at the user's request will allow prize collection for 30 days after the closure request.</li>
+  </ul>
+
+  <h2 id="en-19">19. Modifications to the Service</h2>
+  <p>We reserve the right to modify these Terms, the prize structure, game mechanics, or any aspect of the Service at any time. For material changes affecting existing players' financial interests (such as changes to the prize table or entry fee), we will provide at least <strong>30 days' notice</strong> via a notice on the website and/or in-app notification. Continued use of the Service after the effective date of changes constitutes acceptance.</p>
+  <p>We also reserve the right to suspend or discontinue the Service. In the event of discontinuation, we will provide reasonable notice and allow existing gem holders 90 days to redeem any unclaimed prizes.</p>
+
+  <h2 id="en-20">20. Governing Law</h2>
+  <p>These Terms are governed by applicable laws in the jurisdiction where the Company operates. Any disputes arising from these Terms shall be resolved by binding arbitration, except where prohibited by local law. Nothing in this clause limits your rights as a consumer under applicable mandatory consumer protection laws in your jurisdiction.</p>
+
+  <h2 id="en-21">21. Contact</h2>
+  <p>For questions, prize claims, self-exclusion requests, data requests, or complaints:</p>
+  <p><a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a></p>
+  <p>We aim to respond to all inquiries within 48 business hours.</p>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════ ESPAÑOL ══ -->
+<div data-lang="es">
+  <h1>Términos y Condiciones</h1>
+  <p class="subtitle">Mining The Blocks — Términos de Servicio Oficiales</p>
+  <p class="version">Última actualización: 8 de junio de 2026 · Versión 2.0</p>
+
+  <div class="warning">⚠️ <strong>IMPORTANTE:</strong> Mining The Blocks es un juego de azar con premios en dinero real. La participación implica riesgo financiero. Debés tener 18 años o más y el juego de azar en línea debe ser legal en tu jurisdicción. <strong>El costo de entrada de $15 USDC por episodio no es reembolsable bajo ninguna circunstancia.</strong></div>
+
+  <div class="toc">
+    <div class="toc-title">Índice</div>
+    <ol>
+      <li><a href="#es-1">Aceptación de Términos</a></li>
+      <li><a href="#es-2">Naturaleza del Servicio</a></li>
+      <li><a href="#es-3">Restricción de Edad y Elegibilidad</a></li>
+      <li><a href="#es-4">Restricciones Geográficas</a></li>
+      <li><a href="#es-5">Cuentas de Usuario y Registro</a></li>
+      <li><a href="#es-6">Costos de Entrada y Pagos</a></li>
+      <li><a href="#es-7">Picos (Turnos de Minería)</a></li>
+      <li><a href="#es-8">Mecánica del Juego y Distribución de Premios</a></li>
+      <li><a href="#es-9">Gemas y Canje de Premios</a></li>
+      <li><a href="#es-10">Minteo de NFTs</a></li>
+      <li><a href="#es-11">Programa de Referidos</a></li>
+      <li><a href="#es-12">Riesgos de Blockchain y Criptomonedas</a></li>
+      <li><a href="#es-13">Datos Personales y Privacidad</a></li>
+      <li><a href="#es-14">Juego Responsable</a></li>
+      <li><a href="#es-15">Conductas Prohibidas</a></li>
+      <li><a href="#es-16">Propiedad Intelectual</a></li>
+      <li><a href="#es-17">Exenciones y Limitación de Responsabilidad</a></li>
+      <li><a href="#es-18">Suspensión y Cancelación de Cuenta</a></li>
+      <li><a href="#es-19">Modificaciones al Servicio</a></li>
+      <li><a href="#es-20">Ley Aplicable</a></li>
+      <li><a href="#es-21">Contacto</a></li>
+    </ol>
+  </div>
+
+  <h2 id="es-1">1. Aceptación de Términos</h2>
+  <p>Al descargar, instalar o usar la aplicación móvil o el sitio web de Mining The Blocks (en conjunto, el "Servicio"), el usuario ("Usuario") acepta estar vinculado por estos Términos y Condiciones ("Términos"). Si no aceptás alguna parte de estos Términos, no uses el Servicio.</p>
+  <p>Estos Términos constituyen un acuerdo legalmente vinculante entre vos y Mining The Blocks ("nosotros" o la "Empresa"), contactable en <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>.</p>
+  <p>Durante el registro en la app, tenés que marcar dos casillas de confirmación antes de crear una cuenta: (1) confirmar que tenés 18 años o más, y (2) reconocer el riesgo financiero de participar. Marcar esas casillas constituye aceptación de estos Términos.</p>
+
+  <h2 id="es-2">2. Naturaleza del Servicio</h2>
+  <p>Mining The Blocks es un <strong>juego de azar cooperativo en línea</strong> con premios en dinero real. El mundo del juego consiste en un cubo de 201×201×201 bloques (8.102.601 bloques en total) organizado en 101 capas y dividido en <strong>cadenas</strong> de 10 episodios secuenciales cada una.</p>
+  <p>Los jugadores usan "picos" (turnos de minería) para romper bloques. Cada bloque puede contener una gema premiada o nada. La distribución de premios se rige por un algoritmo determinista cuya lógica está documentada públicamente. El algoritmo es impredecible para el jugador individual porque la ubicación del premio depende de una combinación de ID de servidor, capa, número de bloque y cantidad de jugadores.</p>
+  <p><strong>La participación no garantiza ningún premio ni retorno financiero.</strong> El costo de entrada es el precio de participación, no la compra de un premio específico.</p>
+
+  <h2 id="es-3">3. Restricción de Edad y Elegibilidad</h2>
+  <p>Debés tener <strong>al menos 18 años de edad</strong> para usar el Servicio. Al usarlo, declarás y garantizás que:</p>
+  <ul>
+    <li>Tenés 18 años o más.</li>
+    <li>El juego de azar en línea (o juegos de azar con premios reales) es legal en tu país, estado, provincia u otra jurisdicción de residencia.</li>
+    <li>No estás accediendo desde una jurisdicción restringida listada en la Sección 4.</li>
+    <li>Actuás en nombre propio y no de otra persona.</li>
+    <li>No fuiste previamente baneado o excluido del Servicio.</li>
+  </ul>
+  <p>Nos reservamos el derecho de solicitar prueba de edad e identidad en cualquier momento. Las cuentas pertenecientes a menores serán cerradas de forma inmediata y permanente, con pérdida de cualquier premio pendiente.</p>
+
+  <h2 id="es-4">4. Restricciones Geográficas</h2>
+  <p>El Servicio <strong>no está disponible</strong> para residentes de las siguientes jurisdicciones, ni de cualquier otra donde los juegos de azar con dinero real estén prohibidos o requieran una licencia que no poseemos:</p>
+  <ul>
+    <li>Estados Unidos de América (y todos sus estados y territorios)</li>
+    <li>Reino Unido</li>
+    <li>Australia</li>
+    <li>Francia</li>
+    <li>Países Bajos</li>
+    <li>Bélgica</li>
+    <li>Alemania</li>
+    <li>Italia</li>
+    <li>Suecia</li>
+    <li>Dinamarca</li>
+    <li>España</li>
+    <li>Portugal</li>
+    <li>Singapur</li>
+    <li>Cualquier otra jurisdicción donde el juego de azar en línea esté prohibido por ley</li>
+  </ul>
+  <p>Usar una VPN u otra tecnología para eludir restricciones geográficas constituye una violación de estos Términos y resultará en el cierre permanente de la cuenta y la pérdida de cualquier premio.</p>
+  <p><strong>Es exclusiva responsabilidad tuya</strong> verificar que el uso del Servicio sea legal en tu jurisdicción antes de participar.</p>
+
+  <h2 id="es-5">5. Cuentas de Usuario y Registro</h2>
+  <h3>5.1 Creación de Cuenta</h3>
+  <p>Para acceder a las funciones principales del juego, debés crear una cuenta registrada con un email y contraseña válidos. La app permite acceso anónimo inicial; sin embargo, unirse a una cadena, canjear premios o comprar créditos requiere una cuenta registrada.</p>
+  <p>Acordás proporcionar información precisa, actual y completa durante el registro, incluyendo nombre completo, fecha de nacimiento, teléfono y domicilio. Proporcionar información falsa, incluida una fecha de nacimiento falsa, es causa de cancelación inmediata.</p>
+  <h3>5.2 Seguridad de la Cuenta</h3>
+  <p>Sos responsable de mantener la confidencialidad de tus credenciales. Cualquier actividad realizada bajo tu cuenta es tu responsabilidad. Notificanos inmediatamente a <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a> si sospechás uso no autorizado.</p>
+  <h3>5.3 Una Cuenta por Persona</h3>
+  <p>Cada persona puede tener solo una cuenta registrada. Crear múltiples cuentas para eludir restricciones o explotar bonos está prohibido y resultará en ban permanente y pérdida de premios.</p>
+
+  <h2 id="es-6">6. Costos de Entrada y Pagos</h2>
+  <h3>6.1 Costo de Entrada</h3>
+  <p>Unirse a cada episodio de una cadena cuesta <strong>$15,00 USDC</strong>, pagados a través de la red Polygon (MATIC). Este pago cubre la participación en el episodio completo. El episodio 10 de cualquier cadena es gratuito para los jugadores que participaron en los 9 episodios anteriores de la misma cadena.</p>
+  <h3>6.2 No Reembolsable</h3>
+  <p>Todos los costos de entrada son <strong>estrictamente no reembolsables</strong>, sin excepción. Esto incluye, sin limitarse a: fallas técnicas, cambio de opinión personal, cierre de cuenta o no uso de picos durante el episodio. Al pagar el costo de entrada aceptás esta política.</p>
+  <h3>6.3 Método de Pago</h3>
+  <p>Los pagos se realizan en USDC en la red Polygon únicamente. Debés enviar el <strong>monto exacto</strong> que se muestra (incluyendo centavos), dentro de la ventana de 30 minutos. Las transacciones tardías, con monto incorrecto o enviadas en una red incorrecta no serán acreditadas y pueden no ser recuperables.</p>
+  <h3>6.4 Responsabilidad de Billetera</h3>
+  <p>Sos el único responsable de enviar fondos a la dirección de billetera correcta. No nos hacemos responsables de fondos enviados a una dirección incorrecta.</p>
+  <h3>6.5 Créditos</h3>
+  <p>Un pago de entrada corresponde a un "crédito" en tu cuenta. Los créditos no son transferibles, no son reembolsables y se pierden si tu cuenta es cancelada por violación de estos Términos.</p>
+
+  <h2 id="es-7">7. Picos (Turnos de Minería)</h2>
+  <p>Los picos son la moneda en el juego para minar bloques. No son canjeables por dinero y no tienen valor monetario fuera del juego.</p>
+  <ul>
+    <li><strong>Picos de bienvenida:</strong> 5 picos se acreditan al unirte a cada episodio.</li>
+    <li><strong>Pico diario:</strong> 1 pico se acredita cada 24 horas.</li>
+    <li><strong>Picos de anuncio:</strong> Hasta 2 picos adicionales por día viendo anuncios voluntarios.</li>
+    <li><strong>Picos de referido:</strong> 5 picos al referidor cuando un nuevo jugador usa su código.</li>
+    <li><strong>Picos como premio:</strong> Algunos bloques contienen 1–5 picos adicionales como premio.</li>
+  </ul>
+  <p>Los picos no se transfieren entre episodios salvo indicación expresa. Los picos no utilizados no son reembolsables ni convertibles a dinero.</p>
+
+  <h2 id="es-8">8. Mecánica del Juego y Distribución de Premios</h2>
+  <h3>8.1 Algoritmo</h3>
+  <p>Los premios se distribuyen usando un algoritmo determinista (basado en hash FNV-1a) cuyo código fuente está disponible públicamente. La ubicación de premios es fija por combinación de cadena/capa/bloque y no puede alterarse después de creada la cadena. El algoritmo garantiza que todos los premios dentro de cada zona serán eventualmente descubribles.</p>
+  <h3>8.2 Umbrales de Desbloqueo</h3>
+  <p>Las gemas de mayor valor solo se activan una vez que un número mínimo de jugadores se hayan unido a la cadena, garantizando que el pool de premios esté completamente financiado antes de que ese premio pueda aparecer. Los umbrales son:</p>
+  <table>
+    <tr><th>Gema</th><th>Premio</th><th>Mín. Jugadores para Desbloquear</th></tr>
+    <tr><td>Diamante rojo</td><td>$100.000</td><td>54.167</td></tr>
+    <tr><td>Painita</td><td>$50.000</td><td>45.834</td></tr>
+    <tr><td>Musgravita</td><td>$10.000</td><td>41.667</td></tr>
+    <tr><td>Jadeíta imperial</td><td>$1.000</td><td>37.500</td></tr>
+    <tr><td>Alejandrita</td><td>$500</td><td>33.334</td></tr>
+    <tr><td>Rubí sangre de paloma</td><td>$100</td><td>29.167</td></tr>
+    <tr><td>Diamante azul</td><td>$50</td><td>25.000</td></tr>
+    <tr><td>Diamante rosa</td><td>$25</td><td>20.834</td></tr>
+    <tr><td>Esmeralda colombiana</td><td>$15</td><td>12.500</td></tr>
+  </table>
+  <p>Si una cadena nunca alcanza el umbral para un tier de gema, ese tier no aparecerá en esa cadena y el premio no se otorgará. No se ofrece compensación por premios no desbloqueados.</p>
+  <h3>8.3 Cadenas y Episodios</h3>
+  <p>Cada cadena consiste en 10 episodios secuenciales. Un nuevo episodio comienza automáticamente cuando se completa el anterior (se mina el bloque central del cubo). Cada cadena soporta un máximo de 100.000 jugadores por episodio.</p>
+  <h3>8.4 Sin Garantía de Premio</h3>
+  <p>Minar un bloque no garantiza un premio. La gran mayoría de los bloques no contienen ningún premio. Las probabilidades estadísticas se proveen solo como información y no implican ningún resultado garantizado.</p>
+
+  <h2 id="es-9">9. Gemas y Canje de Premios</h2>
+  <h3>9.1 Códigos de Gema</h3>
+  <p>Cuando un jugador mina un bloque con una gema, se genera un código único de canje (formato: <code>MTBt-XXXXXXXX-XXXXXX</code>) que se guarda en su wallet en la app. Este código es necesario para reclamar el premio.</p>
+  <h3>9.2 Canje por Dinero</h3>
+  <p>Para canjear una gema por su valor en USD, el ganador debe:</p>
+  <ol>
+    <li>Visitar <a href="https://miningtheblocks.github.io/Mining-The-Blocks/">miningtheblocks.github.io/Mining-The-Blocks</a></li>
+    <li>Ingresar el código de gema para verificar su validez</li>
+    <li>Completar el formulario con nombre completo, email, teléfono/WhatsApp y una billetera USDC válida en la red Polygon</li>
+  </ol>
+  <p>Tras el envío, recibirás una confirmación y nos pondremos en contacto dentro de las <strong>48 horas hábiles</strong> siguientes para procesar el pago. Los montos se pagan en USDC en la red Polygon.</p>
+  <h3>9.3 Responsabilidad de Billetera</h3>
+  <p>Sos el único responsable de proporcionar una dirección de billetera correcta y compatible. <strong>Mining The Blocks no se hace responsable de fondos enviados a una dirección de billetera incorrecta o incompatible.</strong> Verificá tu dirección cuidadosamente — las transacciones en blockchain son irreversibles.</p>
+  <h3>9.4 Verificación de Identidad</h3>
+  <p>Para premios de $500 o más, nos reservamos el derecho de solicitar verificación de identidad (documento oficial de identidad y comprobante de domicilio) antes de liberar los fondos. El incumplimiento dentro de los 14 días resultará en la pérdida del premio.</p>
+  <h3>9.5 Vencimiento del Premio</h3>
+  <p>Los códigos de gema no canjeados dentro de los <strong>12 meses</strong> desde el descubrimiento vencerán y el premio se perderá. Sos responsable de monitorear tu wallet en la app.</p>
+  <h3>9.6 Canje Único</h3>
+  <p>Cada código de gema solo puede canjearse una vez. Una vez enviada la solicitud de canje o minteado el NFT, el código queda permanentemente inactivo.</p>
+
+  <h2 id="es-10">10. Minteo de NFTs</h2>
+  <p>En lugar de canjear una gema por dinero, los jugadores pueden elegir mintearla como NFT ERC-721 en la blockchain de Polygon a través del contrato inteligente MTBGems.</p>
+  <ul>
+    <li>El minteo requiere una dirección de billetera Ethereum/Polygon válida vinculada a tu perfil.</li>
+    <li>Una vez iniciado el minteo, el proceso no puede revertirse.</li>
+    <li>Los gastos de gas y costos de transacción son absorbidos por la Empresa.</li>
+    <li>El NFT no tiene valor monetario garantizado y no es canjeable por dinero después del minteo.</li>
+    <li>El minteo puede demorar hasta 24 horas según la congestión de la red.</li>
+    <li>No somos responsables por pérdidas debidas a bugs en contratos inteligentes, problemas en la red Polygon, incompatibilidad de billetera o pérdida de acceso a la billetera.</li>
+  </ul>
+  <div class="info-box">ℹ️ El minteo de NFT y el canje por dinero son mutuamente excluyentes. Una vez elegida una opción para una gema, la otra queda permanentemente no disponible.</div>
+
+  <h2 id="es-11">11. Programa de Referidos</h2>
+  <p>Los jugadores registrados reciben un código de referido único. Cuando un nuevo jugador ingresa tu código, <strong>recibís 5 picos</strong> como recompensa.</p>
+  <ul>
+    <li>Solo podés aplicar un código de referido por cuenta, y únicamente antes de minar tu primer bloque.</li>
+    <li>El auto-referido está prohibido.</li>
+    <li>Las recompensas de referido no tienen valor monetario y no son intercambiables por dinero.</li>
+    <li>Nos reservamos el derecho de revocar recompensas de referido si se detecta abuso o fraude.</li>
+  </ul>
+
+  <h2 id="es-12">12. Riesgos de Blockchain y Criptomonedas</h2>
+  <p>Al usar el Servicio, reconocés y aceptás los siguientes riesgos:</p>
+  <ul>
+    <li><strong>Irreversibilidad:</strong> Las transacciones en criptomonedas no pueden deshacerse. Las direcciones incorrectas, la selección de red equivocada o el error del operador resultan en pérdida permanente de fondos.</li>
+    <li><strong>Volatilidad:</strong> El valor en USD del USDC es generalmente estable, pero no garantizamos su valor al momento del pago o cobro.</li>
+    <li><strong>Problemas de red:</strong> Las transacciones en blockchain pueden retrasarse o fallar por congestión de red u otros problemas técnicos fuera de nuestro control.</li>
+    <li><strong>Riesgo de contrato inteligente:</strong> Los contratos inteligentes pueden contener errores imprevistos. Haremos esfuerzos razonables para auditarlos, pero no podemos garantizar su seguridad absoluta.</li>
+    <li><strong>Riesgo regulatorio:</strong> Las regulaciones de criptomonedas cambian rápidamente. Sos responsable de cumplir con las leyes aplicables en tu jurisdicción.</li>
+    <li><strong>Pérdida de billetera:</strong> La pérdida de acceso a tu billetera (claves privadas perdidas, frase de recuperación olvidada) implica pérdida permanente de NFTs o fondos. No podemos recuperar acceso a billeteras perdidas.</li>
+  </ul>
+
+  <h2 id="es-13">13. Datos Personales y Privacidad</h2>
+  <h3>13.1 Datos Recopilados</h3>
+  <p>Para proveer el Servicio, recopilamos y procesamos los siguientes datos personales:</p>
+  <ul>
+    <li>Datos de cuenta: email, contraseña cifrada</li>
+    <li>Datos de perfil: nombre completo, fecha de nacimiento, teléfono, domicilio, código postal</li>
+    <li>Datos de juego: historial de minería, balance de picos, gemas encontradas, participación en episodios</li>
+    <li>Datos de pago: dirección de billetera USDC, hashes de transacciones, montos</li>
+    <li>Datos técnicos: versión de app, tipo de dispositivo, tokens de notificaciones push</li>
+    <li>Datos de canje: nombre, email, teléfono, dirección de billetera proporcionados al canjear</li>
+  </ul>
+  <h3>13.2 Uso de Datos</h3>
+  <p>Tus datos se usan exclusivamente para operar el Servicio, procesar premios, cumplir con obligaciones legales (incluyendo AML/KYC para premios grandes) y comunicarnos sobre tu cuenta. No vendemos tus datos personales a terceros.</p>
+  <h3>13.3 Retención de Datos</h3>
+  <p>Los datos de cuenta se retienen mientras exista la cuenta y como mínimo 5 años después del cierre por cumplimiento legal. Los registros de canje de premios se retienen indefinidamente para fines de auditoría.</p>
+  <h3>13.4 Servicios de Terceros</h3>
+  <p>El Servicio usa Google Firebase (autenticación, base de datos, funciones en la nube), Google Cloud Storage (fotos de perfil) y la blockchain de Polygon (minteo de NFTs, verificación de pagos). El uso de estos servicios está sujeto a sus respectivas políticas de privacidad.</p>
+  <h3>13.5 Tus Derechos</h3>
+  <p>Según tu jurisdicción, podés tener derechos de acceso, corrección o eliminación de tus datos. Contactanos en <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>. Tené en cuenta que la eliminación de datos puede resultar en pérdida de acceso a gemas y premios.</p>
+
+  <h2 id="es-14">14. Juego Responsable</h2>
+  <div class="warning">⚠️ El juego de azar puede ser adictivo. Solo jugá con dinero que podés permitirte perder. No persigas pérdidas. Si el juego está afectando tus finanzas, relaciones o salud mental, buscá ayuda de inmediato.</div>
+  <h3>14.1 Autoexclusión</h3>
+  <p>Podés solicitar la autoexclusión permanente en cualquier momento escribiendo a <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>. Las solicitudes serán procesadas dentro de las 48 horas. Las cuentas autoexcluidas no pueden reactivarse.</p>
+  <h3>14.2 Límites de Participación</h3>
+  <p>Actualmente no imponemos límites automáticos, pero podemos hacerlo en el futuro. Sos responsable de gestionar tu propia participación.</p>
+  <h3>14.3 Recursos de Ayuda</h3>
+  <p>Si vos o alguien que conocés tiene un problema con el juego de azar:</p>
+  <ul>
+    <li><strong>Internacional:</strong> <a href="https://www.gamblingtherapy.org" target="_blank" rel="noopener noreferrer">GamblingTherapy.org</a></li>
+    <li><strong>Argentina:</strong> Jugadores Anónimos: <a href="https://www.jugadoresanonimos.org.ar" target="_blank" rel="noopener noreferrer">jugadoresanonimos.org.ar</a></li>
+    <li><strong>México:</strong> CONADIC — Centro de Orientación Telefónica: 800 911 2000</li>
+  </ul>
+  <h3>14.4 Protección de Menores</h3>
+  <p>Los padres y tutores son responsables de impedir que los menores accedan al Servicio. Recomendamos usar controles parentales en los dispositivos donde esté instalada la app.</p>
+
+  <h2 id="es-15">15. Conductas Prohibidas</h2>
+  <p>Las siguientes conductas están estrictamente prohibidas y resultarán en suspensión inmediata y pérdida de premios:</p>
+  <ul>
+    <li>Usar bots, scripts automatizados u otras herramientas para minar bloques o reclamar picos</li>
+    <li>Crear múltiples cuentas ("multi-accounting")</li>
+    <li>Explotar errores o vulnerabilidades del sistema de juego</li>
+    <li>Usar VPN para eludir restricciones geográficas</li>
+    <li>Coludirse con otros jugadores para manipular la distribución de premios</li>
+    <li>Lavado de dinero o uso del Servicio para cualquier propósito ilegal</li>
+    <li>Proporcionar falsa identidad o edad</li>
+    <li>Compartir credenciales de cuenta con otros</li>
+    <li>Intentar realizar ingeniería inversa del algoritmo de premios para obtener ventaja injusta</li>
+    <li>Amenazar, acosar o abusar de otros jugadores o del personal de la Empresa</li>
+  </ul>
+
+  <h2 id="es-16">16. Propiedad Intelectual</h2>
+  <p>Todo el contenido del Servicio — incluyendo gráficos del juego, arte de gemas, diseño del cubo, sonidos, textos, código de software y marca — es propiedad intelectual de Mining The Blocks y está protegido por derechos de autor y leyes de PI aplicables.</p>
+  <p>Al mintear una gema como NFT, recibís la propiedad del token NFT en la blockchain de Polygon, con derecho a transferirlo o venderlo. Sin embargo, no recibís derechos de autor, marca registrada ni otros derechos de PI sobre el arte subyacente. No podés usar el arte de gemas para fines comerciales sin consentimiento escrito expreso de la Empresa.</p>
+
+  <h2 id="es-17">17. Exenciones y Limitación de Responsabilidad</h2>
+  <p>El Servicio se provee "tal cual" y "según disponibilidad." En la mayor medida permitida por la ley aplicable:</p>
+  <ul>
+    <li>No garantizamos que el Servicio sea ininterrumpido, libre de errores, ni que se ganen premios.</li>
+    <li>No somos responsables de pérdidas resultantes de fallas técnicas, tiempo de inactividad del servidor, problemas de blockchain o eventos de fuerza mayor.</li>
+    <li>No somos responsables de daños indirectos, consecuentes, incidentales o punitivos derivados del uso del Servicio.</li>
+    <li>Nuestra responsabilidad total ante cualquier usuario en cualquier período de 12 meses no superará el total de los costos de entrada pagados por ese usuario en el mismo período.</li>
+    <li>No somos responsables de pérdidas causadas por tu incumplimiento de estos Términos.</li>
+  </ul>
+
+  <h2 id="es-18">18. Suspensión y Cancelación de Cuenta</h2>
+  <p>Nos reservamos el derecho de suspender o cancelar permanentemente cualquier cuenta, a nuestra sola discreción, por violación de estos Términos. En caso de cancelación:</p>
+  <ul>
+    <li>Los premios no canjeados se perderán si la cuenta fue cancelada por una violación.</li>
+    <li>Los costos de entrada pagados antes de la cancelación no son reembolsables.</li>
+    <li>Los cierres legítimos de cuenta a pedido del usuario permitirán cobrar premios pendientes durante 30 días después de la solicitud de cierre.</li>
+  </ul>
+
+  <h2 id="es-19">19. Modificaciones al Servicio</h2>
+  <p>Nos reservamos el derecho de modificar estos Términos, la estructura de premios, las mecánicas del juego o cualquier aspecto del Servicio en cualquier momento. Para cambios materiales que afecten los intereses financieros de jugadores existentes (como cambios en la tabla de premios o el costo de entrada), proveeremos al menos <strong>30 días de aviso previo</strong> mediante un aviso en el sitio web y/o notificación en la app. El uso continuado del Servicio después de la fecha de entrada en vigor constituye aceptación.</p>
+  <p>También nos reservamos el derecho de suspender o discontinuar el Servicio. En caso de discontinuación, proveeremos aviso razonable y permitiremos a los poseedores de gemas 90 días para canjear cualquier premio no reclamado.</p>
+
+  <h2 id="es-20">20. Ley Aplicable</h2>
+  <p>Estos Términos se rigen por las leyes aplicables en la jurisdicción donde opera la Empresa. Cualquier disputa derivada de estos Términos se resolverá mediante arbitraje vinculante, salvo donde esté prohibido por la ley local. Nada en esta cláusula limita tus derechos como consumidor bajo las leyes de protección al consumidor aplicables en tu jurisdicción.</p>
+
+  <h2 id="es-21">21. Contacto</h2>
+  <p>Para consultas, canje de premios, solicitudes de autoexclusión, solicitudes de datos o quejas:</p>
+  <p><a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a></p>
+  <p>Nos comprometemos a responder todas las consultas dentro de las 48 horas hábiles.</p>
+</div>
+
+<script>
+  var currentLang = 'en';
+  function setLang(lang) {
+    currentLang = lang;
+    document.querySelectorAll('[data-lang]').forEach(function(el) {
+      el.classList.toggle('visible', el.getAttribute('data-lang') === lang || el.getAttribute('data-lang') === lang + ' visible');
+    });
+    document.querySelectorAll('.lang-btn').forEach(function(btn) {
+      btn.classList.toggle('active', btn.textContent.trim().toLowerCase() === lang);
+    });
+    document.documentElement.lang = lang;
+  }
+  document.addEventListener('DOMContentLoaded', function() { setLang('en'); });
+</script>
 </body>
 </html>

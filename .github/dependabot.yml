@@ -1,0 +1,51 @@
+version: 2
+# MEDIO-S-02: Dependabot config para que las security PRs se abran solas
+# semanalmente. Esto cierra el gap de "vulnerabilidades transitivas detectadas
+# solo si alguien corre npm audit manualmente".
+updates:
+  - package-ecosystem: npm
+    directory: /functions
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - functions
+    # Solo agrupar security updates en un único PR; deps regulares por separado.
+    groups:
+      functions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - client
+    ignore:
+      # Expo SDK + RN: bumps majors requieren plan deliberado, no Dependabot.
+      - dependency-name: expo
+        update-types: [version-update:semver-major]
+      - dependency-name: react-native
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: react
+        update-types: [version-update:semver-major]
+    groups:
+      client-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci

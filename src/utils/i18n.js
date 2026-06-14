@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useMemo, useState, useEffect, useCallback } from 'react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../firebase/client';
+import { StorageKeys } from '../constants';
 
 // Simple i18n system with in-memory dictionaries.
 // Default language: English ('en')
@@ -732,7 +734,7 @@ const resources = {
       howToPlayPrize6: '$100       500U      50.000 (podrás encontrarlos en cualquier capa desde la 97 a la 0)',
       howToPlayPrize7: '$50      1.000U      50.000 (podrás encontrarlos en cualquier capa desde la 97 a la 0)',
       howToPlayPrize8: '$25      4.000U     100.000 (podrás encontrarlos en cualquier capa desde la 97 a la 0)',
-      howToPlayPrize9: '$15     10.000U     150,000 (podrás encontrarlos en cualquier capa desde la 97 a la 0)',
+      howToPlayPrize9: '$15     10.000U     150.000 (podrás encontrarlos en cualquier capa desde la 97 a la 0)',
       howToPlayTotalPrizes: '¡Un total de 15.657 premios!',
       howToPlayPickPrizes: 'Y además, 20.000 premios en picos repartidos entre las capas 97 y 15.',
       howToPlayChainsTitle: 'Cadenas y Episodios',
@@ -976,20 +978,38 @@ const I18nContext = createContext({
 export function I18nProvider({ children, initialLanguage = 'en' }) {
   const [language, setLanguageState] = useState(initialLanguage || 'en');
 
-  // Persist language to Firestore if user logged in
+  // MEDIO-I18N-02: persistir tanto en AsyncStorage como en Firestore. Antes
+  // sólo guardaba en Firestore — un cold start sin red (o pre-auth) siempre
+  // arrancaba en initialLanguage en lugar de respetar la última elección.
   const persistLanguage = useCallback(async (lang) => {
+    try { await AsyncStorage.setItem(StorageKeys.LANGUAGE, lang); } catch (_) {}
     try {
       const uid = auth.currentUser?.uid;
       if (!uid) return;
       const ref = doc(db, 'users', uid);
       await setDoc(ref, { settings: { language: lang } }, { merge: true });
-    } catch {}
+    } catch (_) {}
   }, []);
 
   const setLanguage = useCallback((lang) => {
     setLanguageState(lang);
     persistLanguage(lang);
   }, [persistLanguage]);
+
+  // MEDIO-I18N-02: rehidratar idioma desde AsyncStorage al montar (antes que
+  // llegue la respuesta async de Firestore).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stored = await AsyncStorage.getItem(StorageKeys.LANGUAGE);
+        if (!cancelled && (stored === 'en' || stored === 'es')) {
+          setLanguageState(stored);
+        }
+      } catch (_) {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Load stored language from Firestore — subscribe to auth so it fires on login
   useEffect(() => {
@@ -1000,8 +1020,15 @@ export function I18nProvider({ children, initialLanguage = 'en' }) {
         const ref = doc(db, 'users', uid);
         const snap = await getDoc(ref);
         const lang = snap.exists() ? snap.data()?.settings?.language : undefined;
-        if (active && (lang === 'en' || lang === 'es')) setLanguageState(lang);
-      } catch {}
+        if (active && (lang === 'en' || lang === 'es')) {
+          setLanguageState(lang);
+          // Sync a AsyncStorage para cold starts siguientes.
+          AsyncStorage.setItem(StorageKeys.LANGUAGE, lang).catch(() => {});
+        }
+      } catch (e) {
+        // MEDIO-I18N-04: loguear en vez de silenciar — útil si Firestore cae.
+        try { (await import('./logError')).default('i18n.loadLang', e); } catch {}
+      }
     };
     const unsub = onAuthStateChanged(auth, (u) => loadLang(u?.uid));
     return () => { active = false; unsub(); };

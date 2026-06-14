@@ -15,14 +15,27 @@ service cloud.firestore {
       // FIX-P1: 'wallet' y 'stats' sacados del whitelist. Si en el futuro
       // alguna feature lee esos campos, un cliente malicioso podría meter
       // valores arbitrarios. El bootstrap inicial (picks=0) sí es seguro.
+      // MEDIO-F08+F11: validar tipos/tamaños en create. Removidos
+      // pushToken/pushTokenType/pushNotifications (van en update — el bootstrap
+      // ya crea el doc con ensureUser y luego App.js hace setDoc(merge) que es
+      // update, no create).
       allow create: if request.auth != null && request.auth.uid == uid
         && request.resource.data.keys().hasOnly([
              'picks', 'createdAt', 'updatedAt',
              'settings', 'profile', 'displayName', 'email',
-             'avatarUrl', 'photoURL', 'language',
-             'pushToken', 'pushTokenType', 'pushNotifications'
+             'avatarUrl', 'photoURL', 'language'
            ])
-        && (!('picks' in request.resource.data) || request.resource.data.picks == 0);
+        && (!('picks' in request.resource.data) || request.resource.data.picks == 0)
+        && (!('displayName' in request.resource.data) ||
+            (request.resource.data.displayName is string && request.resource.data.displayName.size() <= 60))
+        && (!('email' in request.resource.data) ||
+            (request.resource.data.email is string && request.resource.data.email.size() <= 200))
+        && (!('avatarUrl' in request.resource.data) ||
+            (request.resource.data.avatarUrl is string && request.resource.data.avatarUrl.size() <= 500))
+        && (!('photoURL' in request.resource.data) ||
+            (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 500))
+        && (!('language' in request.resource.data) ||
+            (request.resource.data.language is string && request.resource.data.language.size() <= 8));
 
       // SEC-P1-6: migrado a WHITELIST explícito. Antes era blacklist y si
       // mañana agregamos un nuevo campo sensible al doc, olvidarse de
@@ -31,12 +44,35 @@ service cloud.firestore {
       // Los campos sensibles (picks, serverCredits, lastMineAt, walletAddress,
       // referralCode, referredBy, etc.) NO están en esta whitelist y por lo
       // tanto sólo pueden ser modificados por Cloud Functions (Admin SDK).
+      // ALTO-38: validar tipo + tamaño de pushToken/displayName/email para
+      // bloquear payloads malformados que inflan el doc o rompen notifyAllUsers.
       allow update: if request.auth != null && request.auth.uid == uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
              'displayName', 'email', 'avatarUrl', 'photoURL', 'language',
              'settings', 'profile', 'updatedAt',
              'pushToken', 'pushTokenType', 'pushNotifications'
-           ]);
+           ])
+        && (!('pushToken' in request.resource.data) ||
+            request.resource.data.pushToken == null ||
+            (request.resource.data.pushToken is string && request.resource.data.pushToken.size() <= 500))
+        && (!('pushTokenType' in request.resource.data) ||
+            request.resource.data.pushTokenType == null ||
+            (request.resource.data.pushTokenType is string && request.resource.data.pushTokenType.size() <= 16))
+        && (!('displayName' in request.resource.data) ||
+            request.resource.data.displayName == null ||
+            (request.resource.data.displayName is string && request.resource.data.displayName.size() <= 60))
+        && (!('email' in request.resource.data) ||
+            request.resource.data.email == null ||
+            (request.resource.data.email is string && request.resource.data.email.size() <= 200))
+        && (!('avatarUrl' in request.resource.data) ||
+            request.resource.data.avatarUrl == null ||
+            (request.resource.data.avatarUrl is string && request.resource.data.avatarUrl.size() <= 500))
+        && (!('photoURL' in request.resource.data) ||
+            request.resource.data.photoURL == null ||
+            (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 500))
+        && (!('language' in request.resource.data) ||
+            request.resource.data.language == null ||
+            (request.resource.data.language is string && request.resource.data.language.size() <= 8));
 
       match /mines/{doc} {
         allow read: if request.auth != null && request.auth.uid == uid;
@@ -84,14 +120,23 @@ service cloud.firestore {
         allow write: if false;
       }
 
-      // Contador de secuencia para el historial — solo puede incrementarse de 1 en 1
-      match /meta/{doc} {
+      // CRIT-04: el match anterior `meta/{doc}` cubría TODOS los docs de meta,
+      // incluyendo `meta/closing_${N}` que el backend usa como guard de
+      // idempotency en closeEpisode. El cliente podía crear `closing_5` con
+      // `{seq:1}` y romper el lock → duplicar episode_complete / winner.
+      // Restringimos al único doc legítimo (counter).
+      match /meta/counter {
         allow read: if request.auth != null;
         allow write: if request.auth != null
           && request.resource.data.keys().hasOnly(['seq'])
           && request.resource.data.seq is int
           && request.resource.data.seq > 0
           && (resource == null || request.resource.data.seq == resource.data.seq + 1);
+      }
+      // Otros docs de meta (closing_*, etc.) — solo backend Admin SDK.
+      match /meta/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
       }
 
       match /history/{entryId} {
@@ -101,16 +146,32 @@ service cloud.firestore {
         // SEC-A2: cap de seq como defense-in-depth contra spam.
         // SEC-N-019: validar que el chainId del body coincida con el chainId del path,
         // sino un user con acceso a chain X puede escribir entradas en chain Y.
+        // CRIT-05: validar que el serverAccess apunte a este chainId. Antes
+        // el exists() solo verificaba que el user tuviera acceso al server,
+        // pero no que ese server perteneciera a la chain del path. Resultado:
+        // user con acceso a server S en chainA podía escribir entradas mine
+        // en serverChains/chainB/history con serverId=S → contaminación
+        // cross-chain del historial público.
         allow create: if request.auth != null
           && request.resource.data.uid == request.auth.uid
           && (!('chainId' in request.resource.data) || request.resource.data.chainId == chainId)
           && exists(/databases/$(database)/documents/users/$(request.auth.uid)/serverAccess/$(request.resource.data.serverId))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)/serverAccess/$(request.resource.data.serverId)).data.chainId == chainId
           && request.resource.data.type == 'mine'
           && request.resource.data.keys().hasOnly([
                'type', 'seq', 'ts', 'uid', 'displayName',
                'cubeNumber', 'apiCubeNumber', 'layerK', 'episodeNumber', 'chainId',
                'serverId', 'rewardPicks', 'rewardCash', 'totalMined'
              ])
+          // ALTO-37: validar tipos de campos críticos. Antes solo se validaban
+          // los numéricos; serverId/cubeNumber/apiCubeNumber/ts podían ser
+          // cualquier tipo (string gigante, objeto raro, etc.) lo que inflaba
+          // el feed público sin uso real.
+          && request.resource.data.serverId is string
+          && request.resource.data.serverId.size() <= 40
+          && (!('cubeNumber' in request.resource.data) || request.resource.data.cubeNumber is int)
+          && (!('apiCubeNumber' in request.resource.data) || request.resource.data.apiCubeNumber is int)
+          && (!('ts' in request.resource.data) || request.resource.data.ts is number || request.resource.data.ts is timestamp)
           && (!('displayName' in request.resource.data) || request.resource.data.displayName is string && request.resource.data.displayName.size() <= 60)
           && (!('rewardPicks' in request.resource.data) || (request.resource.data.rewardPicks is int && request.resource.data.rewardPicks >= 0 && request.resource.data.rewardPicks <= 5))
           && (!('rewardCash' in request.resource.data) || (request.resource.data.rewardCash is number && request.resource.data.rewardCash >= 0 && request.resource.data.rewardCash <= 100000))
@@ -134,28 +195,21 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // App config: lectura pública para que el force-update modal aparezca
-    // también en usuarios logged-out (Login screen).
-    match /config/{doc} {
+    // App config: lectura pública sólo para `config/app` (force-update modal
+    // necesita esto pre-login). MEDIO-F13: antes el wildcard /config/{doc}
+    // permitía que cualquier doc futuro en /config quede público.
+    match /config/app {
       allow read: if true;
       allow write: if false;
     }
-
-    // Legacy global collections (read-only for authenticated users)
-    match /layers/{doc} {
-      allow read: if request.auth != null;
-      allow write: if false;
+    match /config/{doc} {
+      allow read, write: if false;
     }
 
-    match /mined/{doc} {
-      allow read: if request.auth != null;
-      allow write: if false;
-    }
-
-    match /{collection}/{doc} {
-      allow read: if collection.matches('rewards_.*') && request.auth != null;
-      allow write: if false;
-    }
+    // MEDIO-F14+F29: eliminados los wildcards `/layers/{doc}`, `/mined/{doc}` y
+    // `/{collection}/{doc} with rewards_.*` — colecciones legacy no usadas
+    // por el código actual. Si alguna vez se necesitan, agregar reglas
+    // específicas. Default-deny mejor que wildcard implícito.
 
     // Gem claims desde la web: solo Cloud Functions (admin) puede leer/escribir
     match /gemClaims/{doc} {
@@ -195,10 +249,17 @@ service cloud.firestore {
     // Usernames: unique username registry
     // Document ID is the username itself (lowercase). Rules enforce format so
     // malicious clients cannot bypass the Cloud Function validation.
+    // ALTO-40: requerir email_verified para create (anti-squatting). Sin esto,
+    // un atacante con cuentas no verificadas puede reclamar miles de usernames
+    // populares en loop. Para read seguimos permitiendo cualquier authed user
+    // para que la verificación de disponibilidad funcione.
     match /usernames/{username} {
       allow read: if request.auth != null;
       allow create: if request.auth != null
+        && (request.auth.token.email_verified == true ||
+            (request.auth.token.firebase != null && request.auth.token.firebase.sign_in_provider != 'password'))
         && request.resource.data.uid == request.auth.uid
+        && request.resource.data.uid is string
         && request.resource.data.keys().hasOnly(['uid', 'createdAt', 'updatedAt'])
         && username.size() >= 3
         && username.size() <= 30

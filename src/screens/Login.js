@@ -71,15 +71,33 @@ export default function Login() {
     }
   };
 
+  // ALTO-44: NO re-loguear con email+password para reenviar verificación.
+  // Antes hacía signIn → sendVerification → signOut lo que:
+  //   1. Gastaba un intento de login (puede triggear too-many-attempts).
+  //   2. Filtraba 'auth/wrong-password' al UI si las credenciales estaban mal.
+  //   3. Permitía a un atacante con credenciales válidas spamear emails.
+  // Ahora usamos la Cloud Function `sendVerificationEmail` que requiere
+  // sesión iniciada o un flow distinto. Si no hay user activo, mostramos
+  // mensaje neutro para no enumerar emails.
   const resendVerification = async () => {
     try {
       setLoading(true);
-      const creds = await signInWithEmailAndPassword(auth, (email || '').trim(), password);
-      await sendEmailVerification(creds.user);
-      await signOut(auth);
+      if (!auth.currentUser) {
+        showError(t('login.verificationResent'));
+        return;
+      }
+      try {
+        const { callSendVerificationEmail } = await import('../firebase/functions');
+        await callSendVerificationEmail();
+      } catch (cfErr) {
+        // Fallback al método SDK directo si la CF falla.
+        try { await sendEmailVerification(auth.currentUser); } catch {}
+      }
       showError(t('login.verificationResent'));
     } catch (e) {
-      showError(e?.message || t('login.genericLogin'));
+      try { (await import('../utils/logError')).default('Login.resendVerification', e); } catch {}
+      // Mensaje neutro al usuario (no leak de auth/wrong-password etc.)
+      showError(t('login.verificationResent'));
     } finally {
       setLoading(false);
     }
@@ -172,19 +190,21 @@ export default function Login() {
       <TouchableOpacity
         style={{ alignSelf: 'center', marginTop: 8 }}
         onPress={async () => {
-          try {
-            const em = (email || '').trim();
-            if (!em) {
-              showError(t('login.emailRequiredBody'));
-              return;
-            }
-            await sendPasswordResetEmail(auth, em);
-            showError(t('login.emailSentBody')); // banner verde — ver styles.errorBox
-          } catch (e) {
-            const code = e?.code || 'auth/error';
-            const msg = e?.message || t('login.couldNotSendReset');
-            showError(`${code}: ${msg}`);
+          // ALTO-45: NO distinguir entre éxito y "user-not-found" para
+          // evitar user enumeration. SIEMPRE mostramos el mismo mensaje
+          // genérico "si existe la cuenta, te enviamos el email".
+          const em = (email || '').trim();
+          if (!em) {
+            showError(t('login.emailRequiredBody'));
+            return;
           }
+          try {
+            await sendPasswordResetEmail(auth, em);
+          } catch (e) {
+            try { (await import('../utils/logError')).default('Login.forgot', e); } catch {}
+            // No re-throw — silenciamos al usuario.
+          }
+          showError(t('login.emailSentBody'));
         }}
         activeOpacity={0.8}
       >

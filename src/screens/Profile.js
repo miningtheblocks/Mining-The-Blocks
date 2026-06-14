@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, ScrollView, TextInput, Share } from 'react-native';
 import { useAppAlert } from '../components/AppAlert';
 import { auth, db } from '../firebase/client';
@@ -45,21 +45,28 @@ export default function Profile({ asModal = false, onClose }) {
     } catch {}
   };
 
+  // ALTO-52: throttle local + mensaje unificado para evitar enumeration de
+  // códigos. Antes distinguir 'already-exists' vs 'not-found' permitía
+  // probar códigos rápido.
+  const referralCooldownRef = useRef(0);
   const applyReferral = async () => {
     const code = referralInput.trim().toUpperCase();
     if (!code) return;
+    const now = Date.now();
+    if (now - referralCooldownRef.current < 10000) {
+      showAlert('', t('profile.referralInvalidCode'));
+      return;
+    }
+    referralCooldownRef.current = now;
     setApplyingReferral(true);
     try {
       await callApplyReferral(code);
       showAlert(t('profile.referralAppliedTitle'), t('profile.referralAppliedMsg'));
       setReferralInput('');
     } catch (e) {
-      const msg = e?.code === 'already-exists'
-        ? t('profile.referralAlreadyUsed')
-        : e?.code === 'not-found'
-          ? t('profile.referralInvalidCode')
-          : e?.message;
-      showAlert('Error', msg);
+      try { logError('Profile.applyReferral', e, { codeLen: code.length }); } catch {}
+      // Mensaje único, no distingue not-found vs already-exists.
+      showAlert('', t('profile.referralInvalidCode'));
     } finally {
       setApplyingReferral(false);
     }
@@ -79,7 +86,18 @@ export default function Profile({ asModal = false, onClose }) {
       showAlert('', addr ? t('profile.walletSaved') : t('profile.walletRemoved'));
     } catch (e) {
       logError('Profile.saveWallet', e);
-      showAlert('Error', e?.message);
+      // ALTO-30 backend: si el backend devuelve email_not_verified, decir al user.
+      // ALTO-35 backend: si devuelve wallet_cooldown:Xh, decir al user.
+      const code = e?.code || '';
+      const msg = e?.message || '';
+      if (msg.includes('email_not_verified')) {
+        showAlert(t('profile.walletInvalidTitle') || 'Error', t('profile.emailNotVerified') || 'Verificá tu email antes de cambiar la wallet.');
+      } else if (msg.startsWith('wallet_cooldown:')) {
+        const h = msg.split(':')[1] || '24';
+        showAlert('', (t('profile.walletCooldown') || 'Podés cambiar tu wallet en {h}h.').replace('{h}', h));
+      } else {
+        showAlert('Error', t('profile.walletInvalidMsg') || 'No se pudo guardar.');
+      }
     } finally {
       setSavingWallet(false);
     }

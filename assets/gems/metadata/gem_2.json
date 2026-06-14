@@ -1,8 +1,8 @@
 {
   "name": "MTB Painita #2",
-  "description": "Mining The Blocks — Painita. Tier 2 gem discovered by mining the community cube. Fixed redemption value: $200 USD. Redeem your code at miningtheblocks.com or hold as NFT.",
+  "description": "Mining The Blocks — Painita. Tier 2 gem discovered by mining the community cube. Fixed redemption value: $50000 USD. Redeem your code at miningtheblocks.github.io or hold as NFT.",
   "image": "ipfs://bafkreid7fwynp3wyxvaf5l3jtwz32o23ofvb4apyphpvelripcwvpd7rge",
-  "external_url": "https://miningtheblocks.com",
+  "external_url": "https://miningtheblocks.github.io/Mining-The-Blocks/",
   "attributes": [
     {
       "trait_type": "Gem Name",
@@ -19,7 +19,7 @@
     },
     {
       "trait_type": "Redemption Value",
-      "value": "$200 USD"
+      "value": "$50000 USD"
     },
     {
       "trait_type": "Quantity/Server",

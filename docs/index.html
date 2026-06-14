@@ -4,6 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Mining The Blocks — excavá un cubo de 8 millones de celdas y ganá premios reales en USDC.">
+  <!-- CRIT-23: CSP via meta tag. gstatic.com permitido para Firebase Auth compat SDK. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://identitytoolkit.googleapis.com https://*.firebaseio.com https://*.cloudfunctions.net; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+  <meta http-equiv="X-Frame-Options" content="DENY">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>Mining The Blocks</title>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -598,16 +602,16 @@
 <div class="disclaimer-bar">
   ⚠️ <span data-lang="es">Juego de azar · Solo mayores de 18 · No disponible en EE.UU., UK, Australia ni otros países con restricciones ·</span>
   <span data-lang="en visible">Game of chance · 18+ only · Not available in the US, UK, Australia or other restricted countries ·</span>
-  <a href="terms.html" target="_blank" data-lang="es">Términos y Condiciones</a>
-  <a href="terms.html" target="_blank" data-lang="en visible">Terms &amp; Conditions</a>
+  <a href="terms.html" target="_blank" rel="noopener noreferrer" data-lang="es">Términos y Condiciones</a>
+  <a href="terms.html" target="_blank" rel="noopener noreferrer" data-lang="en visible">Terms &amp; Conditions</a>
 </div>
 
 <footer>
   Mining The Blocks &nbsp;·&nbsp;
   <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>
   &nbsp;·&nbsp;
-  <a href="terms.html" target="_blank" style="cursor:pointer" data-lang="es">Términos y Condiciones</a>
-  <a href="terms.html" target="_blank" style="cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>
+  <a href="terms.html" target="_blank" rel="noopener noreferrer" style="cursor:pointer" data-lang="es">Términos y Condiciones</a>
+  <a href="terms.html" target="_blank" rel="noopener noreferrer" style="cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>
 </footer>
 
 <!-- Age gate modal -->
@@ -627,8 +631,8 @@
       <span>
         <span data-lang="es">He leído y acepto los </span>
         <span data-lang="en visible">I have read and accept the </span>
-        <a href="terms.html" target="_blank" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="es">Términos y Condiciones</a>
-        <a href="terms.html" target="_blank" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>.
+        <a href="terms.html" target="_blank" rel="noopener noreferrer" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="es">Términos y Condiciones</a>
+        <a href="terms.html" target="_blank" rel="noopener noreferrer" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>.
       </span>
     </label>
     <button class="legal-btn" id="ageBtn" onclick="acceptAge()" disabled>
@@ -834,7 +838,9 @@
     if (!name)   { showError('emailError', err ? 'Ingresá tu nombre completo.' : 'Enter your full name.'); return; }
     if (!email)  { showError('emailError', err ? 'Ingresá tu email.' : 'Enter your email.'); return; }
     if (!phone)  { showError('emailError', err ? 'Ingresá tu teléfono.' : 'Enter your phone number.'); return; }
-    if (!wallet || !wallet.startsWith('0x') || wallet.length < 40) { showError('emailError', err ? 'Ingresá una dirección de billetera válida (empieza con 0x).' : 'Enter a valid wallet address (starts with 0x).'); return; }
+    // MEDIO-H18: validar formato exacto Ethereum (42 chars, 0x + 40 hex).
+    // Antes `wallet.length < 40` aceptaba wallets de 40 chars (incompletas).
+    if (!wallet || !/^0x[a-fA-F0-9]{40}$/.test(wallet)) { showError('emailError', err ? 'Ingresá una dirección de billetera válida (0x + 40 caracteres hex).' : 'Enter a valid wallet address (0x + 40 hex chars).'); return; }
 
     // OPS-9: requerir Firebase ID token. Si la sesión expiró entre verifyCode
     // y submitClaim, volver a la pantalla de login.

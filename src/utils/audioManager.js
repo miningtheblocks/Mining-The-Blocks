@@ -157,7 +157,14 @@ class AudioManager {
         shouldPlay: true, // Reproducir inmediatamente
       });
 
-      // Agregar al pool de sonidos activos
+      // MEDIO-AM-06: cap del pool a 8 sonidos simultáneos. Si se supera,
+      // forzar unload del más viejo. Antes en caso de interrupción (background,
+      // ducking) los callbacks didJustFinish nunca disparaban y activeSounds
+      // crecía indefinidamente.
+      if (this.activeSounds.length >= 8) {
+        const oldest = this.activeSounds.shift();
+        try { oldest && oldest.unloadAsync().catch(() => {}); } catch (_) {}
+      }
       this.activeSounds.push(sound);
 
       // Auto-limpieza cuando termine de reproducirse
@@ -256,6 +263,12 @@ class AudioManager {
         } catch {}
       }
       this.activeSounds = [];
+      // MEDIO-AM-05: resetear flags para que un re-init después de cleanup
+      // funcione correctamente. Antes `initialized` seguía true → init salía
+      // temprano y la app quedaba sin audio hasta proceso fresh.
+      this.initialized = false;
+      this.backgroundMusic = null;
+      this.crescendoInterval = null;
     } catch (error) {
       console.error('Error limpiando audio:', error);
     }

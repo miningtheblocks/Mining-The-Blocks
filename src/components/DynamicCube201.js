@@ -18,7 +18,7 @@ import { useOverlayModals } from './OverlayModalsProvider';
 import { useServer } from '../utils/serverContext';
 import { GEMS, GEM_SHAPE } from '../utils/gems';
 import GemPixelArt from './GemPixelArt';
-import { createRewardIndicatorSprite, MinedCubesRewardStore } from './MinedCellIndicators';
+import { createRewardIndicatorSprite, MinedCubesRewardStore, clearIndicatorCache } from './MinedCellIndicators';
 import audioManager from '../utils/audioManager';
 
 // Suprimir warnings conocidos de expo-gl que no afectan la funcionalidad
@@ -134,6 +134,9 @@ const minedRewardsStore = new MinedCubesRewardStore();
 
 // Geometría compartida para todos los number meshes (evita crear/destruir PlaneGeometry cada frame)
 const sharedNumberPlaneGeo = new THREE.PlaneGeometry(0.8, 0.8);
+// CRIT-12: marcamos la geometría como compartida para que ni el cleanup
+// per-layer en buildLayer ni el cleanup global del unmount la disponga.
+sharedNumberPlaneGeo.userData = { shared: true };
 
 // Raycaster singleton para findCubeAtScreenPosition (evita allocations en cada tap)
 const _moduleRaycaster = new THREE.Raycaster();
@@ -164,7 +167,16 @@ const _sCorners = [
 const _numMeshPool = {
   pool: [],
   acquire() {
-    if (this.pool.length > 0) return this.pool.pop();
+    if (this.pool.length > 0) {
+      const mesh = this.pool.pop();
+      // MEDIO-29: garantizar que el mesh reutilizado no esté ya parented.
+      // Si lo está, addear como child de otro grupo lo dejaría como child
+      // de DOS padres y rompe matrixWorld.
+      if (mesh.parent) {
+        try { mesh.parent.remove(mesh); } catch {}
+      }
+      return mesh;
+    }
     const mat = new THREE.MeshBasicMaterial({
       side: THREE.FrontSide,
       transparent: true,
@@ -193,6 +205,14 @@ function createNumberTexture(number, options = {}) {
   const safeNumber = String(Math.floor(Math.abs(number))); // Asegurar string vÃƒÂ¡lido
   const cacheKey = `${safeNumber}_${!!options.transparentBackground}_${JSON.stringify(options.digitColor || [0,0,0,255])}`;
   if (textureCache.has(cacheKey)) {
+    // MEDIO-27: LRU real — mover al final del orden cuando hay hit.
+    // Antes el array era FIFO simple y las texturas más usadas podían ser
+    // evictadas tan pronto como las nuevas. Ahora "usar" = renovar.
+    const idx = textureCacheOrder.indexOf(cacheKey);
+    if (idx >= 0 && idx !== textureCacheOrder.length - 1) {
+      textureCacheOrder.splice(idx, 1);
+      textureCacheOrder.push(cacheKey);
+    }
     return textureCache.get(cacheKey);
   }
   const size = 64;
@@ -757,8 +777,9 @@ function animateFragments(fragments, scene, duration = 1800, cancelRef = null) {
 
       requestAnimationFrame(animate);
     } catch {
-      try { fragments.forEach(f => scene.remove(f)); } catch {}
-      resolve();
+      // CRIT-13: usar cleanup() para disponer geometries/materials/children.
+      // Antes este catch solo hacía scene.remove → leak GPU.
+      try { cleanup(); } catch { resolve(); }
     }
   };
 
@@ -1200,19 +1221,12 @@ function createFaceInstancesForLayer(K, faceIndex){
   cubesMesh.instanceMatrix.needsUpdate = true;
   cubesMesh.instanceColor.needsUpdate = true;
 
-  let startN = 1;
-  if (K===0){ startN = 1; }
-  else {
-    let sum = 1; // capa 0
-    for (let k=1;k<K;k++) sum += shellSize(k);
-    startN = sum + 1;
-  }
-  // AsignaciÃƒÂ³n continua segÃºn orden de caras con offset ÃƒÂºnico por cara
+  // CRIT-11: array de numeración por instancia. La asignación REAL se hace
+  // en buildLayer (cursor global por shell, orden front/right/back/left/top/
+  // bottom — ver líneas 3756+). Antes este bloque rellenaba con un
+  // `startN + faceIndex*1e6` que era SOBREESCRITO en buildLayer → 240k
+  // escrituras inútiles por capa K=100. Dejamos el Uint32Array (default 0).
   const numbers = new Uint32Array(count);
-  // Cada cara tiene un offset ÃƒÂºnico basado en faceIndex para evitar duplicados
-  const faceOffset = faceIndex * 1000000; // Offset grande para separar caras
-  let cursor = startN + faceOffset;
-  for (let i=0;i<count;i++) numbers[i] = cursor++;
 
   cubesMesh.userData = {
     cubeNumbers: numbers,
@@ -1623,6 +1637,10 @@ const handleZoomButton = useCallback((direction) => {
       } else if (nextAppState === 'active') {
         renderPausedRef.current = false;
         audioManager.resumeBackgroundMusic();
+        // ALTO-62: forzar remount de GLView para reinicializar el contexto
+        // GL. Android puede perder el contexto en background; sin remount el
+        // siguiente render() usa un contexto descartado.
+        try { setFocusKey((k) => k + 1); } catch {}
       }
     });
 
@@ -1644,29 +1662,20 @@ const handleZoomButton = useCallback((direction) => {
 
   // Guard y helper de transiciÃƒÂ³n de capa (elimina capa actual y construye la siguiente)
   const transitioningRef = useRef(false);
-  const transitionToLayer = useCallback((nextK) => {
-    if (transitioningRef.current) return;
-    transitioningRef.current = true;
-    try {
-      setCurrentLayer(nextK);
-      visibleNumbersRef.current = [];
-      setSelectedCube(null);
-      setMiningModal(null);
-      // Limpiar cache de celdas aplicadas
-      try { minedAppliedRef.current.clear(); } catch {}
-      // Reconstruir capa
-      if (buildLayerRef.current) {
-        buildLayerRef.current(nextK);
-      }
-      // Recalcular rangos para HUD/nÃƒÂºmeros
-      try { recomputeFaceRanges(); } catch {}
-      try { showHudToast && showHudToast(`Capa ${nextK} lista`); } catch {}
-    } finally {
-      transitioningRef.current = false;
-    }
-  }, [recomputeFaceRanges, showHudToast]);
+  // CRIT-07: showHudToast también debe declararse ANTES de transitionToLayer
+  // (mismo motivo que recomputeFaceRanges — está en sus deps).
+  const showHudToast = useCallback((msg, duration = 1800) => {
+    try { if (hudToastTimerRef.current) { clearTimeout(hudToastTimerRef.current); hudToastTimerRef.current = null; } } catch {}
+    setHudToast(String(msg || ''));
+    hudToastTimerRef.current = setTimeout(() => {
+      setHudToast(null);
+      hudToastTimerRef.current = null;
+    }, Math.max(800, duration));
+  }, []);
 
-  // Recalcular rangos descendentes por cara con los nÃƒÂºmeros reales de la capa construida
+  // LEAK-002: recomputeFaceRanges debe declararse ANTES de transitionToLayer
+  // porque está en las deps del useCallback de transitionToLayer. Si se declara
+  // después, queda en TDZ cuando React evalúa las deps al definir el callback.
   const recomputeFaceRanges = React.useCallback(() => {
     try {
       for (let fIdx = 0; fIdx < FACES.length; fIdx++) {
@@ -1692,6 +1701,28 @@ const handleZoomButton = useCallback((direction) => {
       }
     } catch {}
   }, []);
+
+  const transitionToLayer = useCallback((nextK) => {
+    if (transitioningRef.current) return;
+    transitioningRef.current = true;
+    try {
+      setCurrentLayer(nextK);
+      visibleNumbersRef.current = [];
+      setSelectedCube(null);
+      setMiningModal(null);
+      // Limpiar cache de celdas aplicadas
+      try { minedAppliedRef.current.clear(); } catch {}
+      // Reconstruir capa
+      if (buildLayerRef.current) {
+        buildLayerRef.current(nextK);
+      }
+      // Recalcular rangos para HUD/números
+      try { recomputeFaceRanges(); } catch {}
+      try { showHudToast && showHudToast(`Capa ${nextK} lista`); } catch {}
+    } finally {
+      transitioningRef.current = false;
+    }
+  }, [recomputeFaceRanges, showHudToast]);
 
   // Aplica visualmente una celda minada (parche + ocultar instancia) una sola vez
   const applyMinedCell = useCallback((faceIndex, gridX, gridY, rewardPicks = 0) => {
@@ -1817,15 +1848,8 @@ const handleZoomButton = useCallback((direction) => {
     } catch {}
   }, [layerMinedCount, currentLayer, transitionToLayer]);
 
-  // Utilidad para mostrar un toast breve en HUD
-  const showHudToast = useCallback((msg, duration = 1800) => {
-    try { if (hudToastTimerRef.current) { clearTimeout(hudToastTimerRef.current); hudToastTimerRef.current = null; } } catch {}
-    setHudToast(String(msg || ''));
-    hudToastTimerRef.current = setTimeout(() => {
-      setHudToast(null);
-      hudToastTimerRef.current = null;
-    }, Math.max(800, duration));
-  }, []);
+  // CRIT-07: showHudToast movido arriba (antes de transitionToLayer) por TDZ.
+
   // Función para encontrar el número más cercano al toque
   const findClosestVisibleNumber = useCallback((touchX, touchY) => {
     let closestNumber = null;
@@ -2186,16 +2210,26 @@ const handleZoomButton = useCallback((direction) => {
     return () => {
       try { unsubAuth(); } catch {}
       if (unsubUser) { try { unsubUser(); } catch {} }
+      // CRIT-10: cleanup de timers/pollers NO pertenece a este effect (eran
+      // los originales del effect auth). Los mantengo defensivamente pero
+      // sin meterlos en deps. miningAnimations Map nunca se mutiplica (setter
+      // jamás llamado), así que el forEach es no-op pero defensivo.
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
-      miningAnimations.forEach((anim) => {
-        if (anim && typeof anim.cleanup === 'function') anim.cleanup();
-      });
+      try {
+        miningAnimations.forEach((anim) => {
+          if (anim && typeof anim.cleanup === 'function') anim.cleanup();
+        });
+      } catch {}
       if (minedPollRef.current) {
         clearInterval(minedPollRef.current);
         minedPollRef.current = null;
       }
     };
-  }, [miningAnimations]);
+    // CRIT-10: deps vacías a propósito. `miningAnimations` en deps re-suscribía
+    // onAuthStateChanged cada vez que el Map cambiara, lo que es destructivo
+    // para sesiones largas (re-render y nuevo bootstrap de user doc).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   
   // Función para mostrar solo las grietas (llamada al 50% de la barra)
   const showCracksAnimation = useCallback(async (modalData) => {
@@ -2254,6 +2288,27 @@ const handleZoomButton = useCallback((direction) => {
   }, []);
 
   // Función para iniciar el minado (usa snapshot del modal)
+  // CRIT-09: helper para limpiar cracks de la escena. Llamado desde
+  // startMining (Fase 1) y también desde el catch del callMineCube cuando
+  // la API falla y startMining nunca se ejecuta — sin esto, los cracks
+  // del showCracksAnimation quedan en escena indefinidamente.
+  const cleanupCracksNow = useCallback((scene) => {
+    if (!cracksRef.current) return;
+    try {
+      const { crackGroup, cracks } = cracksRef.current;
+      if (crackGroup && scene) {
+        try { scene.remove(crackGroup); } catch {}
+      }
+      if (cracks) {
+        cracks.forEach((crack) => {
+          try { if (crack.geometry) crack.geometry.dispose(); } catch {}
+          try { if (crack.material) crack.material.dispose(); } catch {}
+        });
+      }
+    } catch {}
+    cracksRef.current = null;
+  }, []);
+
   const startMining = useCallback(async (modalData, reward = 0, gem = null) => {
     if (!modalData) {
       console.warn('startMining sin modalData');
@@ -2275,19 +2330,11 @@ const handleZoomButton = useCallback((direction) => {
       }
       
       // FASE 1: Limpiar grietas previas (ahora que terminaron)
-      if (cracksRef.current) {
-        const { crackGroup, cracks } = cracksRef.current;
-        if (crackGroup && scene) {
-          scene.remove(crackGroup);
-        }
-        if (cracks) {
-          cracks.forEach(crack => {
-            if (crack.geometry) crack.geometry.dispose();
-            if (crack.material) crack.material.dispose();
-          });
-        }
-        cracksRef.current = null;
-      }
+      // CRIT-09: extraído a helper `cleanupCracksNow` (definido más arriba)
+      // para que también se llame desde el catch del callMineCube si la API
+      // falla y startMining nunca se ejecuta. Antes los cracks quedaban
+      // pegados a la escena (leak GPU acumulado por mine fallido).
+      cleanupCracksNow(scene);
       
       // FASE 3: Aplicar parche y explotar simultáneamente
       const K = currentLayerRef.current; // usar ref para evitar closure estale
@@ -2425,7 +2472,7 @@ const handleZoomButton = useCallback((direction) => {
             // Empezamos rotaciÃ³n libre: asegurarnos de no forzar modo grid ni cara solicitada
             lastRotateTsRef.current = Date.now();
             // CRÍTICO: Si estamos en modo cubo, limpiar cara solicitada para permitir detección automática
-            if (cameraMode === 'cube' && requestedFaceRef.current) {
+            if (cameraModeRef.current === 'cube' && requestedFaceRef.current) {
               requestedFaceRef.current = null;
               setRequestedFace(null);
             }
@@ -2541,7 +2588,9 @@ const handleZoomButton = useCallback((direction) => {
                     if (gestureZoomingRef.current) return; // cancelar si se convirtió en zoom
                     // Se termina la fase de long press activo al abrir el modal
                     setLongPressActive(false);
-                    handleLongPress(touch.locationX, touch.locationY);
+                    // ALTO-63: leer ref para tener el callback fresco sin
+                    // forzar reconstrucción del panResponder en cada cambio.
+                    handleLongPressRef.current(touch.locationX, touch.locationY);
                     modalTimerRef.current = null;
                   }, 1000);
                 } finally {
@@ -2712,7 +2761,7 @@ const handleZoomButton = useCallback((direction) => {
               const EXIT_GRID_DIST = 275.0; // mismo umbral de salida que en render loop
               isInGridMode = tempDist <= EXIT_GRID_DIST;
               // Si ya estamos fuera del umbral de grilla pero cameraMode quedÃƒÂ³ pegado, soltarlo ya
-              if (!isInGridMode && cameraMode === 'grid') {
+              if (!isInGridMode && cameraModeRef.current === 'grid') {
                 setCameraMode('cube');
                 // Limpiar cara solicitada al salir de modo grid
                 setRequestedFace(null);
@@ -2899,10 +2948,19 @@ const handleZoomButton = useCallback((direction) => {
           });
         },
       }),
-    [cameraMode, handleLongPress]
-    // gridPosition eliminado: el panResponder lee gridPositionRef directamente,
-    // evitando recreación del gesto 15 veces/seg durante el pan en modo grilla
+    // ALTO-63: deps vacías. El panResponder NO debe recrearse durante un
+    // gesto activo (rompía onPanResponderMove al cambiar `cameraMode` o
+    // identidad de `handleLongPress`). Leemos `cameraModeRef.current` y
+    // `handleLongPressRef.current` adentro para tener siempre el valor
+    // fresco sin reconstruir el responder.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
   );
+
+  // ALTO-63: ref para handleLongPress que apunte siempre al último callback,
+  // sin que panResponder dependa de su identidad.
+  const handleLongPressRef = useRef(handleLongPress);
+  useEffect(() => { handleLongPressRef.current = handleLongPress; }, [handleLongPress]);
 
   // Start render loop when context is ready
   useEffect(() => {
@@ -3380,7 +3438,11 @@ const handleZoomButton = useCallback((direction) => {
                       apiCubeNumber: apiId,
                       screenX,
                       screenY,
-                      worldPosition: new THREE.Vector3().copy(worldPos),
+                      // ALTO-60: plain object en vez de new THREE.Vector3()
+                      // — los consumidores sólo leen .x/.y/.z. Esto ahorra
+                      // ~120k Vector3/seg en GC pressure cuando hay ~2000
+                      // números visibles en zoom alto a 60Hz.
+                      worldPosition: { x: worldPos.x, y: worldPos.y, z: worldPos.z },
                       faceIndex,
                       gridX,
                       gridY,
@@ -3600,7 +3662,9 @@ const handleZoomButton = useCallback((direction) => {
         const scene = sceneRef.current;
         if (scene) {
           scene.traverse((obj) => {
-            if (obj.geometry && obj.geometry.dispose) {
+            // CRIT-12: respetar userData.shared para no disponer geometrías
+            // a nivel-módulo (sharedNumberPlaneGeo) que rompería re-mounts.
+            if (obj.geometry && obj.geometry.dispose && !obj.geometry.userData?.shared) {
               try { obj.geometry.dispose(); } catch {}
             }
             if (obj.material) {
@@ -3622,6 +3686,12 @@ const handleZoomButton = useCallback((direction) => {
         textureCache.clear();
         textureCacheOrder.length = 0;
       } catch {}
+      // MEDIO-26: cache de indicadores de recompensa (P, PP, X, etc.) también
+      // requiere dispose. Antes nunca se limpiaba al desmontar.
+      try { clearIndicatorCache(); } catch {}
+      // BAJO-48: estado global del módulo FaceDetection persiste entre montajes.
+      // Reset al desmontar para que el próximo montaje arranque limpio.
+      try { resetFaceDetection(); } catch {}
 
       try {
         if (rendererRef.current) {
@@ -3691,8 +3761,30 @@ const handleZoomButton = useCallback((direction) => {
       const buildLayer = (K) => {
         // Limpiar capa anterior e invalidar cache de raycast
         invalidateIntersectablesCache();
+        // CRIT-12: dispose recursivo de la capa anterior. Sin esto cada
+        // transición de capa filtra ~3MB de GPU memory (InstancedMesh + 6
+        // BoxGeometry + materials + textures + minedPatches + indicators).
+        // En K=100 con instancias ~40k/cara la fuga acumulada lleva a OOM
+        // en devices low-end.
         while (cubeGroup.children.length) {
           const ch = cubeGroup.children.pop();
+          try {
+            ch.traverse((obj) => {
+              if (!obj) return;
+              // No disponer geometrías compartidas (sharedNumberPlaneGeo etc.)
+              if (obj.geometry && obj.geometry.dispose && !obj.geometry.userData?.shared) {
+                try { obj.geometry.dispose(); } catch {}
+              }
+              if (obj.material) {
+                const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+                mats.forEach((m) => {
+                  if (!m) return;
+                  if (m.map && m.map.dispose) { try { m.map.dispose(); } catch {} }
+                  if (m.dispose) { try { m.dispose(); } catch {} }
+                });
+              }
+            });
+          } catch {}
           cubeGroup.remove(ch);
         }
         const faceGroups = [];
@@ -4300,7 +4392,19 @@ const handleZoomButton = useCallback((direction) => {
                         pendingAnimCellsRef.current.delete(ck);
                       }
                     } catch {}
-                    // Guardar en Firestore: stats del usuario, registro del minado y recompensas
+                    // CRIT-01: extraído `rewardCash` como variable local para
+                    // evitar ReferenceError (antes se usaba como variable libre
+                    // en líneas 4336/4342/4347, lo que hacía que el try/catch
+                    // externo silenciara TODA la persistencia con
+                    // "Failed to persist mine to Firestore").
+                    //
+                    // NOTA: el backend (callMineCube) es la fuente de verdad de
+                    // picks/stats. Las rules de Firestore bloquean los writes
+                    // de este bloque (users/{uid}/mines, /rewards y stats.* no
+                    // están en el whitelist update). Por lo tanto este bloque
+                    // sigue siendo no-op en runtime, pero al menos no rompe.
+                    // TODO: eliminar este bloque entero — código muerto.
+                    const rewardCash = Number(resp?.cash || resp?.rewardCash || 0);
                     try {
                       const uid = auth?.currentUser?.uid;
                       if (uid) {
@@ -4312,8 +4416,8 @@ const handleZoomButton = useCallback((direction) => {
                           gridX: modalData?.gridX ?? null,
                           gridY: modalData?.gridY ?? null,
                           layerK: modalData?.coords?.K ?? null,
-                          rewardPicks: Number(finalReward || 0), // CRÍTICO: Usar finalReward calculado localmente, no el del backend
-                          rewardCash: Number(resp?.cash || resp?.rewardCash || 0),
+                          rewardPicks: Number(finalReward || 0),
+                          rewardCash: rewardCash,
                           alreadyMined: !!resp?.alreadyMined,
                           minedAt: serverTimestamp(),
                         };
@@ -4326,7 +4430,7 @@ const handleZoomButton = useCallback((direction) => {
                           updatedAt: serverTimestamp(),
                           'stats.totalMined': increment(1),
                           'stats.totalRewardPicks': increment(Number(resp?.reward || 0)),
-                          'stats.totalRewards': increment(Number(resp?.cash || resp?.rewardCash || 0)),
+                          'stats.totalRewards': increment(rewardCash),
                           'stats.lastMine': { apiCubeNumber: apiId, cubeNumber: modalData?.cubeNumber ?? null },
                         };
                         // Contadores por capa/cara
@@ -4341,7 +4445,7 @@ const handleZoomButton = useCallback((direction) => {
                           const rewardDoc = {
                             apiCubeNumber: apiId,
                             cubeNumber: mineDoc.cubeNumber,
-                            picks: Number(finalReward || 0), // CRÍTICO: Usar finalReward para consistencia
+                            picks: Number(finalReward || 0),
                             cash: rewardCash,
                             createdAt: serverTimestamp(),
                             source: 'mineCube',
@@ -4469,10 +4573,34 @@ const handleZoomButton = useCallback((direction) => {
                       pendingAnimCellsRef.current.delete(key);
                     }
                   } catch {}
+                  // CRIT-08: revertir setMinedCubes optimista. En el path feliz
+                  // ya se marcó como minado antes del await callMineCube (línea
+                  // ~4263). Si la API falla, hay que sacarlo del set local
+                  // sino la celda queda "minada para siempre" en el cliente
+                  // hasta el próximo realtime snapshot.
+                  try {
+                    if (typeof apiId === 'number' || typeof apiId === 'string') {
+                      setMinedCubes((prev) => {
+                        const s = new Set(prev);
+                        s.delete(apiId);
+                        return s;
+                      });
+                    }
+                  } catch {}
+                  // CRIT-09: limpiar cracks si quedaron pegados (showCracks
+                  // ya corrió pero startMining nunca se ejecutó por el fail).
+                  try { cleanupCracksNow(sceneRef.current); } catch {}
                 } finally {
+                  // LEAK-004: limpiar SIEMPRE progressTimer y watchdog. Antes el
+                  // watchdog quedaba programado en el path exitoso → setTimeout
+                  // huérfano de 30s.
                   if (miningProgressTimerRef.current) {
                     clearInterval(miningProgressTimerRef.current);
                     miningProgressTimerRef.current = null;
+                  }
+                  if (miningWatchdogRef.current) {
+                    clearTimeout(miningWatchdogRef.current);
+                    miningWatchdogRef.current = null;
                   }
                   // pendingAnimCellsRef se elimina tras startMining (caso exitoso) o aquí (caso error)
                 }

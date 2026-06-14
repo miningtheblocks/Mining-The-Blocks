@@ -13,12 +13,21 @@ function safeMsg(e) {
   return e.code ? `[${e.code}] ${e.message || e}` : (e.message || String(e));
 }
 
+// MEDIO-LE-02 + LE-08: scrub PII + extender truncado para stack traces.
+// Si un caller pasa accidentalmente `{ password: '...' }` o `{ idToken: '...' }`
+// como ctx, lo enmascaramos antes de mandar a Firestore.
+const _SENSITIVE_KEY_RE = /(password|passwd|token|secret|wallet|authorization|api[_-]?key|private[_-]?key|cookie|session)/i;
 function safeCtx(ctx) {
   if (!ctx || typeof ctx !== 'object') return '';
   try {
     return JSON.stringify(ctx, (k, v) => {
+      if (typeof k === 'string' && _SENSITIVE_KEY_RE.test(k)) return '[redacted]';
       if (typeof v === 'function') return '[fn]';
-      if (typeof v === 'string' && v.length > 200) return v.slice(0, 200) + '…';
+      if (typeof v === 'string') {
+        // Stacks pueden ser >200 chars y son útiles; truncar a 2000.
+        const limit = k === 'stack' || k === 'componentStack' ? 2000 : 200;
+        if (v.length > limit) return v.slice(0, limit) + '…';
+      }
       return v;
     });
   } catch {
@@ -51,16 +60,28 @@ async function reportRemote(scope, err, ctx) {
   } catch (_) {}
 }
 
+// MEDIO-LE-07: top-level try/catch para evitar que logError jamás lance.
+// Si lanza dentro de un ErrorBoundary que vuelve a llamarlo, loop infinito.
 export function logError(scope, err, ctx) {
-  const msg = safeMsg(err);
-  const ctxStr = safeCtx(ctx);
-  // eslint-disable-next-line no-console
-  console.warn(`[${scope}]`, msg, ctxStr || '');
-  // En __DEV__ no enviamos al backend para no saturarlo durante desarrollo.
-  if (typeof __DEV__ === 'undefined' || !__DEV__) {
-    reportRemote(scope, err, ctx);
-  }
+  try {
+    // MEDIO-LE-03: cap del Map a 200 entries con LRU eviction.
+    if (_recentErrors.size > 200) {
+      const firstKey = _recentErrors.keys().next().value;
+      if (firstKey !== undefined) _recentErrors.delete(firstKey);
+    }
+    const msg = safeMsg(err);
+    const ctxStr = safeCtx(ctx);
+    // eslint-disable-next-line no-console
+    console.warn(`[${scope}]`, msg, ctxStr || '');
+    // En __DEV__ no enviamos al backend para no saturarlo durante desarrollo.
+    if (typeof __DEV__ === 'undefined' || !__DEV__) {
+      reportRemote(scope, err, ctx);
+    }
+  } catch (_) { /* swallow — no relanzar */ }
 }
+
+// Default export para compat con `import logError from '../utils/logError'`.
+export default logError;
 
 // Helper para usar como handler de `.catch()` sin tener que armar wrapper inline:
 //   somePromise().catch(logErrorWith('Profile.loadGems'))

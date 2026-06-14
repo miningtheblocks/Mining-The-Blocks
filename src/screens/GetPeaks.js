@@ -139,7 +139,12 @@ export default function GetPeaks({ asModal = false, onClose }) {
     if (index === 2) setClaimingAd2(true);
     try {
       const session = await callCreateAdSession(index);
-      const url = `https://miningtheblocks.github.io/Mining-The-Blocks/adpick.html?sid=${session.sessionId}&t=${session.token}`;
+      // ALTO-54: encodeURIComponent en query params. Si el backend devuelve
+      // tokens con caracteres especiales (& # ?) el URL se rompe; con encode
+      // queda parseable y previene inyección via params.
+      const sid = encodeURIComponent(session.sessionId || '');
+      const tok = encodeURIComponent(session.token || '');
+      const url = `https://miningtheblocks.github.io/Mining-The-Blocks/adpick.html?sid=${sid}&t=${tok}`;
       await Linking.openURL(url);
       // Cuando el usuario vuelva a la app, refrescar picks
       if (adStateSubRef.current) adStateSubRef.current.remove();

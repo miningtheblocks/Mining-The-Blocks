@@ -13,26 +13,8 @@
       "collectionGroup": "pendingCryptoPayments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "amountUnits", "order": "ASCENDING" },
-        { "fieldPath": "status",      "order": "ASCENDING" },
-        { "fieldPath": "expiresAt",   "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "pendingCryptoPayments",
-      "queryScope": "COLLECTION",
-      "fields": [
         { "fieldPath": "status",    "order": "ASCENDING" },
         { "fieldPath": "expiresAt", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "mined",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "K",         "order": "ASCENDING" },
-        { "fieldPath": "faceIndex", "order": "ASCENDING" },
-        { "fieldPath": "gridIdx",   "order": "ASCENDING" }
       ]
     },
     {
@@ -44,5 +26,14 @@
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "gems",
+      "fieldPath": "code",
+      "indexes": [
+        { "queryScope": "COLLECTION_GROUP", "order": "ASCENDING" },
+        { "queryScope": "COLLECTION", "order": "ASCENDING" }
+      ]
+    }
+  ]
 }

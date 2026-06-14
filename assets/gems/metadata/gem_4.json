@@ -1,8 +1,8 @@
 {
   "name": "MTB Jadeíta imperial #4",
-  "description": "Mining The Blocks — Jadeíta imperial. Tier 4 gem discovered by mining the community cube. Fixed redemption value: $10 USD. Redeem your code at miningtheblocks.com or hold as NFT.",
+  "description": "Mining The Blocks — Jadeíta imperial. Tier 4 gem discovered by mining the community cube. Fixed redemption value: $1000 USD. Redeem your code at miningtheblocks.github.io or hold as NFT.",
   "image": "ipfs://bafkreia3o3epebkwqdonia56drkfsjmibf3t643e6gqsnp74pv4bfrdu7u",
-  "external_url": "https://miningtheblocks.com",
+  "external_url": "https://miningtheblocks.github.io/Mining-The-Blocks/",
   "attributes": [
     {
       "trait_type": "Gem Name",
@@ -19,7 +19,7 @@
     },
     {
       "trait_type": "Redemption Value",
-      "value": "$10 USD"
+      "value": "$1000 USD"
     },
     {
       "trait_type": "Quantity/Server",

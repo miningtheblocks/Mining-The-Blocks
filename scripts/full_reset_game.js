@@ -200,10 +200,31 @@ async function resetAllServers() {
 }
 
 async function main() {
-  console.log('╔══════════════════════════════════════════╗');
-  console.log('║     RESET COMPLETO DEL JUEGO             ║');
-  console.log('╚══════════════════════════════════════════╝');
-  console.log(`  Proyecto: ${PROJECT}\n`);
+  console.log('===============================================');
+  console.log('  RESET COMPLETO DEL JUEGO');
+  console.log('===============================================');
+  console.log(`  Proyecto: ${PROJECT}`);
+  console.log(`  Operador: ${process.env.USER || 'unknown'}\n`);
+
+  // CRIT-29: gating extra para este script (el más destructivo del repo).
+  const DRY_RUN = process.argv.includes('--dry-run');
+  const HAS_PROD_GATE = process.argv.includes('--i-confirm-full-prod-wipe');
+  const looksLikeProd = !PROJECT.includes('staging') && !PROJECT.includes('test') && !PROJECT.includes('dev');
+
+  if (process.argv.includes('--yes-i-am-sure')) {
+    console.error('ABORT: --yes-i-am-sure NO permitido en full_reset_game (demasiado destructivo).');
+    process.exit(1);
+  }
+
+  if (looksLikeProd && !HAS_PROD_GATE) {
+    console.error('ABORT: proyecto parece producción. Requiere flag --i-confirm-full-prod-wipe.');
+    process.exit(1);
+  }
+
+  if (DRY_RUN) {
+    console.log('[DRY RUN] No se ejecutará el reset. Saliendo.');
+    process.exit(0);
+  }
 
   await confirmDestructive(PROJECT, 'RESET COMPLETO (borra Auth + Firestore /users/* + resetea TODOS los servidores)');
 
@@ -211,13 +232,14 @@ async function main() {
   const fsTotal   = await deleteAllFirestoreUsers();
   const srvTotal  = await resetAllServers();
 
-  console.log('\n╔══════════════════════════════════════════╗');
-  console.log('║  RESET COMPLETO ✅                        ║');
-  console.log('╚══════════════════════════════════════════╝');
-  console.log(`  • ${authTotal} usuario(s) de Auth borrados`);
-  console.log(`  • ${fsTotal} documento(s) /users/* borrados`);
-  console.log(`  • ${srvTotal} servidor(es) → capa 100, episodio 1, 0 minados`);
-  console.log('\n  El juego está listo para empezar de nuevo.');
+  console.log('\n===============================================');
+  console.log('  RESET COMPLETO');
+  console.log('===============================================');
+  console.log(`  - ${authTotal} usuario(s) de Auth borrados`);
+  console.log(`  - ${fsTotal} documento(s) /users/* borrados`);
+  console.log(`  - ${srvTotal} servidor(es) reseteados`);
 }
 
-main().catch(console.error).finally(() => process.exit(0));
+main()
+    .then(() => process.exit(0))
+    .catch((e) => { console.error('ERROR:', e.message || e); process.exit(1); });

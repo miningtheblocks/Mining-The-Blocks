@@ -3,6 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <!-- CRIT-23: CSP restrictiva (script-src enumerado por host del ad network). -->
+  <!-- CRIT-22: el script de effectivecpmnetwork queda en allowlist hasta que se
+       migre a una red reputable; ver tarea #41 (sandbox o swap de network). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://pl29683393.effectivecpmnetwork.com https://*.cloudfunctions.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://*.cloudfunctions.net; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+  <meta http-equiv="X-Frame-Options" content="DENY">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
   <title>Mining The Blocks — Get a Pick</title>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -104,7 +111,29 @@
   <div class="header-sub" data-lang-inline="en visible">Get a pick ⛏</div>
 </header>
 
-<!-- Ad network script — runs immediately, no visible container needed -->
+<!-- CRIT-22: extraer sid/t a sessionStorage y limpiar URL ANTES de cargar el
+     script de ads. El script de effectivecpmnetwork ejecuta en este origen
+     y podría leer la URL/referer; sin estos params no puede exfiltrar el
+     token. El script de aplicación (más abajo) los recupera de sessionStorage. -->
+<script>
+  (function() {
+    try {
+      var p = new URLSearchParams(window.location.search);
+      var sid = p.get('sid');
+      var t = p.get('t');
+      if (sid) sessionStorage.setItem('mtb_ad_sid', sid);
+      if (t) sessionStorage.setItem('mtb_ad_token', t);
+      if (sid || t) {
+        // Limpiar URL para que el script de ads no vea los params.
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    } catch (e) { /* no-op */ }
+  })();
+</script>
+
+<!-- Ad network script — runs immediately, no visible container needed.
+     TODO (#22 long-term): reemplazar por una red reputable (AdSense, Coinzilla)
+     o aislar en un iframe sandbox para reducir superficie de malvertising. -->
 <script src="https://pl29683393.effectivecpmnetwork.com/13/ce/c2/13cec2cd2d7b5f2302ef1e88a79a03f1.js"></script>
 
 <main>
@@ -214,9 +243,19 @@
 
   var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
   var TIMER_SECONDS = 60;
+  // CRIT-22: leer credenciales de sessionStorage (movidas allí por el snippet
+  // pre-ad para que el script externo no las pueda exfiltrar). Fallback a
+  // URL params por compatibilidad si el snippet pre-ad falla (raro).
   var params = new URLSearchParams(window.location.search);
-  var SESSION_ID = params.get('sid') || '';
-  var TOKEN = params.get('t') || '';
+  var SESSION_ID = '';
+  var TOKEN = '';
+  try {
+    SESSION_ID = sessionStorage.getItem('mtb_ad_sid') || params.get('sid') || '';
+    TOKEN = sessionStorage.getItem('mtb_ad_token') || params.get('t') || '';
+  } catch (e) {
+    SESSION_ID = params.get('sid') || '';
+    TOKEN = params.get('t') || '';
+  }
   var currentLang = (navigator.language || 'en').startsWith('es') ? 'es' : 'en';
 
   var timerInterval = null;

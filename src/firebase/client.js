@@ -29,14 +29,24 @@ export const auth = _auth;
 export const db = getFirestore(app);
 export const storage = getStorage(app);
 
-// Resolves with the first auth state emitted by Firebase (persisted session or null).
-// ensureUser awaits this before deciding what to do.
-let _authReadyResolve;
-const _authReady = new Promise(resolve => { _authReadyResolve = resolve; });
-const _initUnsub = onAuthStateChanged(_auth, (u) => {
-  _authReadyResolve(u);
-  _initUnsub();
-});
+// CRIT-15: race del patrón anterior — onAuthStateChanged se desuscribía en
+// el primer evento. Si el primero era null y Firebase restauraba sesión
+// persistida un instante después (caso documentado en RN), `ensureUser`
+// quedaba resuelto con null y se perdía la sesión.
+//
+// Firebase 9+ expone `auth.authStateReady()` que resuelve cuando auth
+// terminó de inicializar (incluyendo restauración de persistencia AsyncStorage)
+// y SÍ refleja la sesión restaurada. Lo usamos como fuente única.
+const _authReady = typeof _auth.authStateReady === 'function'
+  ? _auth.authStateReady()
+  : new Promise((resolve) => {
+      // Fallback para versiones viejas: mantener suscripción al primer evento
+      // distinto de null (o resolver null tras 5s como timeout).
+      let resolved = false;
+      const finish = (v) => { if (!resolved) { resolved = true; resolve(v); unsub(); } };
+      const unsub = onAuthStateChanged(_auth, (u) => { if (u || resolved) finish(u || null); });
+      setTimeout(() => finish(null), 5000);
+    });
 
 // V1.1.0: el modo anónimo fue eliminado para reducir superficie de ataque.
 // ensureUser solo bootstrappea el doc del user si está logueado con email/password.

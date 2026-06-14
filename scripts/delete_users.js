@@ -73,6 +73,7 @@ async function deleteAllAuthUsers() {
 
 async function deleteAllFirestoreDocs() {
   let total = 0;
+  let failed = 0;
   let pageToken;
   console.log('=== BORRANDO FIRESTORE /users/* ===');
   do {
@@ -80,25 +81,103 @@ async function deleteAllFirestoreDocs() {
     const docs = res.documents || [];
     if (!docs.length) break;
 
-    // Borrar en paralelo (lotes de 50)
+    // ALTO-92: Promise.allSettled en vez de Promise.all — si 1 de 50 falla por
+    // rate-limit/network, no rechaza el batch entero. Loguea los failures.
     for (let i = 0; i < docs.length; i += 50) {
       const batch = docs.slice(i, i + 50);
-      await Promise.all(batch.map(d => deleteFirestoreDoc(d.name)));
-      total += batch.length;
+      const results = await Promise.allSettled(batch.map((d) => deleteFirestoreDoc(d.name)));
+      results.forEach((r, idx) => {
+        if (r.status === 'fulfilled') total++;
+        else {
+          failed++;
+          console.warn(`  ✗ fallo al borrar ${batch[idx].name}: ${r.reason && r.reason.message}`);
+        }
+      });
     }
-    console.log(`  ${total} documentos borrados...`);
+    console.log(`  ${total} documentos borrados (${failed} fallaron)...`);
     pageToken = res.nextPageToken;
   } while (pageToken);
-  console.log(`✅ Firestore /users/*: ${total} documentos borrados\n`);
+  console.log(`Firestore /users/*: ${total} documentos borrados, ${failed} fallaron\n`);
   return total;
+}
+
+// CRIT-28: count + dry-run + gating prod-safe.
+async function countAuth() {
+  let total = 0;
+  let nextPageToken;
+  do {
+    const result = await auth.listUsers(1000, nextPageToken);
+    total += result.users.length;
+    nextPageToken = result.pageToken;
+  } while (nextPageToken);
+  return total;
+}
+
+async function logAdminAction(action, payload) {
+  try {
+    const db = admin.firestore();
+    await db.collection('adminActions').add({
+      action,
+      payload,
+      operator: process.env.USER || 'unknown',
+      script: 'delete_users.js',
+      ts: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    console.warn('No se pudo loguear adminAction:', e.message);
+  }
 }
 
 (async () => {
   try {
-    await confirmDestructive(PROJECT, 'BORRAR TODOS los usuarios (Auth + Firestore /users/*)');
+    // --dry-run: solo contar, NO borrar.
+    const DRY_RUN = process.argv.includes('--dry-run');
+    // --i-confirm-full-wipe: gate explícito requerido en producción además
+    // del confirmDestructive estándar. Sin este flag y con PROJECT que parezca
+    // prod, abortar.
+    const HAS_PROD_GATE = process.argv.includes('--i-confirm-full-wipe');
+    const looksLikeProd = !PROJECT.includes('staging') && !PROJECT.includes('test') && !PROJECT.includes('dev');
+
+    console.log(`Proyecto destino: ${PROJECT}`);
+    console.log(`Operador: ${process.env.USER || 'unknown'}`);
+
+    const authCount = await countAuth();
+    console.log(`\nUsuarios en Auth: ${authCount}`);
+
+    if (DRY_RUN) {
+      console.log('\n[DRY RUN] No se borrará nada. Saliendo.');
+      process.exit(0);
+    }
+
+    if (looksLikeProd && !HAS_PROD_GATE) {
+      console.error('\nABORT: el proyecto parece ser producción.');
+      console.error('Para ejecutar contra prod requerís TRES condiciones:');
+      console.error('  1. Flag --i-confirm-full-wipe');
+      console.error('  2. Confirmación interactiva (no usar --yes-i-am-sure)');
+      console.error('  3. Variable USER seteada para auditoría');
+      process.exit(1);
+    }
+
+    if (process.argv.includes('--yes-i-am-sure')) {
+      console.error('\nABORT: --yes-i-am-sure NO permitido en este script (demasiado destructivo).');
+      console.error('Requiere confirmación interactiva.');
+      process.exit(1);
+    }
+
+    await confirmDestructive(PROJECT, `BORRAR ${authCount} usuarios (Auth + Firestore /users/*)`);
+
+    await logAdminAction('delete_users_start', { authCount, projectId: PROJECT });
+
     const a = await deleteAllAuthUsers();
     const f = await deleteAllFirestoreDocs();
-    console.log(`🎉 LISTO: ${a} Auth users + ${f} Firestore docs borrados.`);
+
+    await logAdminAction('delete_users_done', {
+      authDeleted: a,
+      firestoreDeleted: f,
+      projectId: PROJECT,
+    });
+
+    console.log(`LISTO: ${a} Auth users + ${f} Firestore docs borrados.`);
     process.exit(0);
   } catch (e) {
     console.error('ERROR:', e.message || e);

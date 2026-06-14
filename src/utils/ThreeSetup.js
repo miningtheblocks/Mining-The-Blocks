@@ -7,11 +7,12 @@ import * as THREE from 'three';
 // Configuraciones globales de Three.js para React Native
 export function setupThreeJS() {
   // Configurar el color space por defecto
-  THREE.ColorManagement.enabled = true;
-  
-  // Configuraciones de rendimiento
-  THREE.Object3D.DefaultUp.set(0, 1, 0);
-  
+  if (THREE.ColorManagement) THREE.ColorManagement.enabled = true;
+
+  // BAJO-TS-01: DEFAULT_UP (mayúsculas) reemplazó a DefaultUp en three r150+.
+  // Soportamos ambos para compat con versiones viejas y nuevas sin warning.
+  const up = THREE.Object3D && (THREE.Object3D.DEFAULT_UP || THREE.Object3D.DefaultUp);
+  if (up && typeof up.set === 'function') up.set(0, 1, 0);
 }
 
 /**
