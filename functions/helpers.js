@@ -1,7 +1,5 @@
 /* eslint-disable max-len */
 /* eslint-disable quotes */
-/* eslint-disable require-jsdoc */
-/* eslint-disable no-invalid-this */
 /* eslint-disable object-curly-spacing */
 
 const crypto = require("crypto");
@@ -135,7 +133,7 @@ function generateReferralCode() {
   return s;
 }
 
-function generateGemCode(serverId, K, cubeNumber, gemTier, uid) {
+function generateGemCode(serverId, K, cubeNumber, gemTier, _uid) {
   // FIX-P1: randomBytes en lugar de fnv1a(uid-derived).
   // El código no debería ser predecible aun conociendo todos los inputs.
   const hashHex = crypto.randomBytes(4).toString('hex').toUpperCase();

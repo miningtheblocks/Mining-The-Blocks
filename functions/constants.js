@@ -1,6 +1,5 @@
 /* eslint-disable max-len */
 /* eslint-disable quotes */
-/* eslint-disable object-curly-spacing */
 
 // Configuración global del juego y de pagos.
 // Mantener este archivo libre de imports de Firebase para que sea reusable

@@ -1,5 +1,3 @@
-/* eslint-disable no-console */
-/* eslint-disable require-jsdoc */
 /* eslint-disable max-len */
 /* eslint-disable quotes */
 /* eslint-disable object-curly-spacing */
@@ -27,7 +25,7 @@ const serverSeed = defineSecret("SERVER_SEED");
 
 try {
   admin.initializeApp();
-} catch (e) {/* already initialized */}
+} catch (_e) {/* already initialized */}
 
 const db = admin.firestore();
 
