@@ -972,9 +972,7 @@ exports.createAdSession = onCall(async (request) => {
 // Endpoint HTTP llamado desde la página web después del timer.
 // No requiere auth de Firebase — la seguridad la da el token de un solo uso.
 exports.claimAdSession = onRequest(async (req, res) => {
-  res.set("Access-Control-Allow-Origin", "https://miningtheblocks.github.io");
-  res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type");
+  setRestrictedCorsHeaders(req, res);
   if (req.method === "OPTIONS") {
     res.status(204).send("");
     return;
@@ -1881,7 +1879,7 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
 });
 
 exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, res) => {
-  setRestrictedCorsHeaders(res);
+  setRestrictedCorsHeaders(req, res);
   if (req.method === "OPTIONS") {
     return res.status(204).send("");
   }

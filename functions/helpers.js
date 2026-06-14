@@ -185,8 +185,21 @@ function setCorsHeaders(res) {
   res.set("Access-Control-Allow-Headers", "Content-Type");
 }
 
-function setRestrictedCorsHeaders(res) {
-  res.set("Access-Control-Allow-Origin", "https://miningtheblocks.github.io");
+// Allowlist de origins permitidos para endpoints HTTP restringidos.
+// Se refleja el origin que matchee (en vez de hardcodear uno) para soportar
+// la migración github.io → miningtheblocks.com sin romper el sitio viejo.
+const ALLOWED_ORIGINS = new Set([
+  "https://miningtheblocks.github.io",
+  "https://miningtheblocks.com",
+  "https://www.miningtheblocks.com",
+]);
+
+function setRestrictedCorsHeaders(req, res) {
+  const origin = req && typeof req.get === "function" ? req.get("Origin") : null;
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.set("Access-Control-Allow-Origin", origin);
+    res.set("Vary", "Origin");
+  }
   res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
