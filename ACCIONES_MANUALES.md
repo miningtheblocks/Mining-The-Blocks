@@ -215,11 +215,33 @@ Si todavía no está activo.
 
 ## 🟡 Mejoras opcionales
 
-### 18. Reemplazar `effectivecpmnetwork.com` por una red reputable
-AdSense, Coinzilla, Ezoic — cualquier red con menos historia de malvertising. El fix actual movió `sid`/`token` a sessionStorage pero el script externo sigue ejecutando en mismo origen.
+### 18. Reemplazar `effectivecpmnetwork.com` — **WON'T FIX (justificado)**
+Decisión 2026-06-14: la app NO va a stores, solo distribución directa. AdSense/
+Ezoic/redes mainstream rechazan gambling + sideload. Las alternativas reputables
+para este caso son:
+- **Coinzilla** (top sugerida): cripto/gambling, ads relevantes para audiencia
+  que ya paga en USDC. Pagan en cripto. https://coinzilla.com
+- **Adsterra / PropellerAds**: similares mercado, mejor anti-malware policy
+- **AdGate / OfferToro**: ofertas en vez de ads (encuestas, instalar otra app)
+  — mejor UX para gambling
 
-### 19. Mover gemas a Firestore `config/gems`
-Actualmente las definiciones (price/quantity/unlockAt) están duplicadas en cliente (`src/utils/gems.js`) + backend (`functions/constants.js`). Mover a Firestore para single source of truth.
+Mitigación actual implementada: `sid`/`token` movidos a sessionStorage antes
+de cargar el script externo + URL limpiada via `history.replaceState`. Cubre
+el riesgo de exfiltración de credenciales. Los ads engañosos siguen visibles
+pero no comprometen la sesión del usuario.
+
+Si la app crece y la reputación importa, migrar a Coinzilla.
+
+### 19. Mover gemas a Firestore `config/gems` — **WON'T FIX (justificado)**
+Decisión 2026-06-14: los precios/quantities/unlocks de gemas son **fijos por
+diseño** (los premios son los que son, no se rebalancean). El refactor a
+single source of truth en Firestore solo agregaría:
+- Latencia extra en cada operación crítica
+- Riesgo de Firestore offline = backend no opera
+- Complejidad sin valor
+
+Mantener el triplo (`src/utils/gems.js` + `functions/constants.js` +
+`assets/gems/metadata/*.json`) es aceptable porque los 3 nunca cambian.
 
 ### 20. Audit semanal de deps
 Programar un cron mensual:
