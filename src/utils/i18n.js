@@ -382,6 +382,8 @@ const resources = {
       referralAppliedMsg: 'Your friend received 5 picks as a thank you.',
       referralAlreadyUsed: 'Referral already applied.',
       referralInvalidCode: 'Invalid code.',
+      walletCooldown: 'You can change your wallet in {h}h.',
+      emailNotVerified: 'Verify your email before changing your wallet.',
     },
     buyCredits: {
       termsNote: 'By paying you accept our Terms & Conditions.',
@@ -779,6 +781,8 @@ const resources = {
       referralAppliedMsg: 'Tu amigo recibió 5 picos como agradecimiento.',
       referralAlreadyUsed: 'Referido ya aplicado.',
       referralInvalidCode: 'Código inválido.',
+      walletCooldown: 'Podés cambiar tu wallet en {h}h.',
+      emailNotVerified: 'Verificá tu email antes de cambiar la wallet.',
     },
     buyCredits: {
       termsNote: 'Al pagar aceptás nuestros Términos y Condiciones.',

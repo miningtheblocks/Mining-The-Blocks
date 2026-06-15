@@ -10,15 +10,18 @@ export default function UpdateModal({ visible, forceUpdate, latestVersion, downl
     : (messageEn || t('update.defaultBody'));
 
   const openDownload = () => {
-    // SEC-B4 + ALTO-57: validar scheme/host. downloadUrl viene de Firestore
-    // config/app — si Firebase es comprometido, un atacante podría setear
-    // http://, intent://, file:// o un host arbitrario y MITMear a todos.
+    // SEC-B4 + ALTO-57 + Round2 #9 CRIT-09-01: validar scheme/host.
+    // downloadUrl viene de Firestore config/app — si Firebase es comprometido,
+    // un atacante podría setear http://, intent://, file:// o host arbitrario.
     //
-    // ALTO-57: sacamos github.com del allowlist porque permite que un
-    // atacante suba un release a OTRA cuenta de github (e.g. /malicious/x/releases)
-    // y lo apunte desde config/app.downloadUrl. Sólo aceptamos URLs de
-    // miningtheblocks.com (dominio nuevo, primary) o miningtheblocks.github.io
-    // (legacy — sigue válido porque GitHub Pages auto-redirige a .com).
+    // Allowlist:
+    //  - miningtheblocks.com / www / miningtheblocks.github.io (legacy)
+    //  - github.com SOLO con path exacto del repo oficial
+    //    (/miningtheblocks/Mining-The-Blocks/releases/download/). Sin el path
+    //    check, un atacante puede subir un APK a /malicious/x/releases y
+    //    apuntarlo desde config/app.downloadUrl. CON el path check, el
+    //    atacante necesitaría compromise GitHub del org — al mismo nivel que
+    //    compromise del dominio.
     const fallback = 'https://miningtheblocks.com/';
     let safeUrl = fallback;
     try {
@@ -29,10 +32,9 @@ export default function UpdateModal({ visible, forceUpdate, latestVersion, downl
         const okHost = u.hostname === 'miningtheblocks.com' ||
                        u.hostname === 'www.miningtheblocks.com' ||
                        u.hostname === 'miningtheblocks.github.io';
-        // objects.githubusercontent.com es el CDN de release assets; los paths
-        // incluyen el repo ID — no hay garantía path-based. Mantenerlo afuera y
-        // forzar que el atacante use el host del org.
-        if (okHost) safeUrl = u.toString();
+        const okGitHubRelease = u.hostname === 'github.com' &&
+                                u.pathname.startsWith('/miningtheblocks/Mining-The-Blocks/releases/download/');
+        if (okHost || okGitHubRelease) safeUrl = u.toString();
       }
     } catch (_) {}
     Linking.openURL(safeUrl).catch(() => {});

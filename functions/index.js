@@ -1250,6 +1250,15 @@ exports.processPendingMints = onCall({ secrets: [companyWalletKey, gmailAppPassw
 exports.mintProcessorScheduled = onSchedule(
     { schedule: "every 5 minutes", secrets: [companyWalletKey, gmailAppPassword] },
     async () => {
+      // PERF (Round 2 Agente #12): self-throttle. El scheduler corre cada 5min
+      // aunque la queue esté vacía. El get() inicial evita cargar eth provider +
+      // lookup secrets + RPC calls cuando no hay nada que hacer (288 invoc/día).
+      const pending = await db.collection("pendingMints")
+          .where("status", "==", "pending").limit(1).get();
+      if (pending.empty) {
+        console.log("mintProcessorScheduled: skipped (queue empty)");
+        return;
+      }
       const result = await runMintProcessing();
       // SEC: solo counts, no JSON completo (puede contener uids/wallet addresses).
       console.log(`mintProcessorScheduled: processed=${result.processed || 0} failed=${result.failed || 0}`);
@@ -1680,6 +1689,15 @@ exports.notifyAllUsers = onCall(async (request) => {
 });
 
 exports.cryptoPaymentProcessorScheduled = onSchedule("every 5 minutes", async () => {
+  // PERF (Round 2 Agente #12): self-throttle. Si nadie está esperando un pago,
+  // skipear el scan de USDC Transfer events sobre publicnode.com (RPC sin SLA,
+  // 288 invoc/día → reduce risk de rate-limit del RPC).
+  const pending = await db.collection("pendingCryptoPayments")
+      .where("status", "==", "waiting").limit(1).get();
+  if (pending.empty) {
+    console.log("cryptoPaymentProcessorScheduled: skipped (queue empty)");
+    return;
+  }
   const result = await runCryptoPaymentProcessing();
   // SEC: solo count agregado, no result completo con uids/paymentIds.
   console.log(`cryptoPaymentProcessorScheduled: processed=${result && result.processed || 0}`);
@@ -1782,6 +1800,13 @@ exports.verifyGemCode = onRequest(async (req, res) => {
 exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (request) => {
   const uid = request.auth && request.auth.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
+
+  // CRIT (Round 2 Agente #6): rate-limit estricto por uid. Sin esto, un user
+  // recién creado puede bombear esta función → Gmail suspende el app password
+  // → outage TOTAL de emails (verify + claim + reportProblem + mint alerts).
+  // 5 emails/hora/uid: legitimate users casi nunca necesitan >2/hora.
+  const allowed = await _rateLimitFirestore(`sve_${uid}`, 5, 60 * 60 * 1000);
+  if (!allowed) throw new HttpsError("resource-exhausted", "rate_limited");
 
   const user = await getAuth().getUser(uid);
   const email = user.email;

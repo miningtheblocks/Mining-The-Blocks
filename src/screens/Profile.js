@@ -247,7 +247,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0a0a0a' },
   content: { padding: 4, paddingBottom: 16 },
 
-  emptyTxt: { color: '#555', textAlign: 'center', fontSize: 14, paddingVertical: 8 },
+  emptyTxt: { color: '#888', textAlign: 'center', fontSize: 14, paddingVertical: 8 },
 
   cardHeader: {
     flexDirection: 'row',
@@ -324,7 +324,7 @@ const styles = StyleSheet.create({
   },
   shareBtn: { backgroundColor: '#1a2a0a', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#2e7d32' },
   shareBtnTxt: { color: '#5cb85c', fontWeight: '700', fontSize: 13 },
-  mutedTxt: { color: '#555', fontSize: 13 },
+  mutedTxt: { color: '#888', fontSize: 13 },
   referralInputRow: { flexDirection: 'row', alignItems: 'center' },
   referralUsed: { color: '#22c55e', fontSize: 13, fontWeight: '700' },
 

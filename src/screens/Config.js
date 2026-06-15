@@ -260,7 +260,7 @@ const styles = StyleSheet.create({
   scroll: { paddingTop: 8, paddingHorizontal: 4, paddingBottom: 8 },
 
   sectionLabel: {
-    color: '#555',
+    color: '#888',
     fontSize: 11,
     fontWeight: '700',
     textTransform: 'uppercase',
@@ -283,7 +283,7 @@ const styles = StyleSheet.create({
   profileRow: { flexDirection: 'row', alignItems: 'center' },
   avatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: '#222', borderWidth: 2, borderColor: '#333' },
   username: { fontSize: 17, fontWeight: '800', color: '#fff' },
-  subtle: { fontSize: 11, color: '#555', marginTop: 3, fontFamily: 'monospace' },
+  subtle: { fontSize: 11, color: '#888', marginTop: 3, fontFamily: 'monospace' },
 
   cardRow: {
     width: '100%',
@@ -312,7 +312,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1a1400',
     borderColor: '#ffd700',
   },
-  toggleTxt: { fontSize: 13, fontWeight: '800', color: '#555' },
+  toggleTxt: { fontSize: 13, fontWeight: '800', color: '#888' },
   toggleTxtOn: { color: '#ffd700' },
 
   // Sliders

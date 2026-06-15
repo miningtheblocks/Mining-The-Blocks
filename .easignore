@@ -40,6 +40,10 @@ firestore.indexes.json
 
 # ─── Sensitivos (defense-in-depth) ────────────────────────────────────────────
 *.keystore
+*.jks
+*.pkcs12
+service-account*.json
+*-adminsdk-*.json
 .env*
 
 # ─── IDE / cache ──────────────────────────────────────────────────────────────
