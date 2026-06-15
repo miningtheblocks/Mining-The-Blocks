@@ -122,6 +122,49 @@ async function requireAdminFresh(request) {
   }
 }
 
+// CRIT (Round 2 Agente #6): checkRevoked en operaciones financieras críticas.
+// El runtime de Firebase Functions decodea el JWT pero NO chequea si los
+// tokens del user fueron revocados (revokeRefreshTokens). Sin esto, un token
+// robado o una sesión post-password-reset sigue válido hasta el TTL JWT
+// (~60min) — ventana completa de account takeover para submitGemClaim,
+// claimGemNFT, createCryptoPayment.
+//
+// Patrón: comparar `auth_time` del JWT decodeado contra `tokensValidAfterTime`
+// del user. Equivalente funcional a `verifyIdToken(token, true)` pero sin
+// tener que extraer el raw token de `rawRequest.headers.authorization` (que
+// en onCall existe pero es frágil ante cambios del runtime). Bonus: también
+// chequea `disabled` (ban via Firebase Console). Costo: ~1 Auth Admin call
+// extra por invocación, requireAdminFresh tiene el mismo patrón.
+//
+// NO aplicado a mineCube (hot path, costo amortizado prohibitivo a ~100 calls
+// por sesión); el daño de un mineCube con token revocado está acotado por
+// picks remanentes del user.
+async function assertFreshToken(request) {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Login required");
+  }
+  const uid = request.auth.uid;
+  const authTimeSec = request.auth.token && request.auth.token.auth_time;
+  if (!authTimeSec) {
+    throw new HttpsError("unauthenticated", "invalid_auth_time");
+  }
+  const authTimeMs = authTimeSec * 1000;
+  let user;
+  try {
+    user = await getAuth().getUser(uid);
+  } catch (e) {
+    console.error("assertFreshToken getUser error:", e && e.message);
+    throw new HttpsError("internal", "user_lookup_failed");
+  }
+  if (user.disabled) {
+    throw new HttpsError("permission-denied", "account_disabled");
+  }
+  const validAfterMs = user.tokensValidAfterTime ? new Date(user.tokensValidAfterTime).getTime() : 0;
+  if (validAfterMs > 0 && authTimeMs < validAfterMs) {
+    throw new HttpsError("unauthenticated", "token_revoked");
+  }
+}
+
 // ─── Activity Feed ───────────────────────────────────────────────────────────
 
 async function writeActivity(type, data) {
@@ -607,14 +650,25 @@ exports.getUserGems = onCall(async (request) => {
 // Vincular wallet para recibir el NFT (marca la gema como "minting")
 exports.claimGemNFT = onCall(async (request) => {
   requireRegistered(request);
+  // CRIT (Round 2 Agente #6): checkRevoked + disabled check.
+  await assertFreshToken(request);
   const uid = request.auth.uid;
 
   const gemId = String((request.data && request.data.gemId) || '');
-  const walletAddress = String((request.data && request.data.walletAddress) || '').trim();
-
   assertValidId(gemId, "gemId");
-  if (!/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
-    throw new HttpsError("invalid-argument", "Invalid Ethereum wallet address");
+
+  // CRIT (Round 2 Agentes #1 HIGH-4 + #6 + #8): walletAddress del user doc,
+  // NO del body. Aceptar wallet del body bypasea el cooldown de 24h de
+  // setUserWallet — durante una ventana de account takeover, el atacante
+  // podía claimear NFTs a su propia wallet aunque setUserWallet siga bloqueado.
+  // Ahora la única vía de setear/cambiar wallet pasa por setUserWallet
+  // (que tiene cooldown + valida formato). El parámetro request.data.walletAddress
+  // se ignora silenciosamente por backwards-compat con clientes viejos pre
+  // Round 2 Commit B.
+  const userSnap = await db.collection("users").doc(uid).get();
+  const walletAddress = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
+  if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+    throw new HttpsError("failed-precondition", "wallet_not_set");
   }
 
   const gemRef = db.collection("users").doc(uid).collection("gems").doc(gemId);
@@ -1443,6 +1497,10 @@ exports.applyReferral = onCall(async (request) => {
 // `pendingByAmount.set` sobreescribe → robo de crédito por colisión.
 exports.createCryptoPayment = onCall(async (request) => {
   requireRegistered(request);
+  // CRIT (Round 2 Agente #6): checkRevoked + disabled check. createCryptoPayment
+  // emite slots de amount únicos — un token revocado podría agotar las 99 slots
+  // del rate-limit global desde una sesión post-revoke ya invalidada.
+  await assertFreshToken(request);
   const uid = request.auth.uid;
   // FIX-FINAL-5: rate-limit para evitar agotar las 99 slots de amount unique
   const okRate = await _rateLimitFirestore(`ccp_${uid}`, 3, 60 * 60 * 1000);
@@ -1973,6 +2031,114 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
   return { ok: true };
 });
 
+// CRIT (Round 2 Agente #6): reemplazo del sendPasswordResetEmail directo del
+// cliente. Antes el client llamaba al Firebase Auth SDK Web → email genérico
+// de Firebase, SIN revoke de tokens (ventana 60min de account takeover
+// post-reset) y SIN notify al user real de "se inició un reset".
+//
+// Esta función:
+//   1. Anti-enumeration: rate-limit por email + retorno OK genérico siempre.
+//      Un atacante NO puede inferir si una cuenta existe observando el reply.
+//   2. revokeRefreshTokens(uid) ANTES de enviar el link → todas las sesiones
+//      existentes quedan invalidadas en la próxima validación con
+//      assertFreshToken (o al expirar el JWT TTL ~60min). Si el user real
+//      fue quien pidió el reset, re-loguea con la nueva password → token
+//      nuevo con auth_time > tokensValidAfterTime → válido. Si fue un
+//      atacante con email comprometido, todas sus sesiones se cierran.
+//   3. Email branded con texto explícito "tus sesiones fueron cerradas; si
+//      no fuiste vos ignorá este email — tu password actual sigue OK".
+exports.requestPasswordReset = onCall({ secrets: [gmailAppPassword] }, async (request) => {
+  const email = ((request.data && request.data.email) || "").toString().trim().toLowerCase().slice(0, 200);
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { ok: true };
+  }
+
+  // Rate-limit por email (3/hora) — sin esto, un atacante podría enumerar
+  // cuentas observando timing diferencial (existe vs no existe).
+  const emailKey = email.replace(/[^a-zA-Z0-9._%+-]/g, "_").slice(0, 64);
+  const okRate = await _rateLimitFirestore(`rpr_${emailKey}`, 3, 60 * 60 * 1000);
+  if (!okRate) return { ok: true };
+
+  let user;
+  try {
+    user = await getAuth().getUserByEmail(email);
+  } catch (_) {
+    return { ok: true }; // user no existe → anti-enumeration
+  }
+
+  try {
+    await getAuth().revokeRefreshTokens(user.uid);
+  } catch (e) {
+    console.error("requestPasswordReset revoke error:", e && e.message);
+  }
+
+  let link;
+  try {
+    link = await getAuth().generatePasswordResetLink(email);
+  } catch (e) {
+    console.error("requestPasswordReset generate link error:", e && e.message);
+    return { ok: true };
+  }
+
+  const appPassword = gmailAppPassword.value();
+  if (!appPassword) {
+    console.error("requestPasswordReset: gmail password not configured");
+    return { ok: true };
+  }
+
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: NOTIFY_EMAIL, pass: appPassword },
+  });
+
+  const safeLink = esc(link);
+  const displayName = esc(user.displayName || email.split("@")[0]);
+
+  try {
+    await transporter.sendMail({
+      from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
+      to: email,
+      subject: "🔐 Recuperación de contraseña — Mining The Blocks",
+      html: `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0a0a;padding:40px 20px"><tr><td align="center">
+    <table width="100%" style="max-width:480px;background:#141414;border-radius:16px;border:1px solid #2a2a2a">
+      <tr><td style="background:linear-gradient(135deg,#1a1a1a 0%,#222 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #2a2a2a">
+        <div style="font-size:36px;margin-bottom:8px">🔐</div>
+        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:900;letter-spacing:-0.5px">Mining The Blocks</h1>
+        <p style="margin:6px 0 0;color:#666;font-size:13px">Recuperación de contraseña</p>
+      </td></tr>
+      <tr><td style="padding:32px">
+        <p style="margin:0 0 8px;color:#999;font-size:13px;text-transform:uppercase;letter-spacing:1px;font-weight:700">Hola, ${displayName}</p>
+        <h2 style="margin:0 0 16px;color:#fff;font-size:20px;font-weight:800">Pediste resetear tu contraseña</h2>
+        <p style="margin:0 0 24px;color:#aaa;font-size:15px;line-height:1.6">
+          Hacé click en el botón para elegir una nueva contraseña. El link es válido por <strong style="color:#fff">1 hora</strong>.
+          Por seguridad, <strong style="color:#fff">todas tus sesiones existentes fueron cerradas</strong> y vas a tener que re-loguear en cada device.
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:8px 0 24px">
+          <a href="${safeLink}" style="display:inline-block;background:#fff;color:#000;text-decoration:none;font-weight:900;font-size:15px;padding:16px 40px;border-radius:10px;letter-spacing:0.3px">
+            🔑 Resetear contraseña
+          </a>
+        </td></tr></table>
+        <p style="margin:0 0 8px;color:#888;font-size:12px;text-align:center">Si el botón no funciona, copiá este link:</p>
+        <p style="margin:0;background:#1e1e1e;border-radius:8px;padding:10px 12px;word-break:break-all;font-size:11px;color:#4a9eff;font-family:monospace">${safeLink}</p>
+      </td></tr>
+      <tr><td style="padding:16px 32px 24px;border-top:1px solid #1e1e1e;text-align:center">
+        <p style="margin:0;color:#aaa;font-size:11px;line-height:1.5"><strong style="color:#fff">¿No fuiste vos?</strong> Si NO solicitaste este reset, ignorá este email. Nadie pudo acceder a tu cuenta — todas las sesiones fueron cerradas como medida preventiva y tu contraseña actual sigue siendo válida. Vas a tener que re-loguear con tu password actual.</p>
+        <p style="margin:6px 0 0;color:#666;font-size:11px">© 2026 Mining The Blocks</p>
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`,
+    });
+  } catch (e) {
+    console.error("requestPasswordReset mail error:", e && e.message);
+  }
+
+  return { ok: true };
+});
+
 exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, res) => {
   setRestrictedCorsHeaders(req, res);
   if (req.method === "OPTIONS") {
@@ -1993,7 +2159,16 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
     if (!m) {
       return res.status(401).json({ error: "unauthenticated" });
     }
-    const decoded = await getAuth().verifyIdToken(m[1]);
+    // CRIT (Round 2 Agente #6): checkRevoked=true. submitGemClaim opera sobre
+    // gemas hasta tier-1 ($100k nominal) — un token robado o sesión post-revoke
+    // sigue válido hasta el TTL JWT (~60min) sin este flag.
+    const decoded = await getAuth().verifyIdToken(m[1], true);
+    // Defense-in-depth: gating de email_verified para provider=password
+    // (alineado con requireRegistered del lado onCall).
+    const provider = decoded.firebase && decoded.firebase.sign_in_provider;
+    if (provider === "password" && decoded.email_verified === false) {
+      return res.status(403).json({ error: "email_not_verified" });
+    }
     authUid = decoded.uid;
   } catch (authErr) {
     // ALTO-001: NO loguear authErr.message — puede contener fragmentos del
@@ -2007,16 +2182,30 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
   const email = (body.email || "").toString().trim().toLowerCase().slice(0, 200);
   const name = (body.name || "").toString().trim().slice(0, 100);
   const phone = (body.phone || "").toString().trim().slice(0, 30);
-  const wallet = (body.wallet || "").toString().trim();
-  if (!code || !email || !name || !phone || !wallet) {
+
+  // CRIT (Round 2 Agentes #1 HIGH-4 + #6 + #8): wallet del user doc, NO del
+  // body. Mismo razonamiento que claimGemNFT: aceptar wallet del body bypasea
+  // el cooldown de setUserWallet. El web claim form sigue mostrando el campo
+  // pero el backend lo descarta — el web form debería leer userSnap.walletAddress
+  // como read-only en una iteración futura (TODO web).
+  let wallet = "";
+  try {
+    const userSnap = await db.collection("users").doc(authUid).get();
+    wallet = userSnap.exists ? (userSnap.data().walletAddress || "").toString().trim() : "";
+  } catch (e) {
+    console.error("submitGemClaim user lookup error:", e && e.message);
+    return res.status(500).json({ error: "server_error" });
+  }
+
+  if (!code || !email || !name || !phone) {
     return res.status(400).json({ error: "missing_fields" });
   }
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
     return res.status(400).json({ error: "invalid_email" });
   }
-  if (!/^0x[a-fA-F0-9]{40}$/.test(wallet)) {
-    return res.status(400).json({ error: "invalid_wallet" });
+  if (!wallet || !/^0x[a-fA-F0-9]{40}$/.test(wallet)) {
+    return res.status(400).json({ error: "wallet_not_set" });
   }
   try {
     const snap = await db.collectionGroup("gems").where("code", "==", code).limit(1).get();

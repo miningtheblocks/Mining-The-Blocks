@@ -115,9 +115,21 @@ export async function callCheckReferralCode(code) {
 
 // Claims a gem as NFT to the user's wallet (creates pendingMints record)
 // Cash redemption is done on the external website using the gem code
-export async function callClaimGemNFT(gemId, walletAddress) {
+// Round 2 Commit B: walletAddress se ignora en backend (Agentes #1 + #6 + #8) —
+// la única vía de setear wallet es callSetUserWallet (que tiene cooldown 24h).
+export async function callClaimGemNFT(gemId) {
   const fn = httpsCallable(functions, 'claimGemNFT');
-  const res = await fn({ gemId, walletAddress });
+  const res = await fn({ gemId });
+  return res.data;
+}
+
+// Round 2 Commit B (Agente #6 CRIT): reset de password con revoke de tokens
+// + email branded con notice de "sesiones cerradas". Reemplaza el
+// sendPasswordResetEmail directo del Firebase Web SDK que no revocaba tokens
+// existentes (ventana 60min de account takeover post-reset).
+export async function callRequestPasswordReset(email) {
+  const fn = httpsCallable(functions, 'requestPasswordReset');
+  const res = await fn({ email });
   return res.data;
 }
 

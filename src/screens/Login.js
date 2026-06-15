@@ -4,10 +4,11 @@ import { useNavigation } from '@react-navigation/native';
 import { useOverlayModals } from '../components/OverlayModalsProvider';
 import { auth, db } from '../firebase/client';
 import { doc, setDoc } from 'firebase/firestore';
-import { signInWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, signOut } from 'firebase/auth';
+import { signInWithEmailAndPassword, sendEmailVerification, signOut } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useI18n } from '../utils/i18n';
 import { StorageKeys } from '../constants';
+import { callRequestPasswordReset } from '../firebase/functions';
 
 export default function Login() {
   const navigation = useNavigation && typeof useNavigation === 'function' ? useNavigation() : null;
@@ -199,10 +200,15 @@ export default function Login() {
             return;
           }
           try {
-            await sendPasswordResetEmail(auth, em);
+            // CRIT (Round 2 Agente #6): usamos requestPasswordReset (CF) en
+            // lugar de sendPasswordResetEmail directo. El CF revoca tokens
+            // activos antes de mandar el link, notifica al user real con
+            // texto explícito "tus sesiones fueron cerradas", y rate-limita
+            // por email para anti-enumeration.
+            await callRequestPasswordReset(em);
           } catch (e) {
             try { (await import('../utils/logError')).default('Login.forgot', e); } catch {}
-            // No re-throw — silenciamos al usuario.
+            // No re-throw — silenciamos al usuario (anti-enumeration).
           }
           showError(t('login.emailSentBody'));
         }}

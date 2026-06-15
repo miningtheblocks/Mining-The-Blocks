@@ -73,7 +73,10 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
     }
     setClaiming(gem.id);
     try {
-      await callClaimGemNFT(gem.id, wallet);
+      // Round 2 Commit B: el segundo arg (wallet) se removió de la signature;
+      // el backend ahora lee users/{uid}.walletAddress (set via callSetUserWallet
+      // con cooldown 24h) para evitar wallet hot-swap.
+      await callClaimGemNFT(gem.id);
       await loadGems();
     } catch (e) {
       logError('MyGems.handleClaimNFT', e, { gemId: gem.id, tier: gem.gemTier });
