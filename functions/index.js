@@ -77,13 +77,25 @@ function assertValidId(id, label) {
   }
 }
 
+// CRIT (Round 2 Agente #6): whitelist explícito de providers. Antes era
+// blacklist ("rechazar anonymous"); si Firebase habilita un nuevo provider
+// (Anonymous Auth desde Console, OIDC custom, Identity Platform blocking
+// function que devuelve cualquier provider), el flow lo aceptaba por default.
+// Con whitelist, default-deny: si un provider desconocido aparece, se rechaza
+// la operación con un código identificable para audit.
+//
+// Si en el futuro suman Google/Apple Sign-In real (todavía solo
+// signInWithEmailAndPassword en Login.js), agregar acá.
+const ALLOWED_PROVIDERS = new Set(["password", "google.com", "apple.com"]);
 function requireRegistered(request) {
   if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "Login required");
   const provider = request.auth.token && request.auth.token.firebase && request.auth.token.firebase.sign_in_provider;
-  if (provider === "anonymous") throw new HttpsError("permission-denied", "Registro requerido para jugar");
+  if (!ALLOWED_PROVIDERS.has(provider)) {
+    throw new HttpsError("permission-denied", `provider_not_allowed:${provider || "unknown"}`);
+  }
   // ALTO-30: exigir email verificado en operaciones de juego (mining, payments,
-  // gem claim). Providers OAuth (google.com, etc.) ya verifican email upstream,
-  // se aceptan sin recheck. Solo email/password necesita el flag.
+  // gem claim). Providers OAuth (google.com, apple.com) ya verifican email
+  // upstream, se aceptan sin recheck. Solo email/password necesita el flag.
   if (provider === "password" && request.auth.token && request.auth.token.email_verified === false) {
     throw new HttpsError("permission-denied", "email_not_verified");
   }
@@ -1117,29 +1129,69 @@ const MTBGEMS_ABI = [
 ];
 
 // titles/bodies can be plain strings or {en, es} objects for bilingual support
-async function sendPushToUser(uid, titles, bodies) {
+// Round 2 Agente #10:
+//   - CRIT-10-02: respetar settings.notify* del user (toggles de Config) — los
+//     toggles eran cosméticos pre-fix; backend nunca los leía.
+//   - CRIT-10-03: limpiar pushTokens inválidos cuando FCM responde
+//     "token-not-registered" — sin esto, cross-user leakage en device
+//     compartido + cost amplification de queries.
+//   - HIGH-10-09: data payload para deep-linking al tap del push.
+// Signature: sendPushToUser(uid, titles, bodies, opts?)
+// opts.notifyKey: e.g. 'notifyRewards' — skip si user tiene ese setting false.
+// opts.data: objeto custom serializable (FCM exige string values).
+async function sendPushToUser(uid, titles, bodies, opts) {
   try {
+    const notifyKey = opts && opts.notifyKey;
+    const data = (opts && opts.data) || null;
     const snap = await db.collection("users").doc(uid).get();
-    const data = snap.exists ? snap.data() : {};
-    const token = data.pushToken || null;
-    const tokenType = data.pushTokenType || 'expo';
+    const userData = snap.exists ? snap.data() : {};
+    const token = userData.pushToken || null;
+    const tokenType = userData.pushTokenType || 'expo';
     if (!token) return;
-    const lang = (data && data.settings && data.settings.language) === 'es' ? 'es' : 'en';
+    // CRIT-10-02: respetar preferencia (default opt-in si undefined).
+    // eslint-disable-next-line security/detect-object-injection -- notifyKey controlado por callers internos
+    if (notifyKey && userData.settings && userData.settings[notifyKey] === false) return;
+    const lang = (userData.settings && userData.settings.language) === 'es' ? 'es' : 'en';
     // eslint-disable-next-line security/detect-object-injection -- lang validado a 'es'|'en' arriba
     const title = typeof titles === 'object' ? (titles[lang] || titles.en) : titles;
     // eslint-disable-next-line security/detect-object-injection -- lang validado a 'es'|'en' arriba
     const body = typeof bodies === 'object' ? (bodies[lang] || bodies.en) : bodies;
     if (tokenType === 'fcm') {
-      await getMessaging().send({
-        token,
-        notification: { title, body },
-        android: { priority: "high", notification: { sound: "default" } },
-      });
+      try {
+        await getMessaging().send({
+          token,
+          notification: { title, body },
+          // FCM exige que todos los values en data sean strings.
+          ...(data ? { data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])) } : {}),
+          android: { priority: "high", notification: { sound: "default" } },
+        });
+      } catch (e) {
+        const code = e && e.code;
+        if (code === "messaging/registration-token-not-registered" ||
+            code === "messaging/invalid-registration-token" ||
+            code === "messaging/mismatched-credential") {
+          // CRIT-10-03: cleanup de token inválido.
+          try {
+            await db.collection("users").doc(uid).set({
+              pushToken: FieldValue.delete(),
+              pushTokenType: FieldValue.delete(),
+            }, { merge: true });
+            console.log(`sendPushToUser: cleaned invalid token for uid=${uid}`);
+          } catch (cleanErr) {
+            console.warn("sendPushToUser cleanup error:", cleanErr.message);
+          }
+        } else {
+          throw e;
+        }
+      }
     } else {
+      // Expo Push API (legacy). Tokens FCM nativos NO funcionan acá — esa es
+      // exactamente la causa de CRIT-10-01 en notifyAllUsers. Mantener por
+      // compat con users pre-V1.1.0 que todavía tengan pushTokenType='expo'.
       await fetch("https://exp.host/--/api/v2/push/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: token, title, body, sound: "default" }),
+        body: JSON.stringify({ to: token, title, body, sound: "default", data: data || undefined }),
       });
     }
   } catch (e) {
@@ -1308,6 +1360,8 @@ async function runMintProcessing() {
             data.uid,
             { en: "Your NFT arrived! 💎", es: "¡Tu NFT llegó! 💎" },
             { en: `Your gem was minted on Polygon. Token #${tokenId || ''}`, es: `Tu gema fue minteada en Polygon. Token #${tokenId || ''}` },
+            // Round 2 #10: respetar settings.notifyRewards + deep-link a MyGems.
+            { notifyKey: "notifyRewards", data: { url: "exp+miningtheblocks://gems", type: "mint_complete" } },
         );
       }
       processed++;
@@ -1722,7 +1776,13 @@ async function runCryptoPaymentProcessing() {
             }
           });
           if (bonusReferredBy) {
-            await sendPushToUser(bonusReferredBy, { en: "Your referral bought a credit! 🎉", es: "¡Tu referido compró un crédito! 🎉" }, { en: "You both received 5 picks! Keep inviting friends!", es: "¡Ambos recibieron 5 picos! ¡Seguí invitando amigos!" });
+            await sendPushToUser(
+                bonusReferredBy,
+                { en: "Your referral bought a credit! 🎉", es: "¡Tu referido compró un crédito! 🎉" },
+                { en: "You both received 5 picks! Keep inviting friends!", es: "¡Ambos recibieron 5 picos! ¡Seguí invitando amigos!" },
+                // Round 2 #10: respetar settings.notifyRewards + deep-link a Profile (referrals tab).
+                { notifyKey: "notifyRewards", data: { url: "exp+miningtheblocks://profile", type: "referral_bonus" } },
+            );
             // In-app notification for the referrer
             await db.collection("users").doc(bonusReferredBy).collection("notifications").add({
               type: "referral_bonus",
@@ -1746,6 +1806,8 @@ async function runCryptoPaymentProcessing() {
               uid,
               {en: "Payment received! 💰", es: "¡Pago recibido! 💰"},
               {en: "Your credit was added. You can now join a chain!", es: "Tu crédito fue acreditado. ¡Ya podés unirte a una cadena!"},
+              // Round 2 #10: respetar settings.notifyRewards + deep-link a ServerList.
+              { notifyKey: "notifyRewards", data: { url: "exp+miningtheblocks://servers", type: "payment_received" } },
           );
         } catch (pushErr) {
           console.warn("Push notification failed:", pushErr.message);
@@ -1808,17 +1870,25 @@ exports.notifyAllUsers = onCall(async (request) => {
   const body = String((request.data && request.data.body) || '').trim().slice(0, 500);
   if (!title || !body) throw new HttpsError("invalid-argument", "title and body required");
 
-  // Recopilar todos los tokens (en lotes de 500 para no agotar memoria)
+  // CRIT (Round 2 Agente #10 CRIT-10-01): antes mandábamos TODOS los tokens
+  // al endpoint Expo Push API, incluyendo los FCM nativos que el cliente
+  // registra desde V1.1.0+ via getDevicePushTokenAsync(). Expo respondía
+  // error sin tirar excepción → log decía "sent=N" cuando en realidad fueron
+  // 0. La única broadcast feature del producto NO entregaba ningún mensaje
+  // y el admin nunca se enteraba.
+  //
+  // Fix: ramificar por pushTokenType. FCM nativos van por
+  // getMessaging().sendEachForMulticast (hasta 500 tokens/call, devuelve
+  // success/error por token). Expo legacy sigue por exp.host. Token cleanup
+  // automático sobre los uids con responses de "not registered".
   const BATCH = 500;
-  const tokens = [];
+  const fcmTokens = [];
+  const fcmTokenUids = [];   // paralelo a fcmTokens para cleanup
+  const expoTokens = [];
   let lastDoc = null;
 
   for (;;) {
     // MEDIO-H12: paginar con orderBy explícito para garantizar consistencia.
-    // El where("pushToken","!=",null) impone un orderBy implícito por pushToken;
-    // sin orderBy adicional sobre documentId(), startAfter(lastDoc) puede
-    // saltarse usuarios o repetirlos cuando varios docs comparten el mismo
-    // pushToken value (improbable con tokens únicos pero defensivo).
     let q = db.collection("users")
         .where("pushToken", "!=", null)
         .orderBy("pushToken")
@@ -1828,21 +1898,64 @@ exports.notifyAllUsers = onCall(async (request) => {
     const snap = await q.get();
     if (snap.empty) break;
     snap.docs.forEach((d) => {
-      const token = d.data().pushToken;
-      // MEDIO-F33: validar que es string válido (no objeto raro ni vacío).
-      if (token && typeof token === 'string' && token.length > 10) tokens.push(token);
+      const docData = d.data();
+      const token = docData.pushToken;
+      const type = docData.pushTokenType || 'expo';
+      if (token && typeof token === 'string' && token.length > 10) {
+        if (type === 'fcm') {
+          fcmTokens.push(token);
+          fcmTokenUids.push(d.id);
+        } else {
+          expoTokens.push(token);
+        }
+      }
     });
     if (snap.size < BATCH) break;
     lastDoc = snap.docs[snap.docs.length - 1];
   }
 
-  if (tokens.length === 0) return { ok: true, sent: 0 };
+  const total = fcmTokens.length + expoTokens.length;
+  if (total === 0) return { ok: true, sent: 0, total: 0 };
 
-  // Expo Push API acepta hasta 100 por request
   let sent = 0;
-  const CHUNK = 100;
-  for (let i = 0; i < tokens.length; i += CHUNK) {
-    const chunk = tokens.slice(i, i + CHUNK).map((to) => ({
+  let failed = 0;
+  const invalidUids = new Set();
+
+  // 1) FCM via sendEachForMulticast (hasta 500 tokens por call)
+  const FCM_CHUNK = 500;
+  for (let i = 0; i < fcmTokens.length; i += FCM_CHUNK) {
+    const chunkTokens = fcmTokens.slice(i, i + FCM_CHUNK);
+    const chunkUids = fcmTokenUids.slice(i, i + FCM_CHUNK);
+    try {
+      const response = await getMessaging().sendEachForMulticast({
+        tokens: chunkTokens,
+        notification: { title, body },
+        android: { priority: "high", notification: { sound: "default" } },
+      });
+      response.responses.forEach((r, idx) => {
+        if (r.success) {
+          sent++;
+        } else {
+          failed++;
+          const code = r.error && r.error.code;
+          if (code === "messaging/registration-token-not-registered" ||
+              code === "messaging/invalid-registration-token" ||
+              code === "messaging/mismatched-credential") {
+            // eslint-disable-next-line security/detect-object-injection -- idx desde forEach con response.responses
+            invalidUids.add(chunkUids[idx]);
+          }
+        }
+      });
+    } catch (e) {
+      console.error("notifyAllUsers FCM chunk error:", e.message);
+      failed += chunkTokens.length;
+    }
+  }
+
+  // 2) Expo Push API (legacy) — hasta 100 por request
+  const EXPO_CHUNK = 100;
+  for (let i = 0; i < expoTokens.length; i += EXPO_CHUNK) {
+    const chunk = expoTokens.slice(i, i + EXPO_CHUNK).map((to) => ({
       to, title, body, sound: "default",
     }));
     try {
@@ -1853,11 +1966,29 @@ exports.notifyAllUsers = onCall(async (request) => {
       });
       sent += chunk.length;
     } catch (e) {
-      console.error("notifyAllUsers chunk error:", e.message);
+      console.error("notifyAllUsers Expo chunk error:", e.message);
+      failed += chunk.length;
     }
   }
 
-  console.log(`notifyAllUsers: sent=${sent} total_tokens=${tokens.length}`);
+  // CRIT-10-03: cleanup de tokens inválidos en batch.
+  if (invalidUids.size > 0) {
+    try {
+      const cleanupBatch = db.batch();
+      invalidUids.forEach((cleanUid) => {
+        cleanupBatch.set(db.collection("users").doc(cleanUid), {
+          pushToken: FieldValue.delete(),
+          pushTokenType: FieldValue.delete(),
+        }, { merge: true });
+      });
+      await cleanupBatch.commit();
+      console.log(`notifyAllUsers: cleaned ${invalidUids.size} invalid tokens`);
+    } catch (e) {
+      console.warn("notifyAllUsers cleanup error:", e.message);
+    }
+  }
+
+  console.log(`notifyAllUsers: sent=${sent} failed=${failed} cleaned=${invalidUids.size} total=${total} fcm=${fcmTokens.length} expo=${expoTokens.length}`);
 
   // SEC-P2-12: audit log
   try {
@@ -1867,14 +1998,18 @@ exports.notifyAllUsers = onCall(async (request) => {
       title: title.slice(0, 100),
       body: body.slice(0, 200),
       sent,
-      total: tokens.length,
+      failed,
+      cleaned: invalidUids.size,
+      total,
+      fcm: fcmTokens.length,
+      expo: expoTokens.length,
       ts: Date.now(),
     });
   } catch (logErr) {
     console.warn("notifyAllUsers audit log failed:", logErr.message);
   }
 
-  return { ok: true, sent, total: tokens.length };
+  return { ok: true, sent, failed, cleaned: invalidUids.size, total };
 });
 
 exports.cryptoPaymentProcessorScheduled = onSchedule("every 5 minutes", async () => {

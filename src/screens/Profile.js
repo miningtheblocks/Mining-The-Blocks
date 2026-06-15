@@ -91,10 +91,12 @@ export default function Profile({ asModal = false, onClose }) {
       const code = e?.code || '';
       const msg = e?.message || '';
       if (msg.includes('email_not_verified')) {
-        showAlert(t('profile.walletInvalidTitle') || 'Error', t('profile.emailNotVerified') || 'Verificá tu email antes de cambiar la wallet.');
+        // Round 2 #10 CRIT-10-04: t() ahora soporta interpolación; las keys
+        // emailNotVerified + walletCooldown se agregaron en Tier 1 (EN+ES).
+        showAlert(t('profile.walletInvalidTitle'), t('profile.emailNotVerified'));
       } else if (msg.startsWith('wallet_cooldown:')) {
         const h = msg.split(':')[1] || '24';
-        showAlert('', (t('profile.walletCooldown') || 'Podés cambiar tu wallet en {h}h.').replace('{h}', h));
+        showAlert('', t('profile.walletCooldown', { h }));
       } else {
         showAlert('Error', t('profile.walletInvalidMsg') || 'No se pudo guardar.');
       }

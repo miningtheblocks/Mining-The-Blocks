@@ -36,6 +36,12 @@ function RootApp() {
 
   useEffect(() => {
     // LAZY LOAD: Load Notifications only when needed to avoid EventEmitter crash
+    // HIGH (Round 2 Agente #10 HIGH-10-09): registrar
+    // addNotificationResponseReceivedListener para que el TAP de un push
+    // dispare deep-link a la screen relevante. Sin esto, el tap solo abre la
+    // app en la última screen — el user que recibe "Tu NFT llegó!" no llega
+    // automáticamente a MyGems.
+    let responseSubscription = null;
     const setupNotifications = async () => {
       try {
         const Notifications = await import('expo-notifications');
@@ -55,11 +61,25 @@ function RootApp() {
             vibrationPattern: [0, 250, 250, 250],
           });
         }
+        // Round 2 #10 HIGH-10-09: deep-link al tap. Backend manda data.url
+        // (e.g. 'exp+miningtheblocks://gems') en el payload de mint complete,
+        // payment received, etc. Linking.openURL dispara el DeepLinkHandler
+        // de abajo, que ya conoce el scheme.
+        responseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
+          try {
+            const data = response?.notification?.request?.content?.data || {};
+            if (data && typeof data.url === 'string' && data.url.startsWith('exp+miningtheblocks://')) {
+              Linking.openURL(data.url).catch(() => {});
+            }
+          } catch (handlerErr) {
+            console.warn('Notification response handler error:', handlerErr?.message);
+          }
+        });
       } catch (e) {
         console.warn('Notifications setup failed:', e.message);
       }
     };
-    
+
     // BAJO-APP-02: guardar el id del timer para limpiarlo en cleanup. Sin esto,
     // si el componente se desmonta en el primer segundo (hot-reload, navegación
     // muy rápida), setupNotifications corre con árbol React desmontado.
@@ -181,6 +201,9 @@ function RootApp() {
 
     return () => {
       clearTimeout(notifSetupTimer);
+      if (responseSubscription) {
+        try { responseSubscription.remove(); } catch (_) {}
+      }
       appStateSub.remove();
       unsub();
     };
@@ -375,8 +398,20 @@ function DeepLinkHandler() {
 
   useEffect(() => {
     const handle = ({ url }) => {
-      if (url && url.startsWith('exp+miningtheblocks://peaks')) {
-        openModal('peaks');
+      // Round 2 #10 HIGH-10-09: ampliado a más URLs. Backend manda data.url
+      // en push payloads (mint complete → gems, payment → servers, etc.).
+      // El response listener llama Linking.openURL que entra acá.
+      if (!url || !url.startsWith('exp+miningtheblocks://')) return;
+      const host = url.replace('exp+miningtheblocks://', '').split(/[?\/]/)[0].toLowerCase();
+      switch (host) {
+        case 'peaks':       openModal('peaks');      break;
+        case 'gems':
+        case 'mygems':      openModal('gems');       break;
+        case 'profile':     openModal('profile');    break;
+        case 'buycredits':  openModal('buyCredits'); break;
+        case 'config':      openModal('config');     break;
+        case 'servers':     navigate('ServerList');  break;
+        default: /* unknown host — ignore */         break;
       }
     };
     Linking.getInitialURL().then(url => { if (url) handle({ url }); }).catch(() => {});

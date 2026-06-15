@@ -1038,21 +1038,56 @@ export function I18nProvider({ children, initialLanguage = 'en' }) {
     return () => { active = false; unsub(); };
   }, []);
 
-  const t = useCallback((key) => {
+  // CRIT (Round 2 Agente #10 CRIT-10-04): motor de interpolación + warnings.
+  // Pre-fix: cada call site reimplementaba `.replace('{n}', value)` con
+  // riesgo de reentrancia (si el value contenía `{otro}`, el siguiente
+  // replace lo interpretaba). Y las keys faltantes se silenciaban — el
+  // user veía "profile.walletCooldown" literal en pantalla.
+  //
+  // Nueva signature: t(key, vars?). vars es un objeto {h: 24, name: 'Juan'}
+  // y reemplaza {h} y {name} en el string. Sin replace encadenado → sin
+  // riesgo de reentrancia.
+  //
+  // En __DEV__ warna si la key no existe o si un var declarado en el string
+  // no fue provisto. En prod, fallback a key (default seguro).
+  const t = useCallback((key, vars) => {
     const parts = key.split('.');
     let node = resources[language] || resources.en;
     for (const p of parts) {
       node = node?.[p];
       if (node == null) break;
     }
-    if (typeof node === 'string') return node;
-    // fallback to English
-    node = resources.en;
-    for (const p of parts) {
-      node = node?.[p];
-      if (node == null) break;
+    let value = (typeof node === 'string') ? node : null;
+    if (value == null) {
+      // fallback to English
+      node = resources.en;
+      for (const p of parts) {
+        node = node?.[p];
+        if (node == null) break;
+      }
+      value = (typeof node === 'string') ? node : null;
     }
-    return typeof node === 'string' ? node : key;
+    if (value == null) {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        // eslint-disable-next-line no-console
+        console.warn(`[i18n] missing key "${key}"`);
+      }
+      value = key;
+    }
+    if (vars && typeof vars === 'object') {
+      value = value.replace(/\{(\w+)\}/g, (match, name) => {
+        if (!Object.prototype.hasOwnProperty.call(vars, name)) {
+          if (typeof __DEV__ !== 'undefined' && __DEV__) {
+            // eslint-disable-next-line no-console
+            console.warn(`[i18n] missing var "${name}" for key "${key}"`);
+          }
+          return match;
+        }
+        const v = vars[name];
+        return v == null ? '' : String(v);
+      });
+    }
+    return value;
   }, [language]);
 
   const value = useMemo(() => ({ language, setLanguage, t }), [language, setLanguage, t]);
