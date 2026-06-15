@@ -758,7 +758,13 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     tx.set(userRef, userUpdate, { merge: true });
 
     const mapped = cubeNumberToFaceGridForK(n, K) || {};
-    tx.set(minedRef, { by: uid, ts: Date.now(), K, rewardPicks: reward, gem: gem || 0, ...mapped });
+    // CRIT (Round 2 Agentes #2 + #5): schema canónico `minedAt`. Antes se
+    // escribía `ts` pero el index (firestore.indexes.json: mined[K, minedAt DESC])
+    // y el listener realtime de DynamicCube201 ordenan por `minedAt`. Resultado
+    // pre-fix: el feed multiplayer recibía snapshot vacío y sólo aparentaba
+    // funcionar por el optimistic local update del que minó. Fix: renombrar
+    // a `minedAt` (queda alineado con el resto de campos timestamp del proyecto).
+    tx.set(minedRef, { by: uid, minedAt: Date.now(), K, rewardPicks: reward, gem: gem || 0, ...mapped });
     tx.set(layerRef, { K, totalCubes: TOTAL_CUBES_K, stats: { mined: FieldValue.increment(1) } }, { merge: true });
 
     const serverUpdate = { totalMined: FieldValue.increment(1) };
@@ -1083,6 +1089,50 @@ async function sendPushToUser(uid, titles, bodies) {
   }
 }
 
+// CRIT (Round 2 Agentes #3 + #8): lock distribuido para el mint processor.
+// Sin esto, `processPendingMints` (admin manual) y `mintProcessorScheduled`
+// (cron 5min) pueden correr concurrentes y ambos envían la mintGem() tx con
+// el MISMO nonce de la company wallet → una falla con "nonce too low" o
+// "replacement transaction underpriced", MATIC quemado en fees, race en el
+// doc pendingMints.status=processing, y backlog atascado.
+//
+// La lock vive en runtime/mintProcessor con expiresAt. Si el worker crashea
+// antes del finally, la lock auto-expira en LOCK_TTL_MS y el próximo run la
+// toma. No previene el caso patológico de "nonce stuck por RPC", pero sí el
+// escenario más común (cron vs manual concurrente, o dos crons solapados si
+// uno tardó >5min).
+//
+// Patrón: read snapshot dentro de TX, evaluar expiry, escribir si libre.
+// Las rules ya son default-deny para /runtime/*, por lo que el cliente no
+// puede tocarlo.
+const MINT_LOCK_TTL_MS = 10 * 60 * 1000;
+async function withMintProcessorLock(fn) {
+  const lockRef = db.collection("runtime").doc("mintProcessor");
+  let acquired = false;
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(lockRef);
+      const now = Date.now();
+      if (snap.exists && (snap.data().expiresAt || 0) > now) {
+        return; // otra invocación tiene la lock viva → acquired queda false
+      }
+      tx.set(lockRef, { acquiredAt: now, expiresAt: now + MINT_LOCK_TTL_MS });
+      acquired = true;
+    });
+  } catch (e) {
+    console.error("mintProcessor lock acquire error:", e.message);
+    return { ok: false, processed: 0, failed: 0, skipped: true, reason: "lock_error" };
+  }
+  if (!acquired) {
+    return { ok: true, processed: 0, failed: 0, skipped: true, reason: "lock_held" };
+  }
+  try {
+    return await fn();
+  } finally {
+    try { await lockRef.delete(); } catch (_) {/* TTL backup garantiza limpieza */}
+  }
+}
+
 // Lógica de minteo compartida entre onCall y onSchedule
 async function runMintProcessing() {
   const privateKey = companyWalletKey.value();
@@ -1163,7 +1213,15 @@ async function runMintProcessing() {
           data.gemCode,
           data.tokenURI || GEM_TOKEN_URIS[(data.gemTier - 1)],
       );
-      const receipt = await tx.wait();
+      // CRIT (Round 2 Agentes #3 + #8): tx.wait() sin confirmaciones es
+      // vulnerable a reorgs Polygon (PoS Heimdall confirma "checkpoints" cada
+      // ~30 min; reorgs hasta 100 bloques se han observado históricamente).
+      // Sin esperar SAFE_CONFIRMATIONS, podemos marcar status:completed para
+      // un NFT que después desaparece on-chain → user sin NFT y sin recourse.
+      // 30 bloques @ ~2.2s/block ≈ 66s de espera adicional por mint. Aceptable
+      // para un cron 5min con queue chica.
+      const SAFE_CONFIRMATIONS = 30;
+      const receipt = await tx.wait(SAFE_CONFIRMATIONS);
 
       let tokenId = null;
       for (const log of receipt.logs) {
@@ -1243,7 +1301,9 @@ async function runMintProcessing() {
 exports.processPendingMints = onCall({ secrets: [companyWalletKey, gmailAppPassword] }, async (request) => {
   // ALTO-31: check admin fresco (Admin SDK), no token cacheado.
   await requireAdminFresh(request);
-  return runMintProcessing();
+  // CRIT (Round 2 Agentes #3 + #8): lock distribuido. Si el cron está corriendo
+  // ahora, este onCall retorna skipped:lock_held en vez de competir por nonce.
+  return withMintProcessorLock(() => runMintProcessing());
 });
 
 // Scheduler automático — corre cada 5 minutos
@@ -1259,9 +1319,16 @@ exports.mintProcessorScheduled = onSchedule(
         console.log("mintProcessorScheduled: skipped (queue empty)");
         return;
       }
-      const result = await runMintProcessing();
+      // CRIT (Round 2 Agentes #3 + #8): lock distribuido — evita race con
+      // processPendingMints (admin manual). Si el admin disparó el flujo
+      // hace <10min, este cron se autosaltea y reintenta al próximo tick.
+      const result = await withMintProcessorLock(() => runMintProcessing());
       // SEC: solo counts, no JSON completo (puede contener uids/wallet addresses).
-      console.log(`mintProcessorScheduled: processed=${result.processed || 0} failed=${result.failed || 0}`);
+      if (result.skipped) {
+        console.log(`mintProcessorScheduled: skipped reason=${result.reason}`);
+      } else {
+        console.log(`mintProcessorScheduled: processed=${result.processed || 0} failed=${result.failed || 0}`);
+      }
     },
 );
 
