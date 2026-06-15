@@ -798,9 +798,13 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     const episodeComplete = K === 0;
 
     // SEC-B-1: pasar SERVER_SEED a las funciones de cálculo de premios.
+    // CRIT (Round 2 Agentes #1 HIGH-12 + #11 CRIT-11-05): además del seed
+    // crudo, pasamos episodeNumber para que helpers derive effectiveSeed
+    // per (serverId, episode) — limita blast radius de un seed leak.
     const seed = serverSeed.value();
-    const reward = getRewardForCube(serverId, K, cubeNumber, seed);
-    const gem = getGemForCube(serverId, K, cubeNumber, serverData.memberCount || 0, seed);
+    const episodeNumberForSeed = serverData.episodeNumber || 1;
+    const reward = getRewardForCube(serverId, K, cubeNumber, seed, episodeNumberForSeed);
+    const gem = getGemForCube(serverId, K, cubeNumber, serverData.memberCount || 0, seed, episodeNumberForSeed);
 
     const userUpdate = { lastMineAt: Date.now() };
     if (needsPicksReset) {
@@ -1570,14 +1574,53 @@ async function runCryptoPaymentProcessing() {
   const currentBlock = await provider.getBlockNumber();
   // CRIT-02: solo considerar bloques con SAFE_CONFIRMATIONS confirmaciones.
   const safeBlock = currentBlock - SAFE_CONFIRMATIONS;
-  const fromBlock = safeBlock - 200; // ventana de ~6-7 min de bloques en Polygon
+
+  // CRIT (Round 2 Agente #8): usar checkpoint persistido en lugar de ventana
+  // fija de 200 bloques. Sin checkpoint, si el scheduler se atrasa >6.6 min
+  // (publicnode.com outage, cold start lento, function timeout retry...),
+  // los pagos USDC legítimos caen fuera de la ventana → perdidos silencio-
+  // samente (el doc pendingCryptoPayments queda waiting hasta expirar a
+  // los 30min y el user no recibe sus créditos).
+  //
+  // Con checkpoint: cada run procesa desde lastBlockProcessed+1 hasta
+  // safeBlock. Si una query RPC falla, NO se avanza el checkpoint → el
+  // próximo run reintenta. processedTxs/{txHash} previene doble-crédito.
+  const checkpointRef = db.collection("runtime").doc("cryptoPaymentCheckpoint");
+  const checkpointSnap = await checkpointRef.get();
+  const lastProcessed = checkpointSnap.exists ? (checkpointSnap.data().lastBlockProcessed || 0) : 0;
+
+  let fromBlock;
+  if (lastProcessed > 0 && lastProcessed < safeBlock) {
+    fromBlock = lastProcessed + 1;
+    // Defensive cap: si el backlog es absurdo (sistema offline días), evitar
+    // un query gigante a publicnode.com. 5000 bloques ≈ 3h de Polygon.
+    // Si llegamos a esto, hay pagos potencialmente perdidos en el gap —
+    // queda en logs para investigación post-mortem.
+    const MAX_BACKLOG = 5000;
+    if (safeBlock - fromBlock > MAX_BACKLOG) {
+      console.warn(`cryptoPaymentProcessor: gap=${safeBlock - fromBlock} bloques, capando a ${MAX_BACKLOG}. Posibles pagos perdidos en el gap.`);
+      fromBlock = safeBlock - MAX_BACKLOG;
+    }
+  } else {
+    // Primer run (sin checkpoint) o checkpoint adelantado: ventana corta para
+    // no escanear historia gratuitamente.
+    fromBlock = safeBlock - 200;
+  }
+  fromBlock = Math.max(fromBlock, 0);
 
   // Cargar pagos pendientes vigentes
   const pendingSnap = await db.collection("pendingCryptoPayments")
       .where("status", "==", "waiting")
       .where("expiresAt", ">", Date.now())
       .get();
-  if (pendingSnap.empty) return { processed: 0 };
+  if (pendingSnap.empty) {
+    // Avanzar checkpoint igual: si no hay pagos pendientes, no necesitamos
+    // re-escanear estos bloques en runs futuros.
+    if (lastProcessed < safeBlock) {
+      await checkpointRef.set({ lastBlockProcessed: safeBlock, updatedAt: Date.now() }, { merge: true });
+    }
+    return { processed: 0 };
+  }
 
   // SEC-002 defense-in-depth: array por amount (no sobreescribir).
   // Con docId determinístico nuevo, no debería haber colisiones, pero data legacy
@@ -1590,6 +1633,10 @@ async function runCryptoPaymentProcessing() {
   });
 
   let processed = 0;
+  // Round 2 Agente #8: track si TODAS las queries RPC tuvieron éxito. Si
+  // alguna falló, NO avanzamos el checkpoint para reintentar el rango en
+  // el próximo run (processedTxs previene doble-crédito).
+  let rpcQueriesSucceeded = true;
   for (const usdcAddress of USDC_CONTRACTS) {
     const contract = new ethers.Contract(usdcAddress, USDC_ABI, provider);
     let events;
@@ -1604,6 +1651,7 @@ async function runCryptoPaymentProcessing() {
       );
     } catch (e) {
       console.warn("Error querying USDC transfers:", e.message);
+      rpcQueriesSucceeded = false;
       continue;
     }
 
@@ -1722,6 +1770,22 @@ async function runCryptoPaymentProcessing() {
     const batch = db.batch();
     expired.docs.forEach((doc) => batch.update(doc.ref, { status: "expired" }));
     await batch.commit();
+  }
+
+  // Round 2 Agente #8: avanzar checkpoint solo si las queries RPC fueron
+  // exitosas en TODOS los contratos USDC. Si alguna falló, el próximo run
+  // reintenta el mismo rango (los processedTxs previenen doble-crédito).
+  if (rpcQueriesSucceeded && safeBlock > lastProcessed) {
+    try {
+      await checkpointRef.set({
+        lastBlockProcessed: safeBlock,
+        updatedAt: Date.now(),
+      }, { merge: true });
+    } catch (e) {
+      // No es fatal: si falla, el próximo run vuelve a escanear desde donde
+      // estaba antes — los processedTxs hacen idempotente el procesamiento.
+      console.warn("cryptoPaymentProcessor checkpoint update failed:", e.message);
+    }
   }
 
   return { processed };
@@ -2299,6 +2363,99 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
 
 // P1-8: log de errores client-side. Rate-limit 100/dia/uid + 10/min/uid via
 // Firestore para evitar que un bug en bucle sature la colección.
+// CRIT (Round 2 Agente #8 CRIT-5): markGemRedeemed — sin esta función, el
+// admin pagaba en cash manualmente y marcaba la gema a mano via Firebase
+// Console. Si el admin se olvida (o el user re-submitGemClaim antes de la
+// marca), el admin podría pagar 2x — pérdida hasta $100k para gemas tier-1.
+//
+// Esta función:
+//   1. requireAdminFresh (admin claim verificado fresh).
+//   2. Busca la gema por code via collectionGroup (única por construcción).
+//   3. TX atómica: chequea que NO esté ya 'redeemed' (idempotency) ni
+//      'minted' (no se puede canjear NFT y cash). Setea status, registra
+//      adminUid + paymentRef + adminNote + redeemedAt.
+//   4. Si existe gemClaims/{xxx} asociado (web claim form), lo marca también.
+//   5. Audit log en adminActions con código + ownerUid + paymentRef.
+exports.markGemRedeemed = onCall(async (request) => {
+  await requireAdminFresh(request);
+  const adminUid = request.auth.uid;
+
+  const code = String((request.data && request.data.code) || "").trim().toUpperCase().slice(0, 50);
+  const paymentRef = String((request.data && request.data.paymentRef) || "").trim().slice(0, 200);
+  const adminNote = String((request.data && request.data.adminNote) || "").trim().slice(0, 500);
+  if (!code) throw new HttpsError("invalid-argument", "code_required");
+  if (!paymentRef) throw new HttpsError("invalid-argument", "paymentRef_required");
+
+  // Buscar la gema por code (collectionGroup; path users/{uid}/gems/{gemId}).
+  const gemQuery = await db.collectionGroup("gems").where("code", "==", code).limit(2).get();
+  if (gemQuery.empty) throw new HttpsError("not-found", "gem_not_found");
+  if (gemQuery.size > 1) {
+    // Defense-in-depth — gemCodes deberían ser únicos (randomBytes).
+    console.error("markGemRedeemed: multiple gems with same code", { code, count: gemQuery.size });
+    throw new HttpsError("failed-precondition", "duplicate_code");
+  }
+  const gemDoc = gemQuery.docs[0];
+  const pathParts = gemDoc.ref.path.split("/");
+  if (pathParts.length !== 4 || pathParts[0] !== "users" || pathParts[2] !== "gems") {
+    throw new HttpsError("failed-precondition", "invalid_gem_path");
+  }
+  const ownerUid = pathParts[1];
+  const gemId = pathParts[3];
+
+  // Idempotency: TX que verifica status antes de marcar.
+  await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(gemDoc.ref);
+    if (!fresh.exists) throw new HttpsError("not-found", "gem_gone");
+    const data = fresh.data();
+    if (data.status === "redeemed") {
+      throw new HttpsError("already-exists", "already_redeemed");
+    }
+    if (data.status === "minted") {
+      // Gema ya minteada como NFT — no se canjea por cash adicional.
+      throw new HttpsError("failed-precondition", "already_minted");
+    }
+    tx.set(gemDoc.ref, {
+      status: "redeemed",
+      redeemedAt: Date.now(),
+      redeemedBy: adminUid,
+      paymentRef,
+      adminNote: adminNote || null,
+    }, { merge: true });
+  });
+
+  // Buscar y actualizar gemClaim asociado (si el user usó la web claim form).
+  try {
+    const claimQuery = await db.collection("gemClaims").where("code", "==", code).limit(1).get();
+    if (!claimQuery.empty) {
+      await claimQuery.docs[0].ref.set({
+        status: "redeemed",
+        processedAt: Date.now(),
+        processedBy: adminUid,
+        paymentRef,
+      }, { merge: true });
+    }
+  } catch (e) {
+    console.warn("markGemRedeemed gemClaim update warning:", e && e.message);
+  }
+
+  // Audit log.
+  try {
+    await db.collection("adminActions").add({
+      action: "markGemRedeemed",
+      adminUid,
+      ts: Date.now(),
+      gemCode: code,
+      gemId,
+      ownerUid,
+      paymentRef: paymentRef.slice(0, 100),
+    });
+  } catch (e) {
+    console.warn("markGemRedeemed audit log warning:", e && e.message);
+  }
+
+  return { ok: true, ownerUid, gemId };
+});
+
 exports.logClientError = onCall(async (request) => {
   const uid = (request.auth && request.auth.uid) || null;
   // Permitimos sin auth (bootstrap errors antes del login), pero limitamos por IP.

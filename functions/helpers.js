@@ -54,8 +54,30 @@ function seededHash(seed, str) {
 // SEC-B-1: SERVER_SEED es un secret server-side que se mezcla en los hashes
 // para que un atacante NO pueda predecir qué cubos contienen premios.
 // SERVER_SEED se inyecta desde Cloud Functions via defineSecret("SERVER_SEED").
-function getRewardForCube(serverId, K, cubeNumber, serverSeed) {
-  const norm = seededHash(serverSeed, `${serverId}|${K}|${cubeNumber}`) / 0xffffffff;
+//
+// CRIT (Round 2 Agentes #1 HIGH-12 + #11 CRIT-11-05): derivar effectiveSeed
+// per (serverId, episodeNumber) para limitar blast radius si SERVER_SEED se
+// filtra. Sin esto, un leak compromete TODA la historia + futuro del juego.
+// Con esto, las posiciones de premios de cada (server, episodio) son
+// independientes — y permite un plan de rotación futura:
+//
+//   1) Crear SERVER_SEED_v2 en Secret Manager.
+//   2) Cambiar el prefix `mtb-seed-v1|` a `mtb-seed-v2|` (o cambiar la
+//      lógica para leer la versión desde un Firestore doc per-server).
+//   3) Servers nuevos usan v2; in-flight siguen con v1 (determinismo).
+//
+// Si episodeNumber se omite, devolvemos el rootSeed crudo (backwards-compat
+// con tests y callers viejos — el hash de seededHash sigue siendo el mismo).
+function getEffectiveSeed(rootSeed, serverId, episodeNumber) {
+  if (episodeNumber == null) return rootSeed;
+  return crypto.createHmac('sha256', String(rootSeed || ''))
+      .update(`mtb-seed-v1|${serverId}|ep:${episodeNumber}`)
+      .digest('hex');
+}
+
+function getRewardForCube(serverId, K, cubeNumber, serverSeed, episodeNumber) {
+  const effectiveSeed = getEffectiveSeed(serverSeed, serverId, episodeNumber);
+  const norm = seededHash(effectiveSeed, `${serverId}|${K}|${cubeNumber}`) / 0xffffffff;
   const winRate = K >= 90 ? 0.50 : K >= 70 ? 0.40 : K >= 50 ? 0.30 : K >= 20 ? 0.20 : 0.15;
   if (norm >= winRate) return 0;
   const r = norm / winRate;
@@ -66,8 +88,12 @@ function getRewardForCube(serverId, K, cubeNumber, serverSeed) {
   return 5;
 }
 
-function getGemForCube(serverId, K, cubeNumber, memberCount, serverSeed) {
+function getGemForCube(serverId, K, cubeNumber, memberCount, serverSeed, episodeNumber) {
   if (K >= 98) return null;
+
+  // Computar effectiveSeed UNA vez (no por iteración de hasPrize) para no
+  // recalcular el HMAC en cada chequeo de tier.
+  const effectiveSeed = getEffectiveSeed(serverSeed, serverId, episodeNumber);
 
   const members = memberCount || 0;
   const tierUnlocked = (tier) => members >= GEM_UNLOCK_THRESHOLDS[tier - 1];
@@ -100,7 +126,8 @@ function getGemForCube(serverId, K, cubeNumber, memberCount, serverSeed) {
     }
     // SEC-B-1: HMAC-SHA256(SERVER_SEED, ...). Sin el secret, atacante no puede
     // calcular qué bucket contiene el premio (espacio 2^256, no brute-forceable).
-    return within === seededHash(serverSeed, `PRIZE|${serverId}|${tier}|${bucket}`) % bSize;
+    // Round 2: usar effectiveSeed (derivado per server-episode) en vez del seed crudo.
+    return within === seededHash(effectiveSeed, `PRIZE|${serverId}|${tier}|${bucket}`) % bSize;
   }
 
   if (K <= 6) {
@@ -208,6 +235,7 @@ module.exports = {
   cubeNumberToFaceGridForK,
   fnv1a,
   seededHash,
+  getEffectiveSeed,
   getRewardForCube,
   getGemForCube,
   generateReferralCode,
