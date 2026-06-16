@@ -114,6 +114,9 @@ export default function Login() {
           style={[styles.langBtn, language === 'en' && styles.langBtnActive]}
           onPress={() => setLanguage('en')}
           activeOpacity={0.85}
+          accessibilityLabel={t('config.english')}
+          accessibilityState={{ selected: language === 'en' }}
+          hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
         >
           <Text style={[styles.langTxt, language === 'en' && styles.langTxtActive]}>{t('config.english')}</Text>
         </TouchableOpacity>
@@ -121,6 +124,9 @@ export default function Login() {
           style={[styles.langBtn, language === 'es' && styles.langBtnActive]}
           onPress={() => setLanguage('es')}
           activeOpacity={0.85}
+          accessibilityLabel={t('config.spanish')}
+          accessibilityState={{ selected: language === 'es' }}
+          hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
         >
           <Text style={[styles.langTxt, language === 'es' && styles.langTxtActive]}>{t('config.spanish')}</Text>
         </TouchableOpacity>
@@ -135,10 +141,11 @@ export default function Login() {
         value={email}
         onChangeText={setEmail}
         placeholder={t('login.email')}
-        placeholderTextColor="#555"
+        placeholderTextColor="#888"
         autoCapitalize="none"
         keyboardType="email-address"
         textContentType="emailAddress"
+        accessibilityLabel={t('login.email')}
       />
 
       {/* Password */}
@@ -147,9 +154,10 @@ export default function Login() {
         value={password}
         onChangeText={setPassword}
         placeholder={t('login.password')}
-        placeholderTextColor="#555"
+        placeholderTextColor="#888"
         secureTextEntry
         textContentType="password"
+        accessibilityLabel={t('login.password')}
       />
 
       {/* Remember switch */}
@@ -181,6 +189,8 @@ export default function Login() {
         onPress={onEmailLogin}
         activeOpacity={isValid ? 0.85 : 1}
         disabled={loading || !isValid}
+        accessibilityLabel={t('login.signIn')}
+        accessibilityState={{ disabled: loading || !isValid, busy: loading }}
       >
         <Text style={[styles.primaryTxt, isValid ? styles.primaryTxtEnabled : styles.primaryTxtDisabled]}>
           {loading ? t('login.signingIn') : t('login.signIn')}
@@ -189,7 +199,9 @@ export default function Login() {
 
       {/* Forgot password */}
       <TouchableOpacity
-        style={{ alignSelf: 'center', marginTop: 8 }}
+        style={{ alignSelf: 'center', marginTop: 4, paddingVertical: 12, paddingHorizontal: 16 }}
+        accessibilityLabel={t('login.forgot')}
+        hitSlop={{ top: 8, bottom: 8, left: 16, right: 16 }}
         onPress={async () => {
           // ALTO-45: NO distinguir entre éxito y "user-not-found" para
           // evitar user enumeration. SIEMPRE mostramos el mismo mensaje

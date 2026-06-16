@@ -301,12 +301,16 @@ const styles = StyleSheet.create({
   cardTitleRow: { fontSize: 15, fontWeight: '700', color: '#ccc', flex: 1 },
 
   toggleBtn: {
-    paddingVertical: 8,
+    // Round 2 #10 MED-10-44: touch target ≥ 44pt (WCAG 2.5.5 / Android UX).
+    // Pre-fix: paddingVertical 8 + text ~14 = ~32dp altura, sub-mínimo.
+    minHeight: 44,
+    paddingVertical: 12,
     paddingHorizontal: 18,
     borderRadius: 20,
     backgroundColor: '#1a1a1a',
     borderWidth: 1,
     borderColor: '#333',
+    justifyContent: 'center',
   },
   toggleBtnOn: {
     backgroundColor: '#1a1400',

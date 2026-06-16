@@ -441,14 +441,14 @@ export default function Registration({ asModal = false, onClose }) {
         </View>
 
         <Text style={styles.label}>{t('registration.firstName')}</Text>
-        <TextInput style={styles.input} value={firstName} onChangeText={setFirstName} placeholderTextColor="#555" />
+        <TextInput style={styles.input} value={firstName} onChangeText={setFirstName} placeholderTextColor="#888" accessibilityLabel={t('registration.firstName')} />
 
         <Text style={styles.label}>{t('registration.lastName')}</Text>
-        <TextInput style={styles.input} value={lastName} onChangeText={setLastName} placeholderTextColor="#555" />
+        <TextInput style={styles.input} value={lastName} onChangeText={setLastName} placeholderTextColor="#888" accessibilityLabel={t('registration.lastName')} />
 
         <Text style={styles.label}>{t('registration.username')}</Text>
         <View style={styles.rowAlign}>
-          <TextInput style={[styles.input, { flex: 1 }]} value={username} onChangeText={setUsername} autoCapitalize="none" placeholder={t('registration.usernamePlaceholder')} placeholderTextColor="#555" />
+          <TextInput style={[styles.input, { flex: 1 }]} value={username} onChangeText={setUsername} autoCapitalize="none" placeholder={t('registration.usernamePlaceholder')} placeholderTextColor="#888" accessibilityLabel={t('registration.username')} />
           <Text style={[styles.matchIcon, usernameStatus === 'available' ? styles.matchOk : (usernameStatus === 'taken' || usernameStatus === 'invalid') ? styles.matchBad : styles.matchEmpty]}>
             {usernameStatus === 'available' ? '✓' : (usernameStatus === 'taken' || usernameStatus === 'invalid') ? '✗' : usernameStatus === 'checking' ? '…' : ''}
           </Text>
@@ -469,24 +469,24 @@ export default function Registration({ asModal = false, onClose }) {
           value={birthday}
           onChangeText={onChangeBirthday}
           placeholder={t('registration.birthdayPlaceholder')}
-          placeholderTextColor="#555"
+          placeholderTextColor="#888"
           keyboardType="number-pad"
           maxLength={10}
         />
 
         <Text style={styles.label}>{t('registration.phone')}</Text>
-        <TextInput style={styles.input} value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholderTextColor="#555" />
+        <TextInput style={styles.input} value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholderTextColor="#888" accessibilityLabel={t('registration.phone')} />
 
         {/* Email/Password section logic */}
         {isAnon ? (
           <>
             <Text style={styles.label}>{t('registration.email')}</Text>
-            <TextInput style={styles.input} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" placeholderTextColor="#555" />
+            <TextInput style={styles.input} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" placeholderTextColor="#888" accessibilityLabel={t('registration.email')} />
             <Text style={styles.label}>{t('registration.password')}</Text>
-            <TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry placeholder={t('registration.passwordPlaceholder')} placeholderTextColor="#555" />
+            <TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry placeholder={t('registration.passwordPlaceholder')} placeholderTextColor="#888" accessibilityLabel={t('registration.password')} />
             <Text style={styles.label}>{t('registration.confirmPassword')}</Text>
             <View style={styles.rowAlign}>
-              <TextInput style={[styles.input, { flex: 1 }]} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry placeholderTextColor="#555" />
+              <TextInput style={[styles.input, { flex: 1 }]} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry placeholderTextColor="#888" accessibilityLabel={t('registration.confirmPassword')} />
               <Text style={[styles.matchIcon, passwordsMatch ? styles.matchOk : styles.matchEmpty]}>{passwordsMatch ? '✓' : ''}</Text>
             </View>
           </>
@@ -498,11 +498,11 @@ export default function Registration({ asModal = false, onClose }) {
                 <Text style={styles.smallBtnTxt}>{canEditAuthEmail ? t('registration.cancel') : t('registration.changeEmail')}</Text>
               </TouchableOpacity>
             </View>
-            <TextInput style={styles.input} value={email} onChangeText={setEmail} editable={canEditAuthEmail} keyboardType="email-address" autoCapitalize="none" placeholderTextColor="#555" />
+            <TextInput style={styles.input} value={email} onChangeText={setEmail} editable={canEditAuthEmail} keyboardType="email-address" autoCapitalize="none" placeholderTextColor="#888" />
             {canEditAuthEmail && (
               <>
                 <Text style={styles.label}>{t('registration.confirmCurrentPassword')}</Text>
-                <TextInput style={styles.input} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry placeholderTextColor="#555" />
+                <TextInput style={styles.input} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry placeholderTextColor="#888" />
               </>
             )}
           </>
@@ -518,7 +518,7 @@ export default function Registration({ asModal = false, onClose }) {
                 value={referralCode}
                 onChangeText={v => setReferralCode(v.toUpperCase())}
                 placeholder={t('registration.referralCodePlaceholder')}
-                placeholderTextColor="#555"
+                placeholderTextColor="#888"
                 autoCapitalize="characters"
                 autoCorrect={false}
                 maxLength={10}
@@ -561,6 +561,8 @@ export default function Registration({ asModal = false, onClose }) {
           style={[styles.saveBtn, (loading || saving) && { opacity: 0.6 }]}
           onPress={onSave}
           disabled={loading || saving}
+          accessibilityLabel={t('registration.save')}
+          accessibilityState={{ disabled: loading || saving, busy: saving || loading }}
         >
           {saving
             ? <ActivityIndicator color="#fff" />

@@ -182,7 +182,14 @@ export default function BuyCredits({ onClose }) {
         /* Pago expirado */
         <View style={s.centerBox}>
           <Text style={s.expiredTxt}>⏱ {t('buyCredits.expired')}</Text>
-          <TouchableOpacity style={s.btn} onPress={generatePayment} disabled={loading} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={s.btn}
+            onPress={generatePayment}
+            disabled={loading}
+            activeOpacity={0.85}
+            accessibilityLabel={t('buyCredits.newPayment')}
+            accessibilityState={{ disabled: loading, busy: loading }}
+          >
             {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.btnTxt}>{t('buyCredits.newPayment')}</Text>}
           </TouchableOpacity>
         </View>
@@ -191,7 +198,13 @@ export default function BuyCredits({ onClose }) {
         <View style={s.paymentBox}>
           {/* Monto */}
           <Text style={s.fieldLabel}>{t('buyCredits.sendExactly')}</Text>
-          <TouchableOpacity style={s.copyRow} onPress={() => copyToClipboard(payment.amount, 'amount')} activeOpacity={0.75}>
+          <TouchableOpacity
+            style={s.copyRow}
+            onPress={() => copyToClipboard(payment.amount, 'amount')}
+            activeOpacity={0.75}
+            accessibilityLabel={`${t('buyCredits.copy')} ${payment.amount} USDC`}
+            accessibilityHint={t('buyCredits.sendExactly')}
+          >
             <Text style={s.amount}>{payment.amount} USDC</Text>
             <View style={s.copyBtn}><Text style={s.copyTxt}>{t('buyCredits.copy')}</Text></View>
           </TouchableOpacity>
@@ -199,7 +212,13 @@ export default function BuyCredits({ onClose }) {
 
           {/* Wallet — MEDIO-C21: solo mostrar si pasa validación de formato. */}
           <Text style={[s.fieldLabel, { marginTop: 16 }]}>{t('buyCredits.toAddress')}</Text>
-          <TouchableOpacity style={s.copyRow} onPress={() => safeWallet && copyToClipboard(safeWallet, 'wallet')} activeOpacity={0.75}>
+          <TouchableOpacity
+            style={s.copyRow}
+            onPress={() => safeWallet && copyToClipboard(safeWallet, 'wallet')}
+            activeOpacity={0.75}
+            accessibilityLabel={`${t('buyCredits.copy')} ${t('buyCredits.toAddress')}`}
+            accessibilityState={{ disabled: !safeWallet }}
+          >
             <Text style={s.walletTxt} numberOfLines={1} ellipsizeMode="middle">{safeWallet || '(inválido)'}</Text>
             <View style={s.copyBtn}><Text style={s.copyTxt}>{t('buyCredits.copy')}</Text></View>
           </TouchableOpacity>

@@ -84,11 +84,13 @@
     <li>Mejorar la app (anonimizado).</li>
   </ul>
 
-  <h2>3. Con quién compartimos datos</h2>
+  <h2>3. Con quién compartimos datos (sub-procesadores)</h2>
   <ul>
-    <li><strong>Google / Firebase</strong> (Auth, Firestore, Cloud Functions, FCM, AdMob): infraestructura.</li>
-    <li><strong>Polygon Network</strong> (blockchain pública): tu dirección de wallet y el NFT minteado quedan registrados on-chain.</li>
-    <li><strong>Pinata / IPFS</strong>: metadata pública de los NFTs.</li>
+    <li><strong>Google / Firebase</strong> (Auth, Firestore, Cloud Functions, FCM, AdMob, Cloud Storage): infraestructura principal. Datos procesados en Estados Unidos bajo Standard Contractual Clauses (SCC) aprobadas por la Comisión Europea para transferencias UE→USA post-Schrems II.</li>
+    <li><strong>Cloudflare</strong> (DNS registrar del dominio <code>miningtheblocks.com</code>): procesa metadata de resolución DNS (IP, headers, geolocalización) cuando visitás el sitio web. <a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener noreferrer">Política de Cloudflare</a>.</li>
+    <li><strong>GitHub</strong> (GitHub Pages hostea las páginas web públicas en <code>/docs</code>): procesa IPs de visitantes a privacy.html, terms.html, y adpick.html. <a href="https://docs.github.com/site-policy/privacy-policies" target="_blank" rel="noopener noreferrer">Política de GitHub</a>.</li>
+    <li><strong>Polygon Network</strong> (blockchain pública): tu dirección de wallet y el NFT minteado quedan registrados on-chain de forma permanente.</li>
+    <li><strong>Pinata / IPFS</strong>: metadata pública de los NFTs. El contenido en IPFS es público por diseño.</li>
     <li>No vendemos tus datos a terceros. No compartimos con anunciantes individuales.</li>
   </ul>
 
