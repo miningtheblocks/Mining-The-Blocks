@@ -11,10 +11,10 @@ function formatTimeAgo(ts, t) {
   const diff = Date.now() - (typeof ts === 'number' ? ts : (ts?.toMillis ? ts.toMillis() : Number(ts)));
   const m = Math.floor(diff / 60000);
   if (m < 1) return t('activity.timeNow');
-  if (m < 60) return t('activity.timeMin').replace('{m}', m);
+  if (m < 60) return t('activity.timeMin', { m });
   const h = Math.floor(m / 60);
-  if (h < 24) return t('activity.timeHour').replace('{h}', h);
-  return t('activity.timeDay').replace('{d}', Math.floor(h / 24));
+  if (h < 24) return t('activity.timeHour', { h });
+  return t('activity.timeDay', { d: Math.floor(h / 24) });
 }
 
 function EventRow({ item, t, language }) {
@@ -32,10 +32,7 @@ function EventRow({ item, t, language }) {
             {gemDisplayName} — ${(item.priceUSD || 0).toLocaleString()}
           </Text>
           <Text style={styles.sub}>
-            {t('activity.gemFoundSub')
-              .replace('{k}', item.layerK ?? '—')
-              .replace('{chain}', chainLabel)
-              .replace('{ep}', item.episodeNumber ?? 1)}
+            {t('activity.gemFoundSub', { k: item.layerK ?? '—', chain: chainLabel, ep: item.episodeNumber ?? 1 })}
           </Text>
         </View>
         <Text style={styles.time}>{formatTimeAgo(item.ts, t)}</Text>
@@ -49,12 +46,10 @@ function EventRow({ item, t, language }) {
         <Text style={styles.icon}>🏔️</Text>
         <View style={styles.body}>
           <Text style={[styles.title, { color: '#4a9eff' }]}>
-            {t('activity.layerCompletedTitle').replace('{k}', item.layerK)}
+            {t('activity.layerCompletedTitle', { k: item.layerK })}
           </Text>
           <Text style={styles.sub}>
-            {t('activity.layerNextSub')
-              .replace('{chain}', chainLabel)
-              .replace('{k}', item.nextLayerK)}
+            {t('activity.layerNextSub', { chain: chainLabel, k: item.nextLayerK })}
           </Text>
         </View>
         <Text style={styles.time}>{formatTimeAgo(item.ts, t)}</Text>
@@ -68,12 +63,10 @@ function EventRow({ item, t, language }) {
         <Text style={styles.icon}>🏆</Text>
         <View style={styles.body}>
           <Text style={[styles.title, { color: '#ffd700' }]}>
-            {t('activity.episodeTitle').replace('{n}', item.episodeNumber)}
+            {t('activity.episodeTitle', { n: item.episodeNumber })}
           </Text>
           <Text style={styles.sub}>
-            {t('activity.episodeSub')
-              .replace('{chain}', chainLabel)
-              .replace('{n}', (item.totalMined || 0).toLocaleString())}
+            {t('activity.episodeSub', { chain: chainLabel, n: (item.totalMined || 0).toLocaleString() })}
           </Text>
         </View>
         <Text style={styles.time}>{formatTimeAgo(item.ts, t)}</Text>

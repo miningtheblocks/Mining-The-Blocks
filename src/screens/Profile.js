@@ -43,7 +43,7 @@ export default function Profile({ asModal = false, onClose }) {
     const code = data?.referralCode;
     if (!code) return;
     const url = `https://miningtheblocks.com/?ref=${code}`;
-    const msg = t('profile.referralShareMsg').replace('{code}', code).replace('{url}', url);
+    const msg = t('profile.referralShareMsg', { code, url });
     try {
       await Share.share({ message: msg });
     } catch {}

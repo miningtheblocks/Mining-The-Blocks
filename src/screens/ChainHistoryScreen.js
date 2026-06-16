@@ -85,12 +85,12 @@ function EventRow({ item, t }) {
         </View>
         <View style={styles.rowBody}>
           <Text style={[styles.rowTitle, { color }]} numberOfLines={1}>
-            {t('chainHistory.episodeComplete').replace('{n}', item.episodeNumber ?? '—')}
+            {t('chainHistory.episodeComplete', { n: item.episodeNumber ?? '—' })}
           </Text>
           {/* BAJO-CH-03: numberOfLines=1 para evitar que displayName larguísimo rompa layout */}
           <Text style={styles.rowSub} numberOfLines={2} ellipsizeMode="tail">
-            {t('chainHistory.winner').replace('{name}', item.displayName || t('chainHistory.player'))}
-            {item.totalMined ? `  ${t('chainHistory.blocks').replace('{n}', item.totalMined)}` : ''}
+            {t('chainHistory.winner', { name: item.displayName || t('chainHistory.player') })}
+            {item.totalMined ? `  ${t('chainHistory.blocks', { n: item.totalMined })}` : ''}
           </Text>
           <Text style={styles.rowDate}>{formatDate(item.ts)}</Text>
         </View>
@@ -109,7 +109,7 @@ function EventRow({ item, t }) {
         </View>
         <View style={styles.rowBody}>
           <Text style={[styles.rowTitle, { color }]}>
-            {t('chainHistory.episodeStart').replace('{n}', item.episodeNumber ?? '—')}
+            {t('chainHistory.episodeStart', { n: item.episodeNumber ?? '—' })}
           </Text>
           <Text style={styles.rowDate}>{formatDate(item.ts)}</Text>
         </View>

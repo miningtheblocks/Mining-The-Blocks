@@ -4676,11 +4676,11 @@ const handleZoomButton = useCallback((direction) => {
               </Text>
               {episodeCompleteModal.episodeNumber != null && (
                 <Text style={styles.rewardMessage}>
-                  {t('cube.episodeCompleteMsg').replace('{n}', episodeCompleteModal.episodeNumber)}
+                  {t('cube.episodeCompleteMsg', { n: episodeCompleteModal.episodeNumber })}
                 </Text>
               )}
               <Text style={[styles.rewardMessage, { color: '#888', marginTop: 4 }]}>
-                {t('cube.episodeMined').replace('{n}', (episodeCompleteModal.totalMined || 0).toLocaleString())}
+                {t('cube.episodeMined', { n: (episodeCompleteModal.totalMined || 0).toLocaleString() })}
               </Text>
               <TouchableOpacity
                 style={[styles.rewardButton, { backgroundColor: '#ffd700', marginTop: 18 }]}
