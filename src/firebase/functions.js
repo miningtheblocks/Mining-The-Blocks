@@ -133,6 +133,25 @@ export async function callRequestPasswordReset(email) {
   return res.data;
 }
 
+// Round 2 Commit F (Agente #6 + #10 + #11): self-serve account ops.
+// deleteMyAccount: GDPR/Play Store right to erasure. Anonimiza el user doc
+// y borra el Auth user. Gemas + history preservados anonimizados por 5y
+// (AML/KYC). Username liberado.
+export async function callDeleteMyAccount() {
+  const fn = httpsCallable(functions, 'deleteMyAccount');
+  const res = await fn({});
+  return res.data;
+}
+
+// revokeMySessions: "logout everywhere" — usuario sospecha takeover y cierra
+// todas las sesiones desde otros devices. Equivalente a un admin llamando
+// revokeRefreshTokens manualmente.
+export async function callRevokeMySessions() {
+  const fn = httpsCallable(functions, 'revokeMySessions');
+  const res = await fn({});
+  return res.data;
+}
+
 // Creates a pending crypto payment (USDC/Polygon) with a unique amount
 // Returns { paymentId, amount, expiresAt }
 export async function callCreateCryptoPayment() {

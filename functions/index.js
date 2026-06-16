@@ -2338,6 +2338,160 @@ exports.requestPasswordReset = onCall({ secrets: [gmailAppPassword] }, async (re
   return { ok: true };
 });
 
+// CRIT (Round 2 Agente #6 MED-15 + Agente #10 HIGH-10-38 + Agente #11):
+// self-serve account deletion. Sin esta función, el user solo podía pedir
+// borrado via email a soporte (privacy.html promete <30 días). Bloqueante
+// para Play Store policy (mayo 2024 self-serve in-app obligatorio para apps
+// con login) y GDPR Art. 17 ("right to erasure" con SLA escalable).
+//
+// Estrategia: soft-delete con anonimización.
+//  - users/{uid} se preserva (no se borra) pero pierde TODO el PII:
+//    email, profile, avatar, push tokens, wallet, referralCode/referredBy,
+//    settings, language. Se mantiene `deletedAt` timestamp.
+//  - subcoleccion notifications/ → batch delete (no retention).
+//  - subcoleccion gems/ → SE PRESERVA (NFT records + 5y retention AML/KYC).
+//  - usernames/{username} → released para que otros lo puedan reclamar.
+//  - pendingCryptoPayments con status:waiting → cancelled.
+//  - Auth user → deleteUser (revoca todas las sesiones automáticamente).
+//  - Audit en adminActions.
+//
+// Las gems del user quedan accesibles solo via Admin SDK (Firestore rules
+// requieren request.auth.uid == ownerUid). Para retention compliance.
+exports.deleteMyAccount = onCall(async (request) => {
+  requireRegistered(request);
+  await assertFreshToken(request);
+  const uid = request.auth.uid;
+
+  // Anti-accident: max 1 intento por hora. Si falla parcial, requiere intervención manual.
+  const okRate = await _rateLimitFirestore(`dma_${uid}`, 1, 60 * 60 * 1000);
+  if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
+
+  const userRef = db.collection("users").doc(uid);
+
+  // 1. Liberar el username (si tiene). Permite que el handle quede disponible.
+  try {
+    const usernamesSnap = await db.collection("usernames").where("uid", "==", uid).limit(1).get();
+    if (!usernamesSnap.empty) {
+      await usernamesSnap.docs[0].ref.delete();
+    }
+  } catch (e) {
+    console.warn("deleteMyAccount: username release failed:", e && e.message);
+  }
+
+  // 2. Anonimizar el user doc (preserva refs en history/gems para retention 5y).
+  try {
+    await userRef.set({
+      deletedAt: Date.now(),
+      displayName: "[deleted]",
+      email: FieldValue.delete(),
+      profile: FieldValue.delete(),
+      avatarUrl: FieldValue.delete(),
+      photoURL: FieldValue.delete(),
+      pushToken: FieldValue.delete(),
+      pushTokenType: FieldValue.delete(),
+      pushNotifications: FieldValue.delete(),
+      walletAddress: FieldValue.delete(),
+      walletChangedAt: FieldValue.delete(),
+      referralCode: FieldValue.delete(),
+      referredBy: FieldValue.delete(),
+      settings: FieldValue.delete(),
+      language: FieldValue.delete(),
+      serverCredits: 0,
+      picks: 0,
+    }, { merge: true });
+  } catch (e) {
+    console.error("deleteMyAccount: anonymize failed:", e && e.message);
+    throw new HttpsError("internal", "anonymize_failed");
+  }
+
+  // 3. Borrar notifications (no retention requirement).
+  try {
+    const notifSnap = await userRef.collection("notifications").limit(500).get();
+    if (!notifSnap.empty) {
+      const batch = db.batch();
+      notifSnap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn("deleteMyAccount notifications cleanup:", e && e.message);
+  }
+
+  // 4. Cancelar pendingCryptoPayments waiting (slots de amount únicos se liberan).
+  try {
+    const pendingPaySnap = await db.collection("pendingCryptoPayments")
+        .where("uid", "==", uid).where("status", "==", "waiting").get();
+    if (!pendingPaySnap.empty) {
+      const batch = db.batch();
+      pendingPaySnap.docs.forEach((d) => batch.update(d.ref, {
+        status: "cancelled", cancelledAt: Date.now(), reason: "account_deleted",
+      }));
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn("deleteMyAccount pendingPay cleanup:", e && e.message);
+  }
+
+  // 5. Borrar el Auth user (revoca refresh tokens automáticamente +
+  // las sesiones existentes quedan inválidas).
+  try {
+    await getAuth().deleteUser(uid);
+  } catch (e) {
+    // Si el Auth user ya no existe (race), seguimos: el doc ya está anonimizado.
+    if (e && e.code !== "auth/user-not-found") {
+      console.error("deleteMyAccount: Auth delete failed:", e && e.message);
+      throw new HttpsError("internal", "auth_delete_failed");
+    }
+  }
+
+  // 6. Audit log.
+  try {
+    await db.collection("adminActions").add({
+      action: "self_delete_account",
+      uid,
+      ts: Date.now(),
+    });
+  } catch (e) {
+    console.warn("deleteMyAccount audit log failed:", e && e.message);
+  }
+
+  return { ok: true };
+});
+
+// CRIT (Round 2 Agente #6 MED + Agente #11 MED-11-46): self-serve "logout
+// everywhere". Sin esto, ante sospecha de takeover, el user no tenía forma
+// de cerrar sesiones en otros devices — dependía del admin con acceso a
+// Firebase Console para llamar revokeRefreshTokens manualmente.
+//
+// Patrón mismo que Auth deleteUser pero sin tocar el doc / NFTs:
+// revokeRefreshTokens + audit log. El user sigue logueado en este device
+// hasta que su token actual expire (~5min para Firebase JWT) o el cliente
+// llame signOut local. La UI hace ambos para cierre inmediato.
+exports.revokeMySessions = onCall(async (request) => {
+  requireRegistered(request);
+  await assertFreshToken(request);
+  const uid = request.auth.uid;
+
+  const okRate = await _rateLimitFirestore(`rms_${uid}`, 5, 60 * 60 * 1000);
+  if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
+
+  try {
+    await getAuth().revokeRefreshTokens(uid);
+  } catch (e) {
+    console.error("revokeMySessions error:", e && e.message);
+    throw new HttpsError("internal", "revoke_failed");
+  }
+
+  try {
+    await db.collection("adminActions").add({
+      action: "self_revoke_sessions",
+      uid,
+      ts: Date.now(),
+    });
+  } catch (_) {/* audit non-critical */}
+
+  return { ok: true };
+});
+
 exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, res) => {
   setRestrictedCorsHeaders(req, res);
   if (req.method === "OPTIONS") {
