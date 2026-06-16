@@ -86,10 +86,12 @@
          via expo-image-picker) auto-injecta exported=true. Override a false:
          es una activity interna del crop flow, no debe responder a intents
          externos. Sin esto, otra app podía dispararla con Intent.setComponent
-         + URI arbitraria. -->
+         + URI arbitraria.
+         tools:replace="android:exported" es obligatorio porque la lib declara
+         exported=true; sin esto, el manifest merger falla con conflict. -->
     <activity android:name="com.canhub.cropper.CropImageActivity"
               android:exported="false"
-              tools:node="merge"/>
+              tools:replace="android:exported"/>
     <!-- Round 2 Agente #9 MED-09-10: BIND_GET_INSTALL_REFERRER_SERVICE viene
          de play-services-measurement para Play Store install attribution. En
          sideload nunca está populated → permiso cosmético sin uso. -->
