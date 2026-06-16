@@ -1243,7 +1243,9 @@ async function withMintProcessorLock(fn) {
   try {
     return await fn();
   } finally {
-    try { await lockRef.delete(); } catch (_) {/* TTL backup garantiza limpieza */}
+    try {
+      await lockRef.delete();
+    } catch (_) {/* TTL backup garantiza limpieza */}
   }
 }
 
@@ -1887,7 +1889,7 @@ exports.notifyAllUsers = onCall(async (request) => {
   // automático sobre los uids con responses de "not registered".
   const BATCH = 500;
   const fcmTokens = [];
-  const fcmTokenUids = [];   // paralelo a fcmTokens para cleanup
+  const fcmTokenUids = []; // paralelo a fcmTokens para cleanup
   const expoTokens = [];
   let lastDoc = null;
 
@@ -2339,7 +2341,12 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
     // query string del link contiene oobCode (1-hr valid reset token) + email.
     // Solo loguear scheme+host para diagnóstico.
     let safePrefix = "";
-    try { const u = new URL(verificationLink); safePrefix = `${u.protocol}//${u.host}`; } catch (_) {}
+    try {
+      const u = new URL(verificationLink);
+      safePrefix = `${u.protocol}//${u.host}`;
+    } catch (_) {
+      // link mal-formed → safePrefix queda ""
+    }
     console.error("sendVerificationEmail: unexpected link shape", { safePrefix });
     throw new HttpsError("internal", "link_generation_failed");
   }
