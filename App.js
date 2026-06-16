@@ -418,8 +418,16 @@ function DeepLinkHandler() {
       // Round 2 #10 HIGH-10-09: ampliado a más URLs. Backend manda data.url
       // en push payloads (mint complete → gems, payment → servers, etc.).
       // El response listener llama Linking.openURL que entra acá.
-      if (!url || !url.startsWith('exp+miningtheblocks://')) return;
-      const host = url.replace('exp+miningtheblocks://', '').split(/[?\/]/)[0].toLowerCase();
+      // Round 2 #9 MED-09-13: aceptar también el nuevo scheme `mtb://`.
+      if (!url) return;
+      let host = '';
+      if (url.startsWith('exp+miningtheblocks://')) {
+        host = url.replace('exp+miningtheblocks://', '').split(/[?\/]/)[0].toLowerCase();
+      } else if (url.startsWith('mtb://')) {
+        host = url.replace('mtb://', '').split(/[?\/]/)[0].toLowerCase();
+      } else {
+        return;
+      }
       switch (host) {
         case 'peaks':       openModal('peaks');      break;
         case 'gems':

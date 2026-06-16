@@ -7,6 +7,28 @@
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+  <!-- Round 2 Agente #9 MED-09-10 + MED-09-11: remover permisos transitivos
+       sin valor en sideload (no Play Store install referrer; no badges porque
+       Notifications.shouldSetBadge:false). Reduce attack surface visible al
+       user en Settings → Permisos. -->
+  <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove"/>
+  <uses-permission android:name="com.android.vending.BILLING" tools:node="remove"/>
+  <uses-permission android:name="com.sec.android.provider.badge.permission.READ" tools:node="remove"/>
+  <uses-permission android:name="com.sec.android.provider.badge.permission.WRITE" tools:node="remove"/>
+  <uses-permission android:name="com.htc.launcher.permission.READ_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="com.htc.launcher.permission.UPDATE_SHORTCUT" tools:node="remove"/>
+  <uses-permission android:name="com.sonyericsson.home.permission.BROADCAST_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.sonymobile.home.permission.PROVIDER_INSERT_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.anddoes.launcher.permission.UPDATE_COUNT" tools:node="remove"/>
+  <uses-permission android:name="com.majeur.launcher.permission.UPDATE_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.huawei.android.launcher.permission.CHANGE_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.huawei.android.launcher.permission.READ_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="com.huawei.android.launcher.permission.WRITE_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="android.permission.READ_APP_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.oppo.launcher.permission.READ_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="com.oppo.launcher.permission.WRITE_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="me.everything.badger.permission.BADGE_COUNT_READ" tools:node="remove"/>
+  <uses-permission android:name="me.everything.badger.permission.BADGE_COUNT_WRITE" tools:node="remove"/>
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
@@ -35,6 +57,30 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="exp+miningtheblocks"/>
       </intent-filter>
+      <!-- Round 2 Agente #9 MED-09-13: nuevo scheme `mtb://` sin prefix `exp+`
+           (que delataba la app como Expo a cualquier static analyzer del APK).
+           Mantenemos el viejo para backwards-compat de users existentes; el
+           backend va a migrar a `mtb://` en futuros releases una vez que
+           ~95% de la base haya actualizado a v1.2.0+. -->
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="mtb"/>
+      </intent-filter>
     </activity>
+    <!-- Round 2 Agente #9 MED-09-12: CropImageActivity (libreria canhub.cropper
+         via expo-image-picker) auto-injecta exported=true. Override a false:
+         es una activity interna del crop flow, no debe responder a intents
+         externos. Sin esto, otra app podía dispararla con Intent.setComponent
+         + URI arbitraria. -->
+    <activity android:name="com.canhub.cropper.CropImageActivity"
+              android:exported="false"
+              tools:node="merge"/>
+    <!-- Round 2 Agente #9 MED-09-10: BIND_GET_INSTALL_REFERRER_SERVICE viene
+         de play-services-measurement para Play Store install attribution. En
+         sideload nunca está populated → permiso cosmético sin uso. -->
+    <service android:name="com.google.android.gms.measurement.AppMeasurementJobService"
+             tools:node="remove"/>
   </application>
 </manifest>

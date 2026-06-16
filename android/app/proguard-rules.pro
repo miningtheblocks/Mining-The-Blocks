@@ -51,7 +51,14 @@
 -keep class abi*.host.exp.exponent.modules.api.components.gl.** { *; }
 
 # === Keep custom MainApplication / MainActivity ===
--keep class com.bissi.miningtheblocks.** { *; }
+# Round 2 Agente #9 MED-09-37: ProGuard restrictivo. Pre-fix
+# `-keep class com.bissi.miningtheblocks.** { *;}` preservaba TODO el package
+# interno (incluyendo verifyAppSignature) con nombres originales — hacía
+# trivial el bytecode-patch via apktool. Ahora solo MainActivity y
+# MainApplication (referenciados por string en AndroidManifest) preservan
+# nombres; el resto se ofusca normalmente.
+-keep class com.bissi.miningtheblocks.MainActivity { *; }
+-keep class com.bissi.miningtheblocks.MainApplication { *; }
 
 # === Serialization-friendly: keep enum values / native callbacks ===
 -keepclassmembers enum * { public static **[] values(); public static ** valueOf(java.lang.String); }
