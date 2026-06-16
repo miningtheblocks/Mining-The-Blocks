@@ -2232,6 +2232,17 @@ const handleZoomButton = useCallback((direction) => {
         clearInterval(minedPollRef.current);
         minedPollRef.current = null;
       }
+      // Round 2 Agente #5: clear adicional de timers que podían sobrevivir al
+      // unmount. Pre-fix: si user navega a otra screen durante un mining flow
+      // activo (mid-watchdog, hud-toast visible, pre-hold counting), el
+      // setTimeout queda corriendo + dispara callbacks contra árbol React
+      // desmontado → setState warning "Can't perform a React state update on
+      // an unmounted component" + memory hold de closures.
+      try { if (hudToastTimerRef.current) { clearTimeout(hudToastTimerRef.current); hudToastTimerRef.current = null; } } catch (_) {}
+      try { if (gridExitTimerRef.current) { clearTimeout(gridExitTimerRef.current); gridExitTimerRef.current = null; } } catch (_) {}
+      try { if (preHoldTimerRef.current) { clearTimeout(preHoldTimerRef.current); preHoldTimerRef.current = null; } } catch (_) {}
+      try { if (miningWatchdogRef.current) { clearTimeout(miningWatchdogRef.current); miningWatchdogRef.current = null; } } catch (_) {}
+      try { if (miningProgressTimerRef.current) { clearInterval(miningProgressTimerRef.current); miningProgressTimerRef.current = null; } } catch (_) {}
     };
     // CRIT-10: deps vacías a propósito. `miningAnimations` en deps re-suscribía
     // onAuthStateChanged cada vez que el Map cambiara, lo que es destructivo

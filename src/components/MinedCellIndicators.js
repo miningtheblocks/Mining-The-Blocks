@@ -158,28 +158,51 @@ export function createRewardIndicatorSprite(rewardAmount, localPosition, color =
 
 /**
  * Store de recompensas
+ *
+ * Round 2 Agente #5 leak: pre-fix sin cap → en capa K minada completa
+ * (~50k cells), el Map crece hasta ~10MB residente en RAM. Sesiones
+ * largas con multiple servers progresados acumulan sin liberar.
+ * Fix: cap a 20k entries con LRU eviction. La eviction libera memoria
+ * sin afectar la UX porque las celdas más viejas (las que se evict)
+ * son las menos probables de re-visualizarse en el viewport actual.
  */
+const REWARD_STORE_MAX_ENTRIES = 20000;
+
 export class MinedCubesRewardStore {
-  constructor() {
+  constructor(maxEntries) {
     this.rewards = new Map();
+    this.maxEntries = (typeof maxEntries === 'number' && maxEntries > 0) ? maxEntries : REWARD_STORE_MAX_ENTRIES;
   }
-  
+
   set(layer, faceIndex, gridX, gridY, rewardAmount) {
     const key = `${layer}:${faceIndex}:${gridX}:${gridY}`;
+    // LRU: si la key ya existe, refrescar su posición (delete + set la pone al final).
+    if (this.rewards.has(key)) {
+      this.rewards.delete(key);
+    } else if (this.rewards.size >= this.maxEntries) {
+      // Eviction: borrar la entry más vieja (head del insertion order del Map).
+      const oldestKey = this.rewards.keys().next().value;
+      if (oldestKey !== undefined) this.rewards.delete(oldestKey);
+    }
     this.rewards.set(key, rewardAmount);
   }
-  
+
   get(layer, faceIndex, gridX, gridY) {
     const key = `${layer}:${faceIndex}:${gridX}:${gridY}`;
     return this.rewards.get(key) || 0;
   }
-  
+
   has(layer, faceIndex, gridX, gridY) {
     const key = `${layer}:${faceIndex}:${gridX}:${gridY}`;
     return this.rewards.has(key);
   }
-  
+
   clear() {
     this.rewards.clear();
+  }
+
+  // Diagnostic: tamaño actual + cap. Útil para debugging post-deploy.
+  stats() {
+    return { size: this.rewards.size, max: this.maxEntries };
   }
 }
