@@ -200,7 +200,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
             <Text style={styles.bigPick}>⛏</Text>
             <View style={styles.countBlock}>
               <Text style={styles.pickCount}>{picks}</Text>
-              <Text style={styles.picksLabel}>picks</Text>
+              <Text style={styles.picksLabel}>{t('profile.picksSuffix')}</Text>
             </View>
           </View>
         )}

@@ -13,6 +13,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, ensureUser, db } from './src/firebase/client';
+import audioManager from './src/utils/audioManager';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import UpdateModal from './src/components/UpdateModal';
 import ErrorBoundary from './src/components/ErrorBoundary';
@@ -185,6 +186,11 @@ function RootApp() {
       try {
         // V1.1.0: sin modo anónimo. Si no hay user → null (App muestra Login).
         if (!u) {
+          // Round 2 Agente #4 MEDIO-FE-21: teardown del audio cuando el user
+          // hace signOut. Pre-fix: la música seguía sonando sobre la pantalla
+          // de Login (~5MB residente + UX disonante). cleanup() es idempotente
+          // y resetea flags para que un re-init después funcione.
+          try { await audioManager.cleanup(); } catch (_) {}
           isFirstAuthCheck.current = false;
           setUser(null);
         } else if (isFirstAuthCheck.current) {
