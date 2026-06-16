@@ -2055,6 +2055,182 @@ exports.firestoreBackupScheduled = onSchedule("every day 03:00", async () => {
   }
 });
 
+// CRIT (Round 2 Agente #11 CRIT-11-02 + #12): MATIC balance alert.
+// Sin esto, mints fallarían silenciosamente cuando el balance llega a 0.
+// 5 retries × ~30s cada uno = 2-3h de holders esperando ANTES del email de
+// fail. Con alert proactivo: el dev se entera cuando balance < 2 MATIC
+// (umbral ~ 50 mints futuros @ Polygon gas típico).
+exports.maticBalanceCheckScheduled = onSchedule(
+    { schedule: "every 6 hours", secrets: [companyWalletKey, gmailAppPassword] },
+    async () => {
+      try {
+        const privateKey = companyWalletKey.value();
+        if (!privateKey || !/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+          console.error("maticBalanceCheck: invalid wallet key format");
+          return;
+        }
+        const provider = new ethers.JsonRpcProvider("https://polygon-bor-rpc.publicnode.com");
+        const wallet = new ethers.Wallet(privateKey, provider);
+        const balanceWei = await provider.getBalance(wallet.address);
+        const balanceMatic = Number(ethers.formatEther(balanceWei));
+        const THRESHOLD_MATIC = 2;
+
+        if (balanceMatic >= THRESHOLD_MATIC) {
+          console.log(`maticBalanceCheck: OK balance=${balanceMatic.toFixed(3)} MATIC`);
+          return;
+        }
+
+        // Anti-spam: 1 alert por día como máximo (state en runtime/maticAlert).
+        const alertRef = db.collection("runtime").doc("maticBalanceAlert");
+        const alertSnap = await alertRef.get();
+        const lastAlertAt = alertSnap.exists ? (alertSnap.data().lastAlertAt || 0) : 0;
+        if (Date.now() - lastAlertAt < 24 * 60 * 60 * 1000) {
+          console.log(`maticBalanceCheck: LOW ${balanceMatic.toFixed(3)} MATIC (alert deduped)`);
+          return;
+        }
+
+        const appPassword = gmailAppPassword.value();
+        if (!appPassword) {
+          console.error("maticBalanceCheck: gmail not configured, cannot send alert");
+          return;
+        }
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: { user: NOTIFY_EMAIL, pass: appPassword },
+        });
+        await transporter.sendMail({
+          from: `"MTB Operations Alert" <${NOTIFY_EMAIL}>`,
+          to: NOTIFY_EMAIL,
+          subject: `⛏️ [MTB OPS] LOW MATIC: ${balanceMatic.toFixed(3)} (threshold ${THRESHOLD_MATIC})`,
+          text: `Company wallet ${wallet.address} balance is below threshold.\n\nCurrent: ${balanceMatic.toFixed(6)} MATIC\nThreshold: ${THRESHOLD_MATIC} MATIC\n\nMint operations will start failing if balance reaches 0. Top up via QuickSwap (USDC → MATIC) or buy MATIC directly. ~0.04 MATIC per mint typical gas.\n\nThis alert is throttled to 1/day.`,
+        });
+        await alertRef.set({ lastAlertAt: Date.now(), balanceMatic }, { merge: true });
+        console.warn(`maticBalanceCheck: ALERT SENT, balance=${balanceMatic.toFixed(6)}`);
+      } catch (e) {
+        console.error("maticBalanceCheckScheduled error:", e && e.message);
+      }
+    });
+
+// HIGH (Round 2 Agente #11 HIGH-11-21): weekly errorLog digest.
+// errorLog Firestore es write-only desde regla; nadie lo lee programáticamente.
+// Pre-fix: el dev tenía que abrir Firebase Console manualmente cada X tiempo
+// y scrollear. Con email digest semanal: top scopes por count, sample por
+// scope, en HTML simple. Detección temprana de regresiones del cliente.
+exports.errorLogSummaryWeekly = onSchedule(
+    { schedule: "every monday 08:00", timeZone: "America/Argentina/Buenos_Aires", secrets: [gmailAppPassword] },
+    async () => {
+      try {
+        const oneWeekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const snap = await db.collection("errorLog")
+            .where("ts", ">=", oneWeekAgoMs)
+            .limit(2000).get();
+        if (snap.empty) {
+          console.log("errorLogSummary: no errors this week");
+          return;
+        }
+        const byScope = new Map();
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          const scope = String(data.scope || "unknown").slice(0, 80);
+          if (!byScope.has(scope)) byScope.set(scope, { count: 0, sample: "" });
+          const entry = byScope.get(scope);
+          entry.count++;
+          if (!entry.sample && data.msg) entry.sample = String(data.msg).slice(0, 200);
+        });
+        const sorted = Array.from(byScope.entries())
+            .sort((a, b) => b[1].count - a[1].count)
+            .slice(0, 25);
+
+        const appPassword = gmailAppPassword.value();
+        if (!appPassword) return;
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: { user: NOTIFY_EMAIL, pass: appPassword },
+        });
+        const rows = sorted.map(([scope, e]) =>
+          `<tr><td>${esc(scope)}</td><td style="text-align:right;font-weight:700">${e.count}</td><td style="font-family:monospace;font-size:11px;color:#888">${esc(e.sample) || "—"}</td></tr>`,
+        ).join("\n");
+        await transporter.sendMail({
+          from: `"MTB Weekly Report" <${NOTIFY_EMAIL}>`,
+          to: NOTIFY_EMAIL,
+          subject: `📊 [MTB] errorLog weekly: ${snap.size} errors / ${sorted.length} scopes`,
+          html: `<h2>errorLog weekly summary</h2>
+<p>Last 7 days: <strong>${snap.size}</strong> errors across <strong>${sorted.length}</strong> distinct scopes.</p>
+<table border="1" cellpadding="6" cellspacing="0" style="font-family:sans-serif;font-size:13px;border-collapse:collapse">
+  <thead style="background:#f0f0f0"><tr><th>Scope</th><th>Count</th><th>Sample message</th></tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+<p style="color:#888;font-size:11px;margin-top:24px">Scopes con &gt;100 errors/semana sugieren bug del cliente. Investigá los top 3.</p>`,
+        });
+        console.log(`errorLogSummary: sent digest, scopes=${sorted.length} total=${snap.size}`);
+      } catch (e) {
+        console.error("errorLogSummaryWeekly error:", e && e.message);
+      }
+    });
+
+// HIGH (Round 2 Agente #11 HIGH-11-22): weekly adminActions digest +
+// anomaly detection. adminActions Firestore es write-only; nadie monitorea.
+// Pre-fix: si un admin se compromete y hace 50 grant_admin + addServerCredit,
+// el log existe pero el operador no se entera hasta hacer auditoría manual.
+// Esta function alerta si un admin tuvo >50 acciones/semana (ramp-up sospechoso).
+exports.adminActionsAnomalyWeekly = onSchedule(
+    { schedule: "every monday 08:30", timeZone: "America/Argentina/Buenos_Aires", secrets: [gmailAppPassword] },
+    async () => {
+      try {
+        const oneWeekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const snap = await db.collection("adminActions")
+            .where("ts", ">=", oneWeekAgoMs)
+            .limit(5000).get();
+        if (snap.empty) {
+          console.log("adminActionsAnomaly: no actions this week");
+          return;
+        }
+        const byAdmin = new Map();
+        const byAction = new Map();
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          const adminUid = String(data.adminUid || data.uid || "system").slice(0, 32);
+          const action = String(data.action || "unknown").slice(0, 50);
+          byAdmin.set(adminUid, (byAdmin.get(adminUid) || 0) + 1);
+          byAction.set(action, (byAction.get(action) || 0) + 1);
+        });
+        const ANOMALY_THRESHOLD = 50;
+        const anomalies = Array.from(byAdmin.entries()).filter(([_, c]) => c > ANOMALY_THRESHOLD);
+
+        const appPassword = gmailAppPassword.value();
+        if (!appPassword) return;
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: { user: NOTIFY_EMAIL, pass: appPassword },
+        });
+        const adminRows = Array.from(byAdmin.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(([uid, c]) => `<tr><td>${esc(uid.slice(0, 12))}…</td><td style="text-align:right;font-weight:700">${c}</td><td>${c > ANOMALY_THRESHOLD ? '<span style="color:#ff6b6b">⚠️ HIGH</span>' : ""}</td></tr>`)
+            .join("\n");
+        const actionRows = Array.from(byAction.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(([a, c]) => `<tr><td>${esc(a)}</td><td style="text-align:right;font-weight:700">${c}</td></tr>`)
+            .join("\n");
+        await transporter.sendMail({
+          from: `"MTB Weekly Report" <${NOTIFY_EMAIL}>`,
+          to: NOTIFY_EMAIL,
+          subject: anomalies.length > 0 ?
+            `🚨 [MTB] adminActions ANOMALY: ${anomalies.length} admin(s) >${ANOMALY_THRESHOLD} ops/week` :
+            `📊 [MTB] adminActions weekly: ${snap.size} ops, nominal`,
+          html: `<h2>adminActions weekly summary</h2>
+<p>Last 7 days: <strong>${snap.size}</strong> admin operations across <strong>${byAdmin.size}</strong> admin uid(s).</p>
+${anomalies.length > 0 ? `<p style="background:#fff0f0;border-left:4px solid #ff6b6b;padding:10px"><strong>⚠️ ${anomalies.length} admin(s) exceeded ${ANOMALY_THRESHOLD} ops</strong>. Investigate: post-bug bash? Promo? Compromise?</p>` : ""}
+<h3>By admin</h3>
+<table border="1" cellpadding="6" cellspacing="0" style="font-family:sans-serif;font-size:13px;border-collapse:collapse"><thead style="background:#f0f0f0"><tr><th>adminUid</th><th>count</th><th>flag</th></tr></thead><tbody>${adminRows}</tbody></table>
+<h3>By action</h3>
+<table border="1" cellpadding="6" cellspacing="0" style="font-family:sans-serif;font-size:13px;border-collapse:collapse"><thead style="background:#f0f0f0"><tr><th>action</th><th>count</th></tr></thead><tbody>${actionRows}</tbody></table>`,
+        });
+        console.log(`adminActionsAnomaly: sent digest, anomalies=${anomalies.length} total=${snap.size}`);
+      } catch (e) {
+        console.error("adminActionsAnomalyWeekly error:", e && e.message);
+      }
+    });
+
 // ─── Web: Verificación y claim de gemas ──────────────────────────────────────
 
 // SEC-P1-7: rate-limit persistido en Firestore (consistente entre instancias).
@@ -2152,7 +2328,12 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
   // arbitrario. Y aunque verificationLink es server-generated, lo escapamos
   // antes de meterlo en el template HTML (defense-in-depth).
   if (!/^https:\/\/miningtheblocks-669f6\.web\.app\/verify\?/.test(verificationLink)) {
-    console.error("sendVerificationEmail: unexpected link shape", { prefix: verificationLink.slice(0, 80) });
+    // MED (Round 2 Agente #11 MED-11-25): NO loguear el prefix completo, el
+    // query string del link contiene oobCode (1-hr valid reset token) + email.
+    // Solo loguear scheme+host para diagnóstico.
+    let safePrefix = "";
+    try { const u = new URL(verificationLink); safePrefix = `${u.protocol}//${u.host}`; } catch (_) {}
+    console.error("sendVerificationEmail: unexpected link shape", { safePrefix });
     throw new HttpsError("internal", "link_generation_failed");
   }
   const safeLink = esc(verificationLink);
