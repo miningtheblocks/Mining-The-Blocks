@@ -1143,6 +1143,10 @@ async function sendPushToUser(uid, titles, bodies, opts) {
   try {
     const notifyKey = opts && opts.notifyKey;
     const data = (opts && opts.data) || null;
+    // Round 2 Agente #10 HIGH-10-10: channelId per push para mute granular
+    // en Android. Default a 'default' channel si el caller no especifica.
+    // Valores válidos: 'mint', 'payment', 'referral', 'marketing', 'default'.
+    const channelId = (opts && opts.channelId) || 'default';
     const snap = await db.collection("users").doc(uid).get();
     const userData = snap.exists ? snap.data() : {};
     const token = userData.pushToken || null;
@@ -1163,7 +1167,7 @@ async function sendPushToUser(uid, titles, bodies, opts) {
           notification: { title, body },
           // FCM exige que todos los values en data sean strings.
           ...(data ? { data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])) } : {}),
-          android: { priority: "high", notification: { sound: "default" } },
+          android: { priority: "high", notification: { sound: "default", channelId } },
         });
       } catch (e) {
         const code = e && e.code;
@@ -1360,8 +1364,8 @@ async function runMintProcessing() {
             data.uid,
             { en: "Your NFT arrived! 💎", es: "¡Tu NFT llegó! 💎" },
             { en: `Your gem was minted on Polygon. Token #${tokenId || ''}`, es: `Tu gema fue minteada en Polygon. Token #${tokenId || ''}` },
-            // Round 2 #10: respetar settings.notifyRewards + deep-link a MyGems.
-            { notifyKey: "notifyRewards", data: { url: "exp+miningtheblocks://gems", type: "mint_complete" } },
+            // Round 2 #10: respetar settings.notifyRewards + deep-link a MyGems + channel 'mint'.
+            { notifyKey: "notifyRewards", channelId: "mint", data: { url: "exp+miningtheblocks://gems", type: "mint_complete" } },
         );
       }
       processed++;
@@ -1780,8 +1784,8 @@ async function runCryptoPaymentProcessing() {
                 bonusReferredBy,
                 { en: "Your referral bought a credit! 🎉", es: "¡Tu referido compró un crédito! 🎉" },
                 { en: "You both received 5 picks! Keep inviting friends!", es: "¡Ambos recibieron 5 picos! ¡Seguí invitando amigos!" },
-                // Round 2 #10: respetar settings.notifyRewards + deep-link a Profile (referrals tab).
-                { notifyKey: "notifyRewards", data: { url: "exp+miningtheblocks://profile", type: "referral_bonus" } },
+                // Round 2 #10: respetar settings.notifyRewards + deep-link a Profile + channel 'referral'.
+                { notifyKey: "notifyRewards", channelId: "referral", data: { url: "exp+miningtheblocks://profile", type: "referral_bonus" } },
             );
             // In-app notification for the referrer
             await db.collection("users").doc(bonusReferredBy).collection("notifications").add({
@@ -1806,8 +1810,8 @@ async function runCryptoPaymentProcessing() {
               uid,
               {en: "Payment received! 💰", es: "¡Pago recibido! 💰"},
               {en: "Your credit was added. You can now join a chain!", es: "Tu crédito fue acreditado. ¡Ya podés unirte a una cadena!"},
-              // Round 2 #10: respetar settings.notifyRewards + deep-link a ServerList.
-              { notifyKey: "notifyRewards", data: { url: "exp+miningtheblocks://servers", type: "payment_received" } },
+              // Round 2 #10: respetar settings.notifyRewards + deep-link a ServerList + channel 'payment'.
+              { notifyKey: "notifyRewards", channelId: "payment", data: { url: "exp+miningtheblocks://servers", type: "payment_received" } },
           );
         } catch (pushErr) {
           console.warn("Push notification failed:", pushErr.message);
@@ -1930,7 +1934,10 @@ exports.notifyAllUsers = onCall(async (request) => {
       const response = await getMessaging().sendEachForMulticast({
         tokens: chunkTokens,
         notification: { title, body },
-        android: { priority: "high", notification: { sound: "default" } },
+        // Round 2 Agente #10 HIGH-10-10: broadcasts van al channel 'marketing'
+        // (importance DEFAULT vs HIGH de los transaccionales). Permite al user
+        // mute solo marketing sin perder alerts de mint/payment.
+        android: { priority: "high", notification: { sound: "default", channelId: "marketing" } },
       });
       response.responses.forEach((r, idx) => {
         if (r.success) {

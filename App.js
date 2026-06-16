@@ -52,11 +52,28 @@ function RootApp() {
             shouldSetBadge: false,
           }),
         });
-        // Ensure the default notification channel exists on Android
+        // Round 2 Agente #10 HIGH-10-10: canales Android granulares.
+        // Pre-fix: solo 'default' channel → el user solo podía mute/unmute
+        // el channel entero. Ahora 4 canales por tipo de notificación —
+        // mute granular en Settings → App → Notificaciones.
+        //
+        // 'default' se conserva por backwards-compat con tokens viejos / push
+        // mal-canalizadas.
         if (Platform.OS === 'android') {
-          await Notifications.setNotificationChannelAsync('default', {
-            name: 'Default',
+          const baseChannel = {
             importance: Notifications.AndroidImportance.HIGH,
+            sound: 'default',
+            vibrationPattern: [0, 250, 250, 250],
+          };
+          await Notifications.setNotificationChannelAsync('default', { name: 'Default', ...baseChannel });
+          await Notifications.setNotificationChannelAsync('mint', { name: 'NFT mints', description: 'When your gem is minted on Polygon', ...baseChannel });
+          await Notifications.setNotificationChannelAsync('payment', { name: 'Pagos', description: 'Credit purchase confirmations', ...baseChannel });
+          await Notifications.setNotificationChannelAsync('referral', { name: 'Referidos', description: 'Referral bonuses', ...baseChannel });
+          // marketing: importance DEFAULT (no high-priority), siempre opt-out fácil.
+          await Notifications.setNotificationChannelAsync('marketing', {
+            name: 'Anuncios y novedades',
+            description: 'Mensajes broadcast del equipo',
+            importance: Notifications.AndroidImportance.DEFAULT,
             sound: 'default',
             vibrationPattern: [0, 250, 250, 250],
           });
