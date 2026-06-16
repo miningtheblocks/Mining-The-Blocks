@@ -37,12 +37,6 @@
           "androidMode": "default",
           "androidCollapsedTitle": "Mining The Blocks"
         }
-      ],
-      [
-        "react-native-google-mobile-ads",
-        {
-          "androidAppId": "ca-app-pub-4718826806092770~3631324090"
-        }
       ]
     ],
     "extra": {

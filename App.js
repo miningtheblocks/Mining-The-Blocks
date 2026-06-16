@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { StatusBar as RNStatusBar, Platform, Text, View, TouchableOpacity, Linking, AppState, Alert } from 'react-native';
-import MobileAds from 'react-native-google-mobile-ads';
+// Round 2 Commit Q: react-native-google-mobile-ads removido. Pre-fix se
+// inicializaba el SDK aunque NO se renderizaban native ads (las ads están
+// en docs/adpick.html via Linking.openURL en GetPeaks.js). Sin el package:
+// APK más liviano + permisos AD_ID/ACCESS_ADSERVICES_* + AppMeasurementJobService
+// no se inyectan más en el manifest.
 // LAZY LOAD: Don't import Notifications at module level - causes EventEmitter crash
 // import * as Notifications from 'expo-notifications';
 import { NavigationContainer } from '@react-navigation/native';
@@ -102,7 +106,7 @@ function RootApp() {
     // muy rápida), setupNotifications corre con árbol React desmontado.
     const notifSetupTimer = setTimeout(setupNotifications, 1000);
 
-    MobileAds().initialize().catch(e => console.warn('MobileAds init failed:', e?.message));
+    // MobileAds init removido en Commit Q — ads se sirven via docs/adpick.html.
 
     // CRIT-14: version check con anti-downgrade + cache (mismo patrón que
     // ServerList.js). Antes era getDoc one-shot sin protección: si Firebase
@@ -337,7 +341,7 @@ function RootApp() {
       }
     };
 
-    // Delay 2s para que el cold-start no compita con MobileAds init + auth restore.
+    // Delay 2s para que el cold-start no compita con auth restore + push setup.
     const timer = setTimeout(askConsentThenSetup, 2000);
     return () => { active = false; clearTimeout(timer); };
   }, [user]);
