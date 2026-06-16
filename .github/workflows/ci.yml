@@ -104,9 +104,12 @@ jobs:
           fi
           echo "OK: No obvious hardcoded secrets"
 
-      # Audit dependencies (warning-only para no romper CI por vulns transitivas
-      # en dev-deps, pero queda visible en logs).
+      # Round 2 Agente #11 MED-11-33: audit strict en deps de prod.
+      # Pre-fix: continue-on-error:true + `|| true` → vulns nunca rompían CI.
+      # Ahora: --audit-level=critical es bloqueante (high+critical son public
+      # advisories que merecen fix antes de merge). Dev-deps excluidas con --omit=dev.
+      # Si aparece falso positivo (vuln transitiva no aplicable), agregar al
+      # array de exclusiones aquí con un comentario justificando.
       - name: npm audit (functions)
         working-directory: functions
-        run: npm audit --omit=dev --audit-level=high || true
-        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=critical

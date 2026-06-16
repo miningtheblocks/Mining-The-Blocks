@@ -49,3 +49,20 @@ updates:
     labels:
       - dependencies
       - ci
+
+  # Round 2 Agente #11 MED-11-34: vuln scanning de deps nativas Android.
+  # Pre-fix: solo npm. Vulns en AGP/Kotlin/play-services-* requerían watch
+  # manual de bulletins. Gradle ecosystem cubre android/**/build.gradle.
+  - package-ecosystem: gradle
+    directory: /android
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - android
+    ignore:
+      # AGP major bumps requieren plan deliberado (afecta config Gradle).
+      - dependency-name: "com.android.tools.build:gradle"
+        update-types: [version-update:semver-major]

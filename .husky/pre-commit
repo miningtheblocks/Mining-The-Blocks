@@ -1,0 +1,48 @@
+#!/usr/bin/env sh
+# Round 2 Agente #11 HIGH-11-31 + HIGH-11-32: pre-commit hook con husky v9.
+#
+# Validaciones:
+#   1. Bloquea secretos obvios en el diff staged (Ethereum private keys,
+#      AWS credentials, Stripe keys live).
+#   2. Lint backend si hay cambios en functions/.
+#   3. Bloquea archivos sensibles que no deben committearse.
+#
+# Para bypass (raro, debe justificarse): git commit --no-verify
+
+set -e
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+# 1) Block obviously committed sensitive files
+SENSITIVE_PATTERN='(\.(jks|keystore|pkcs12|pem|p12)|service-account.*\.json|firebase-adminsdk.*\.json|^\.env$|^\.env\.local$)'
+if printf '%s\n' "$STAGED" | grep -qE "$SENSITIVE_PATTERN"; then
+  echo "❌ pre-commit: archivo sensitivo en staging. Abortando."
+  printf '%s\n' "$STAGED" | grep -E "$SENSITIVE_PATTERN"
+  echo "Si es un falso positivo, actualizá .gitignore + el patrón de este hook."
+  exit 1
+fi
+
+# 2) Block obvious secrets in the diff (NOT in patterns we deliberately use)
+# 0x + 64 hex = Ethereum private key. 0x + 40 hex = address (público, NO secreto).
+DIFF=$(git diff --cached -U0)
+SECRET_HITS=$(printf '%s' "$DIFF" | grep -E '0x[a-fA-F0-9]{64}\b|AKIA[0-9A-Z]{16}|sk_live_[0-9a-zA-Z]{20,}|ghp_[0-9a-zA-Z]{30,}|github_pat_[0-9a-zA-Z_]{50,}' | head -3 || true)
+if [ -n "$SECRET_HITS" ]; then
+  echo "❌ pre-commit: posible secreto en el diff staged."
+  echo "$SECRET_HITS" | sed 's/^/  /'
+  echo "Si es un falso positivo justificá con: git commit --no-verify"
+  exit 1
+fi
+
+# 3) Lint backend si hay cambios en functions/
+if printf '%s\n' "$STAGED" | grep -q '^functions/.*\.js$'; then
+  echo "🔍 Linting functions/..."
+  if ! (cd functions && npm run -s lint); then
+    echo "❌ pre-commit: lint falló. Corregí los errores o usá --no-verify."
+    exit 1
+  fi
+fi
+
+echo "✅ pre-commit checks passed"
