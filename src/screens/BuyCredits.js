@@ -75,9 +75,15 @@ export default function BuyCredits({ onClose }) {
       setStatus('waiting');
       // ALTO-49: persistir para recovery si el user cierra la app.
       try {
+        // Round 2 Agente #4 ALTO-FE-14: persist amount+wallet también, no solo
+        // paymentId+expiresAt. Pre-fix, el restore en mount dejaba amount=null
+        // y wallet=null → el user vuelve a la app después de un crash/swipe y
+        // ve el timer corriendo pero NO sabe cuánto pagar ni a qué wallet.
         await AsyncStorage.setItem(PAYMENT_CACHE_KEY, JSON.stringify({
           paymentId: result.paymentId,
           expiresAt: result.expiresAt,
+          amount: result.amount,
+          wallet: result.wallet,
         }));
       } catch {}
     } catch (e) {
@@ -98,8 +104,15 @@ export default function BuyCredits({ onClose }) {
         if (cancelled || !raw) return;
         const parsed = JSON.parse(raw);
         if (parsed?.expiresAt && parsed.expiresAt > Date.now() && parsed.paymentId) {
-          // Restaurar listener; el snapshot lo va a mostrar como waiting/completed/expired.
-          setPayment({ paymentId: parsed.paymentId, expiresAt: parsed.expiresAt, amount: null, wallet: null });
+          // Round 2 Agente #4 ALTO-FE-14: restaurar amount + wallet si fueron
+          // cacheados (post-fix de arriba). Para caches viejos sin estos
+          // campos, quedan null y el user va a tener que regenerar el pago.
+          setPayment({
+            paymentId: parsed.paymentId,
+            expiresAt: parsed.expiresAt,
+            amount: parsed.amount || null,
+            wallet: parsed.wallet || null,
+          });
           setStatus('waiting');
         } else {
           AsyncStorage.removeItem(PAYMENT_CACHE_KEY).catch(() => {});

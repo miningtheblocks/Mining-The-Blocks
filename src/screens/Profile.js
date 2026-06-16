@@ -26,17 +26,42 @@ export default function Profile({ asModal = false, onClose }) {
   const [revoking, setRevoking] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // Round 2 Agente #4 ALTO-FE-07: subscribe al uid actual via onAuthStateChanged
+  // en lugar de capturar auth.currentUser al mount. Pre-fix: si el user cambia
+  // durante la vida del componente (e.g., logout + login con cuenta distinta,
+  // o token refresh con uid diff), el listener servía data del uid VIEJO →
+  // cross-user data leak (mostraba wallet/email del primer user al segundo).
   useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) { setLoading(false); return; }
-    const ref = doc(db, 'users', u.uid);
-    const unsub = onSnapshot(ref, (snap) => {
-      const d = snap.exists() ? snap.data() : null;
-      setData(d);
-      setWalletInput(d?.walletAddress || '');
-      setLoading(false);
-    }, () => setLoading(false));
-    return () => unsub();
+    let unsub = null;
+    let cancelled = false;
+    // Re-import onAuthStateChanged dinámicamente para evitar imports adicionales arriba.
+    let unsubAuth = null;
+    (async () => {
+      const { onAuthStateChanged } = await import('firebase/auth');
+      if (cancelled) return;
+      unsubAuth = onAuthStateChanged(auth, (u) => {
+        // Cleanup previous listener cuando cambia el uid.
+        if (unsub) { try { unsub(); } catch (_) {} unsub = null; }
+        if (!u) {
+          setData(null);
+          setWalletInput('');
+          setLoading(false);
+          return;
+        }
+        const ref = doc(db, 'users', u.uid);
+        unsub = onSnapshot(ref, (snap) => {
+          const d = snap.exists() ? snap.data() : null;
+          setData(d);
+          setWalletInput(d?.walletAddress || '');
+          setLoading(false);
+        }, () => setLoading(false));
+      });
+    })();
+    return () => {
+      cancelled = true;
+      if (unsub) { try { unsub(); } catch (_) {} }
+      if (unsubAuth) { try { unsubAuth(); } catch (_) {} }
+    };
   }, []);
 
   const shareReferralCode = async () => {

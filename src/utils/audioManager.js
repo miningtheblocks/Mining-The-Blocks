@@ -163,17 +163,27 @@ class AudioManager {
       // crecía indefinidamente.
       if (this.activeSounds.length >= 8) {
         const oldest = this.activeSounds.shift();
-        try { oldest && oldest.unloadAsync().catch(() => {}); } catch (_) {}
+        if (oldest) {
+          // Round 2 Agente #4 ALTO-FE-13: clear el callback ANTES del unload.
+          // Pre-fix: si didJustFinish disparaba después del unload (race), el
+          // callback llamaba unloadAsync de nuevo → "Cannot call unloadAsync
+          // on already unloaded sound" warning.
+          try { oldest.setOnPlaybackStatusUpdate(null); } catch (_) {}
+          try { oldest.unloadAsync().catch(() => {}); } catch (_) {}
+        }
       }
       this.activeSounds.push(sound);
 
       // Auto-limpieza cuando termine de reproducirse
       sound.setOnPlaybackStatusUpdate((status) => {
         if (status.didJustFinish) {
-          sound.unloadAsync().catch(() => {});
+          // Guard: solo unload si todavía está en activeSounds. Si fue evicted
+          // por cap, ya se hizo unload + setOnPlaybackStatusUpdate(null) arriba,
+          // este callback no debería disparar — pero defensive guard por race.
           const index = this.activeSounds.indexOf(sound);
           if (index > -1) {
             this.activeSounds.splice(index, 1);
+            sound.unloadAsync().catch(() => {});
           }
         }
       });
