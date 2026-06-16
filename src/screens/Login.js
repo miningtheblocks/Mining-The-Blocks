@@ -44,6 +44,12 @@ export default function Login() {
         showError(t('login.emailNotVerified'));
         setShowResend(true);
         await signOut(auth);
+        // Round 2 Agente #4 ALTO-FE-15: clear password ASAP. signOut termina
+        // la sesión Firebase pero `password` queda en React state hasta el
+        // próximo render o unmount. Si el user deja la app en background
+        // con el password en memoria, otra app maliciosa con memory dump
+        // capability puede leerlo. Best-effort en JS (no hay SecureString).
+        setPassword('');
         return;
       }
       setShowResend(false);
@@ -55,6 +61,10 @@ export default function Login() {
           await setDoc(ref, { settings: { keepSignedIn: !!remember } }, { merge: true });
         }
       } catch {}
+      // Round 2 Agente #4 ALTO-FE-15: clear password post-success (el componente
+      // se desmonta cuando RootApp re-renderiza con user no-null, pero por las
+      // dudas best-effort clear durante el handoff).
+      setPassword('');
     } catch (e) {
       console.warn('email login error', e);
       const code = e?.code || '';

@@ -740,6 +740,16 @@ exports.claimGemNFT = onCall(async (request) => {
 
 exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
   requireRegistered(request);
+  // CRIT (Round 2 Agente #6): checkRevoked + disabled check también en mineCube.
+  // Commit B deferred esto por el costo (~100 Auth Admin calls/sesión típica
+  // de mineo = ~1 invoc por mineCube). Costo real: ~$0.0009/1000 ops
+  // = $0.09 por 1000 users mineando 100 cubos = ~$0-$10/mes a escala
+  // sub-10k DAU. Aceptable para garantizar que un token revocado
+  // (post password reset, post-suspensión admin, post-deleteMyAccount)
+  // no pueda seguir minando + auto-mintando gemas hasta que el JWT TTL
+  // (~60min) expire naturalmente. Daño bounded por picks remanentes
+  // pero la cantidad de daño puede ser significativa (gemas tier-1).
+  await assertFreshToken(request);
   const uid = request.auth.uid;
 
   // SEC-003: Canonicalizar cubeNumber a entero antes de usar como docId.

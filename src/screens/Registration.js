@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image,
 import { useAppAlert } from '../components/AppAlert';
 import { TERMS_URL } from '../constants';
 import { auth, db, storage } from '../firebase/client';
-import { createUserWithEmailAndPassword, EmailAuthProvider, linkWithCredential, updateEmail, reauthenticateWithCredential, sendEmailVerification, signOut } from 'firebase/auth';
+import { createUserWithEmailAndPassword, EmailAuthProvider, linkWithCredential, verifyBeforeUpdateEmail, reauthenticateWithCredential, sendEmailVerification, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import * as ImagePicker from 'expo-image-picker';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -177,8 +177,16 @@ export default function Registration({ asModal = false, onClose }) {
             showAlert(t('registration.errorTitle'), t('registration.wrongPassword'));
             return;
           }
-          try { await updateEmail(u, (email || '').trim()); } catch (e) {
-            showAlert(t('registration.errorTitle'), e?.message || 'Could not update email');
+          // Round 2 Agente #6 HIGH-12: verifyBeforeUpdateEmail en lugar de
+          // updateEmail directo. Pre-fix: updateEmail cambiaba el email
+          // inmediatamente + dejaba emailVerified=false silenciosamente →
+          // limbo (user cree que el email es el nuevo, pero no puede recuperar
+          // password porque el nuevo no está verified; el viejo ya no funciona).
+          // verifyBeforeUpdateEmail manda un email de verificación al NUEVO
+          // address; el email solo cambia cuando el user clickea el link. Hasta
+          // entonces, el user puede seguir logueando con el viejo email.
+          try { await verifyBeforeUpdateEmail(u, (email || '').trim()); } catch (e) {
+            showAlert(t('registration.errorTitle'), e?.message || 'Could not initiate email change');
             return;
           }
         }
