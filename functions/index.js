@@ -63,7 +63,8 @@ const {
   toMillis,
   buildStatus,
   esc,
-  setCorsHeaders,
+  // Round 2 Agente #7: setCorsHeaders (wildcard *) removido del import.
+  // verifyGemCode (único caller) migró a setRestrictedCorsHeaders en Commit K.
   setRestrictedCorsHeaders,
 } = require("./helpers");
 
@@ -179,9 +180,22 @@ async function assertFreshToken(request) {
 
 // ─── Activity Feed ───────────────────────────────────────────────────────────
 
+// CRIT (Round 2 Agente #12 + #11 HIGH-11-40): TTL en activityFeed para evitar
+// cumulative growth + cost amplification. Pre-fix: cada gem_found/layer_complete/
+// player_joined era 1 write → broadcast a TODOS los clientes con ActivityScreen
+// abierta, sin policy de borrado. Crecimiento infinito + PII histórica accesible.
+// Fix: agregar `expiresAt` Timestamp; Firestore TTL Console borra docs viejos
+// automáticamente. 7 días es suficiente para "feed activo" (los users solo ven
+// los últimos 50-100 events).
+const ACTIVITY_FEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 async function writeActivity(type, data) {
   try {
-    await db.collection("activityFeed").add({ type, ts: Date.now(), ...data });
+    await db.collection("activityFeed").add({
+      type,
+      ts: Date.now(),
+      expiresAt: Timestamp.fromMillis(Date.now() + ACTIVITY_FEED_TTL_MS),
+      ...data,
+    });
   } catch (e) {
     console.warn("writeActivity failed:", e.message);
   }
@@ -757,7 +771,13 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     const TOTAL_CUBES_K = shellTotalCubes(K);
     if (n > TOTAL_CUBES_K) throw new HttpsError("invalid-argument", "Cube out of range for current layer");
 
-    const minedRef = serverRef.collection("mined").doc(cubeNumber);
+    // CRIT (Round 2 Agente #1 CRIT-1): docId incluye K (capa) para evitar data
+    // mixing entre capas. Pre-fix: `mined/${cubeNumber}` colisionaba cuando el
+    // mismo cubeNumber existe en distintas K (K=100 tiene N en [1..242406];
+    // K=50 tiene N en [1..61206]; ambos pueden incluir N=5). Sin K en el path,
+    // mineCube de N=5 en K=99 sobrescribía mined/5 que era de K=100.
+    // Pre-launch: 0 mines reales en producción → safe forward-only change.
+    const minedRef = serverRef.collection("mined").doc(`${K}_${cubeNumber}`);
     const layerRef = serverRef.collection("layers").doc(String(K));
     const accessRef = userRef.collection("serverAccess").doc(serverId);
 
@@ -1419,9 +1439,28 @@ async function runMintProcessing() {
 exports.processPendingMints = onCall({ secrets: [companyWalletKey, gmailAppPassword] }, async (request) => {
   // ALTO-31: check admin fresco (Admin SDK), no token cacheado.
   await requireAdminFresh(request);
+  const adminUid = request.auth.uid;
   // CRIT (Round 2 Agentes #3 + #8): lock distribuido. Si el cron está corriendo
   // ahora, este onCall retorna skipped:lock_held en vez de competir por nonce.
-  return withMintProcessorLock(() => runMintProcessing());
+  const result = await withMintProcessorLock(() => runMintProcessing());
+  // HIGH (Round 2 Agente #6 HIGH): audit log de la invocación manual. Sin esto,
+  // un admin que dispara el flow no queda registrado en adminActions — solo
+  // sale en Cloud Logging con retención 30d. Para forensic post-incidente
+  // (e.g., "quién aceleró el mint procesando una queue stuck?") esto es esencial.
+  try {
+    await db.collection("adminActions").add({
+      action: "processPendingMints",
+      adminUid,
+      ts: Date.now(),
+      processed: result.processed || 0,
+      failed: result.failed || 0,
+      skipped: !!result.skipped,
+      reason: result.reason || null,
+    });
+  } catch (e) {
+    console.warn("processPendingMints audit log failed:", e && e.message);
+  }
+  return result;
 });
 
 // Scheduler automático — corre cada 5 minutos

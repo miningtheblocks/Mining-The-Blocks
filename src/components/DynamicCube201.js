@@ -21,15 +21,22 @@ import GemPixelArt from './GemPixelArt';
 import { createRewardIndicatorSprite, MinedCubesRewardStore, clearIndicatorCache } from './MinedCellIndicators';
 import audioManager from '../utils/audioManager';
 
-// Suprimir warnings conocidos de expo-gl que no afectan la funcionalidad
-const originalConsoleLog = console.log;
-console.log = (...args) => {
-  const message = args[0];
-  if (typeof message === 'string' && message.includes('gl.pixelStorei() doesn\'t support this parameter yet')) {
-    return; // Silenciar este warning específico
-  }
-  originalConsoleLog.apply(console, args);
-};
+// CRIT (Round 2 Agente #4 CRIT-FE-06): override global de console.log REMOVIDO.
+// Pre-fix:
+//   const originalConsoleLog = console.log;
+//   console.log = (...args) => { if (warning conocido) return; original.apply... };
+// Anti-pattern:
+// 1. HMR (hot module reload) re-importa este módulo → wrappea otra vez →
+//    cadena infinita de wrappers (cada uno con el "original" siendo el wrapper
+//    del round anterior). Stack overflow eventual.
+// 2. babel-plugin-transform-remove-console YA strippea console.log en release
+//    (excluyendo error/warn explícitamente). En prod no hay logs → el filter
+//    es dead code.
+// 3. El warning específico (gl.pixelStorei) viene de expo-gl native code y va
+//    a logcat directo en release, no a console.log JS. El filter no lo
+//    silenciaba en prod de todas formas.
+// Si en dev el warning molesta, hacerlo opt-in con un EXPO_PUBLIC_SILENCE_GL
+// env var y aplicarlo SOLO si __DEV__ + el flag.
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -1498,11 +1505,16 @@ const handleZoomButton = useCallback((direction) => {
   
   // Estados para sistema de minado
   const [miningModal, setMiningModal] = useState(null); // { cubeNumber, position, screenPos }
+  // Round 2 Agente #5: state `miningAnimations` removido. setMiningAnimations
+  // nunca se llamaba → siempre new Map() vacío. Referencias residuales en el
+  // cleanup del useEffect (línea ~2219) y en el render loop (línea ~3193)
+  // fueron reemplazadas por no-ops / `false` literals.
   const [minedCubes, setMinedCubes] = useState(new Set()); // Cubitos ya minados
   const [rewardModal, setRewardModal] = useState(null); // { title, message, reward }
   const [episodeCompleteModal, setEpisodeCompleteModal] = useState(null); // { episodeNumber, totalMined }
   
-  const [miningAnimations, setMiningAnimations] = useState(new Map()); // Animaciones activas
+  // Round 2 Agente #5: removido `const [miningAnimations, setMiningAnimations]`
+  // (estado dead — setter nunca se llamaba). Ver comment de arriba.
   const [longPressActive, setLongPressActive] = useState(false); // Indicador visual de long press
   const longPressInitiatedRef = useRef(false); // Flag para bloquear pan durante TODO el proceso de long press
   const visibleNumbersRef = useRef([]); // Números visibles — ref para evitar re-renders en render loop
@@ -2212,14 +2224,10 @@ const handleZoomButton = useCallback((direction) => {
       if (unsubUser) { try { unsubUser(); } catch {} }
       // CRIT-10: cleanup de timers/pollers NO pertenece a este effect (eran
       // los originales del effect auth). Los mantengo defensivamente pero
-      // sin meterlos en deps. miningAnimations Map nunca se mutiplica (setter
-      // jamás llamado), así que el forEach es no-op pero defensivo.
+      // sin meterlos en deps.
+      // Round 2 Agente #5: el forEach sobre miningAnimations fue removido
+      // (el Map nunca se mutaba, setter jamás se llamaba).
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
-      try {
-        miningAnimations.forEach((anim) => {
-          if (anim && typeof anim.cleanup === 'function') anim.cleanup();
-        });
-      } catch {}
       if (minedPollRef.current) {
         clearInterval(minedPollRef.current);
         minedPollRef.current = null;
@@ -3189,8 +3197,11 @@ const handleZoomButton = useCallback((direction) => {
         const EPS = 0.12; // ~12cm de tolerancia en unidades de cubito
         const minZoom = 6.6; // Solo mostrar desde zoom 6.6 (cerca)
         const maxZoom = 25;
-        // PROTECCIÃƒâ€œN ANTI-CRASH: No crear números si hay animaciones de minado activas
-        const hasActiveAnimations = miningAnimations && miningAnimations.size > 0;
+        // Round 2 Agente #5: `hasActiveAnimations` queda siempre false post
+        // remove de miningAnimations state (que nunca se mutaba). Si en el
+        // futuro vuelven las animaciones de minado, recuperar el patrón con
+        // un useRef en lugar de useState para no re-renderizar el componente.
+        const hasActiveAnimations = false;
         // IMPORTANTE: NO forzar números fuera del rango de zoom, incluso si hay cara seleccionada
         const shouldShowNumbers = !hasActiveAnimations && (distanceToNearestCube >= (minZoom - EPS) && distanceToNearestCube <= (maxZoom + EPS));
         
@@ -3894,9 +3905,22 @@ const handleZoomButton = useCallback((direction) => {
     goToFaceCenter(faceName, true); // true = forceGridMode
   };
 
-  // Obtener rango ACTUAL por cara en numeraciÃƒÂ³n ascendente directamente desde la escena
+  // CRIT (Round 2 Agente #5 CRIT-4): leer del cache `faceRangesRef` en lugar
+  // de iterar los 240k cubeNumbers de la cara. Pre-fix: este getFaceRange se
+  // llamaba desde JSX (línea ~3974) que rerendea 15-60 veces/seg durante pan
+  // activo → 14M iteraciones/seg → stutter visible en Android low-end.
+  // El cache ya estaba poblado por recomputeFaceRanges() en buildLayer; el
+  // bug era que esta función nunca lo consultaba.
   const getFaceRange = (faceIndex) => {
     try {
+      const cached = faceRangesRef.current?.[faceIndex];
+      if (cached && typeof cached.start === 'number' && typeof cached.end === 'number') {
+        return cached;
+      }
+      // Fallback solo si cache miss — primera frame post-mount antes que
+      // buildLayer corra recomputeFaceRanges. Mantenemos la versión vieja
+      // para no devolver {start:0, end:0} (que rompería el render del label
+      // "Cara X: 1..N").
       const faceGroupEntry = faceGroupsRef.current?.[faceIndex];
       if (!faceGroupEntry) return { start: 0, end: 0 };
       const cubesMesh = faceGroupEntry.userData?.simpleMesh?.children?.[1]
