@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="strict-origin-when-cross-origin">
+  <!-- Round 2 Agente #7 MED-10: meta CSP defensiva. El header firebase.json es
+       la fuente primaria; si el deploy pierde el header por error, esta meta
+       protege. unsafe-inline necesario porque hay <script> + <style> inline
+       (extracción a archivos externos = TODO post-test-browser). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com; connect-src 'self' https://identitytoolkit.googleapis.com https://*.cloudfunctions.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'">
   <title>Mining The Blocks — Verificación de email</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

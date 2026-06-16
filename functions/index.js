@@ -2268,7 +2268,12 @@ async function _rateLimitFirestore(bucket, max, windowMs) {
 }
 
 exports.verifyGemCode = onRequest(async (req, res) => {
-  setCorsHeaders(res);
+  // MED (Round 2 Agente #7): allowlist en lugar de wildcard `*`. Pre-fix:
+  // cualquier origen podía enumerar códigos de gemas via GET (el rate-limit
+  // 30/min/IP mitigaba bulk-enum pero la inconsistencia con submitGemClaim
+  // — que sí usa allowlist — era reportable). Ahora solo miningtheblocks.com
+  // y miningtheblocks.github.io pueden hacer el call.
+  setRestrictedCorsHeaders(req, res);
   if (req.method === "OPTIONS") {
     return res.status(204).send("");
   }

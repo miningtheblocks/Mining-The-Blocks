@@ -675,8 +675,19 @@
 
 
 <!-- Firebase SDK (compat para que el código funcione sin bundler) -->
-<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<!-- Round 2 Agente #7 HIGH-3: SRI (Subresource Integrity) en Firebase SDK.
+     Pre-fix: <script src="gstatic..."> sin integrity. Si gstatic.com se
+     compromete (improbable pero supply chain attacks reales en otros CDNs
+     documentados), el browser ejecutaba el JS reemplazado. Para una página
+     que tramita gem claims hasta $100k, vale el byte extra.
+     Hashes computados: curl URL | openssl dgst -sha384 -binary | openssl base64 -A
+     IMPORTANTE: si bumpean la versión de Firebase SDK, hay que recomputar. -->
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"
+        integrity="sha384-+65NgAKqXr1Nb7sBmV6O09pL8ASqZsi29OE718meKinGAWaa70VE5V6LNjXVBjIA"
+        crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"
+        integrity="sha384-I1LYojsZ5RM1cOda44Z2h42Qa6YfsQ1XkXxREnhp4ueYBR/4d1pG1K+NZM537Vsj"
+        crossorigin="anonymous"></script>
 <script>
   // Firebase Web API key — pública por diseño. Restringida por HTTP referrer +
   // API allowlist en GCP Console (Identity Toolkit, Firestore, FCM).
