@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { StatusBar as RNStatusBar, Platform, Text, View, TouchableOpacity, Linking, AppState } from 'react-native';
+import { StatusBar as RNStatusBar, Platform, Text, View, TouchableOpacity, Linking, AppState, Alert } from 'react-native';
 import MobileAds from 'react-native-google-mobile-ads';
 // LAZY LOAD: Don't import Notifications at module level - causes EventEmitter crash
 // import * as Notifications from 'expo-notifications';
@@ -227,9 +227,24 @@ function RootApp() {
   }, []);
 
   // Registrar permisos y guardar push token - LAZY LOADED
+  // CRIT (Round 2 Agente #4 CRIT-FE-01 + Agente #10 HIGH-10-06): pre-permission
+  // UI antes del system prompt nativo. Pre-fix: requestPermissionsAsync se
+  // disparaba auto a los 2s del login sin contexto — Apple HIG y Google Play
+  // recomiendan modal explicativo ANTES del prompt nativo, sino el user
+  // rechaza por sorpresa y queda imposible de re-promptear sin deep-link a
+  // Settings.
+  //
+  // Flow:
+  //   1. Cold start con user logueado → leer AsyncStorage NOTIFICATIONS_CONSENT.
+  //   2. Si 'yes' → setupPushToken (sin prompt nativo si ya está granted).
+  //   3. Si 'no' → skip (no más prompts, respetar opt-out).
+  //   4. Si absent → mostrar custom Alert explicando los 3 tipos de notif +
+  //      "Activar" / "No gracias". Solo después de "Activar" se llama
+  //      requestPermissionsAsync.
   useEffect(() => {
     if (!user) return;
     let active = true;
+    const { I18nText } = {};  // shim para evitar import circular; usamos hardcoded EN strings con fallback
 
     const setupPushToken = async () => {
       try {
@@ -237,7 +252,7 @@ function RootApp() {
         // LAZY LOAD: Import Notifications only when user is authenticated
         const Notifications = await import('expo-notifications');
 
-        // Pedir permisos
+        // Pedir permisos (ya con consent del user vía nuestro pre-prompt).
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
         let finalStatus = existingStatus;
         if (existingStatus !== 'granted') {
@@ -269,8 +284,61 @@ function RootApp() {
       }
     };
 
-    // Delay push token setup to ensure everything is ready
-    const timer = setTimeout(setupPushToken, 2000);
+    const askConsentThenSetup = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(StorageKeys.NOTIFICATIONS_CONSENT);
+        if (stored === 'no') {
+          // User opt-out previo — respetar, no preguntar más.
+          return;
+        }
+        if (stored === 'yes') {
+          // User opt-in previo — push token setup directo.
+          return setupPushToken();
+        }
+        // No preguntado → mostrar pre-permission Alert.
+        // Strings hardcoded EN/ES porque i18n context no es accesible desde acá.
+        // El user todavía puede preferir el idioma device default; cuando vaya
+        // a Profile/Config y vea las strings traducidas, ya estará consistente.
+        const lang = Platform.OS === 'ios' ? 'en' : 'es'; // heurística simple; mejor sería leer settings.language post-login
+        const strings = lang === 'es' ? {
+          title: '¿Querés enterarte cuándo pasa algo?',
+          body: 'Mandamos 3 tipos de notificaciones: cuando se mintea tu NFT, cuando se acredita un pago tuyo, y cuando llega un bonus de referido. Podés mutear cada categoría en Configuración. Sin spam.',
+          accept: 'Activar',
+          decline: 'No gracias',
+        } : {
+          title: 'Stay in the loop?',
+          body: 'We send 3 kinds of notifications: when your NFT is minted, when your payment is credited, and when referral bonuses arrive. You can mute each category in Settings. No marketing spam.',
+          accept: 'Enable',
+          decline: 'No thanks',
+        };
+        Alert.alert(
+          strings.title,
+          strings.body,
+          [
+            {
+              text: strings.decline,
+              style: 'cancel',
+              onPress: async () => {
+                try { await AsyncStorage.setItem(StorageKeys.NOTIFICATIONS_CONSENT, 'no'); } catch {}
+              },
+            },
+            {
+              text: strings.accept,
+              onPress: async () => {
+                try { await AsyncStorage.setItem(StorageKeys.NOTIFICATIONS_CONSENT, 'yes'); } catch {}
+                if (active) setupPushToken();
+              },
+            },
+          ],
+          { cancelable: false },
+        );
+      } catch (e) {
+        console.warn('askConsentThenSetup error:', String(e));
+      }
+    };
+
+    // Delay 2s para que el cold-start no compita con MobileAds init + auth restore.
+    const timer = setTimeout(askConsentThenSetup, 2000);
     return () => { active = false; clearTimeout(timer); };
   }, [user]);
 

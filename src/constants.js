@@ -44,4 +44,8 @@ export const StorageKeys = {
   KEEP_SIGNED_IN: '@mtb_keep_signed_in',
   ACTIVE_SERVER: '@mtb_active_server',
   LANGUAGE: '@mtb_language',
+  // Round 2 Commit O: pre-permission UI para notificaciones.
+  // 'yes' → user opt-in; 'no' → user opt-out (no volver a pedir);
+  // absent → todavía no se preguntó.
+  NOTIFICATIONS_CONSENT: '@mtb_notifications_consent',
 };
