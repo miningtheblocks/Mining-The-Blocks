@@ -5,7 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Mining The Blocks — excavá un cubo de 8 millones de celdas y ganá premios reales en USDC.">
   <!-- CRIT-23: CSP via meta tag. gstatic.com permitido para Firebase Auth compat SDK. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://miningtheblocks.com https://identitytoolkit.googleapis.com https://*.firebaseio.com https://*.cloudfunctions.net https://*.run.app; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+  <!-- Round 2 Agente #7 HIGH-2: 'unsafe-inline' removido de script-src. Todo el
+       JS inline se extrajo a docs/js/app.js (Commit Z). Los onclick/onchange en
+       HTML se reemplazaron por data-action + event delegation desde app.js.
+       style-src mantiene 'unsafe-inline' porque hay `style="..."` attribute
+       inline usage (low risk; refactor a CSS classes queda como P3 follow-up). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://miningtheblocks.com https://identitytoolkit.googleapis.com https://*.firebaseio.com https://*.cloudfunctions.net https://*.run.app; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
   <meta http-equiv="X-Frame-Options" content="DENY">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta name="coinzilla" content="ad6e8df1c23db5f6657af70f0c42481c" />
@@ -334,8 +339,8 @@
 </header>
 
 <div class="lang-bar">
-  <button class="lang-btn" onclick="setLang('es')">ES</button>
-  <button class="lang-btn active" onclick="setLang('en')">EN</button>
+  <button class="lang-btn" data-action="setLang" data-lang="es">ES</button>
+  <button class="lang-btn active" data-action="setLang" data-lang="en">EN</button>
 </div>
 
 <!-- Referral banner — shown only when ?ref=CODE is in the URL -->
@@ -344,7 +349,7 @@
   <p class="ref-banner-title" data-lang="en visible">🎁 You were invited to Mining The Blocks!</p>
   <div class="ref-code-display">
     <span class="ref-code-text" id="refBannerCode"></span>
-    <button class="ref-copy-btn" id="refCopyBtn" onclick="copyRefCode()">Copy</button>
+    <button class="ref-copy-btn" id="refCopyBtn" data-action="copyRefCode">Copy</button>
   </div>
   <p class="ref-banner-hint" data-lang="es">Descargá la app → abrí tu Perfil → Referidos → ingresá este código</p>
   <p class="ref-banner-hint" data-lang="en visible">Download the app → open Profile → Referrals → enter this code</p>
@@ -360,7 +365,7 @@
     <div id="stepCode">
       <div class="input-row">
         <input type="text" id="codeInput" placeholder="MTB3-XXXXXXXX-XXXXXX" maxlength="24" autocomplete="off" spellcheck="false">
-        <button class="btn" onclick="verifyCode()" id="btnVerify">
+        <button class="btn" data-action="verifyCode" id="btnVerify">
           <span data-lang-inline="es">Verificar</span>
           <span data-lang-inline="en visible">Verify</span>
         </button>
@@ -387,7 +392,7 @@
           <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
         </div>
       </div>
-      <button class="btn" onclick="doLogin()" id="btnLogin" style="width:100%;margin-top:8px">
+      <button class="btn" data-action="doLogin" id="btnLogin" style="width:100%;margin-top:8px">
         <span data-lang-inline="es">Iniciar sesión</span>
         <span data-lang-inline="en visible">Sign in</span>
       </button>
@@ -428,7 +433,7 @@
         </div>
       </div>
 
-      <button class="btn" onclick="submitClaim()" id="btnClaim" style="width:100%;margin-top:8px">
+      <button class="btn" data-action="submitClaim" id="btnClaim" style="width:100%;margin-top:8px">
         <span data-lang-inline="es">Enviar solicitud</span>
         <span data-lang-inline="en visible">Submit claim</span>
       </button>
@@ -653,12 +658,12 @@
     <p data-lang="es">Mining The Blocks es un <strong>juego de azar</strong> con premios en dinero real. Para continuar debés confirmar lo siguiente:</p>
     <p data-lang="en visible">Mining The Blocks is a <strong>game of chance</strong> with real money prizes. To continue you must confirm:</p>
     <label class="legal-check">
-      <input type="checkbox" id="check18" onchange="updateAgeBtn()">
+      <input type="checkbox" id="check18">
       <span data-lang="es">Tengo 18 años o más y el juego de azar es legal en mi país/región.</span>
       <span data-lang="en visible">I am 18 or older and online gambling is legal in my country/region.</span>
     </label>
     <label class="legal-check">
-      <input type="checkbox" id="checkTC" onchange="updateAgeBtn()">
+      <input type="checkbox" id="checkTC">
       <span>
         <span data-lang="es">He leído y acepto los </span>
         <span data-lang="en visible">I have read and accept the </span>
@@ -666,7 +671,7 @@
         <a href="terms.html" target="_blank" rel="noopener noreferrer" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>.
       </span>
     </label>
-    <button class="legal-btn" id="ageBtn" onclick="acceptAge()" disabled>
+    <button class="legal-btn" id="ageBtn" data-action="acceptAge" disabled>
       <span data-lang="es">Confirmar y continuar</span>
       <span data-lang="en visible">Confirm and continue</span>
     </button>
@@ -688,265 +693,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"
         integrity="sha384-I1LYojsZ5RM1cOda44Z2h42Qa6YfsQ1XkXxREnhp4ueYBR/4d1pG1K+NZM537Vsj"
         crossorigin="anonymous"></script>
-<script>
-  // Firebase Web API key — pública por diseño. Restringida por HTTP referrer +
-  // API allowlist en GCP Console (Identity Toolkit, Firestore, FCM).
-  firebase.initializeApp({
-    apiKey: 'AIzaSyDRCpXkNWupz2PmoOG6XcuFENYaU5xIUps',
-    authDomain: 'miningtheblocks-669f6.firebaseapp.com',
-    projectId: 'miningtheblocks-669f6',
-  });
-
-  var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
-  var currentLang = 'en';
-
-  var GEM_NAMES = {
-    es: { 1:'Diamante rojo', 2:'Painita', 3:'Musgravita', 4:'Jadeíta imperial',
-          5:'Alejandrita', 6:'Rubí sangre de paloma', 7:'Diamante azul',
-          8:'Diamante rosa', 9:'Esmeralda colombiana' },
-    en: { 1:'Red Diamond', 2:'Painite', 3:'Musgravite', 4:'Imperial Jadeite',
-          5:'Alexandrite', 6:'Pigeon Blood Ruby', 7:'Blue Diamond',
-          8:'Pink Diamond', 9:'Colombian Emerald' }
-  };
-  var GEM_PRIZES = { 1:'$100,000', 2:'$50,000', 3:'$10,000', 4:'$1,000', 5:'$500', 6:'$100', 7:'$50', 8:'$25', 9:'$15' };
-
-  var ERRORS = {
-    es: {
-      not_found:       'Código no encontrado. Revisá que esté bien escrito.',
-      already_redeemed:'Este código ya fue canjeado por efectivo.',
-      already_minted:  'Este código ya fue reclamado como NFT.',
-      server_error:    'Error del servidor. Intentá de nuevo en unos minutos.',
-      invalid_email:   'El email ingresado no es válido.',
-      invalid_wallet:  'La dirección de billetera no es válida.',
-      missing_fields:  'Completá todos los campos.',
-      unauthenticated: 'Debés iniciar sesión para canjear.',
-      invalid_token:   'Sesión inválida o expirada. Iniciá sesión de nuevo.',
-      not_owner:       'Este código no pertenece a tu cuenta. Iniciá sesión con la cuenta que generó la gema.',
-      rate_limited:    'Demasiados intentos. Esperá un minuto y reintentá.',
-      'auth/wrong-password':   'Contraseña incorrecta.',
-      'auth/user-not-found':   'No existe cuenta con ese email. Registrate primero desde la app.',
-      'auth/invalid-email':    'Email mal escrito.',
-      'auth/too-many-requests':'Demasiados intentos fallidos. Esperá unos minutos.',
-      'auth/network-request-failed':'Sin conexión. Revisá tu internet.',
-      'auth/invalid-credential':'Email o contraseña incorrectos.',
-    },
-    en: {
-      not_found:       'Code not found. Check that it\'s written correctly.',
-      already_redeemed:'This code has already been redeemed for cash.',
-      already_minted:  'This code has already been claimed as an NFT.',
-      server_error:    'Server error. Please try again in a few minutes.',
-      invalid_email:   'The email address is not valid.',
-      invalid_wallet:  'The wallet address is not valid.',
-      missing_fields:  'Please fill in all fields.',
-      unauthenticated: 'You must sign in to redeem.',
-      invalid_token:   'Invalid or expired session. Sign in again.',
-      not_owner:       'This code does not belong to your account. Sign in with the account that generated the gem.',
-      rate_limited:    'Too many attempts. Wait a minute and try again.',
-      'auth/wrong-password':   'Wrong password.',
-      'auth/user-not-found':   'No account found for that email. Register in the app first.',
-      'auth/invalid-email':    'Email is malformed.',
-      'auth/too-many-requests':'Too many failed attempts. Wait a few minutes.',
-      'auth/network-request-failed':'No connection. Check your internet.',
-      'auth/invalid-credential':'Email or password incorrect.',
-    }
-  };
-
-  function setLang(lang) {
-    currentLang = lang;
-    document.querySelectorAll('.lang-btn').forEach(function(b) {
-      b.classList.toggle('active', b.textContent.trim().toLowerCase() === lang);
-    });
-    document.querySelectorAll('[data-lang]').forEach(function(el) {
-      var l = el.getAttribute('data-lang').split(' ')[0];
-      el.classList.toggle('visible', l === lang);
-    });
-    document.querySelectorAll('[data-lang-inline]').forEach(function(el) {
-      var l = el.getAttribute('data-lang-inline').split(' ')[0];
-      el.classList.toggle('visible', l === lang);
-    });
-    document.documentElement.lang = lang;
-    var copyBtn = document.getElementById('refCopyBtn');
-    if (copyBtn && copyBtn.textContent !== '✓') {
-      copyBtn.textContent = lang === 'es' ? 'Copiar' : 'Copy';
-    }
-  }
-
-  function detectReferral() {
-    var params = new URLSearchParams(window.location.search);
-    var ref = (params.get('ref') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (!ref) ref = localStorage.getItem('mtb_ref') || '';
-    if (!ref) return;
-    localStorage.setItem('mtb_ref', ref);
-    document.getElementById('refBannerCode').textContent = ref;
-    document.getElementById('refBanner').classList.add('visible');
-  }
-
-  function copyRefCode() {
-    var code = document.getElementById('refBannerCode').textContent;
-    var btn = document.getElementById('refCopyBtn');
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(code).then(function() {
-        btn.textContent = '✓';
-        setTimeout(function() { btn.textContent = currentLang === 'es' ? 'Copiar' : 'Copy'; }, 2000);
-      });
-    } else {
-      var ta = document.createElement('textarea');
-      ta.value = code; ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.select();
-      try { document.execCommand('copy'); btn.textContent = '✓'; setTimeout(function() { btn.textContent = currentLang === 'es' ? 'Copiar' : 'Copy'; }, 2000); } catch {}
-      document.body.removeChild(ta);
-    }
-  }
-
-  var verifiedCode = null;
-
-  function showError(id, msg) { document.getElementById(id).textContent = msg || ''; }
-
-  function setLoading(btnId, loading) {
-    var btn = document.getElementById(btnId);
-    btn.disabled = loading;
-    btn.classList.toggle('loading', !!loading);
-    // FIX-P0: NO sobreescribir textContent — destruía los spans data-lang
-    // de i18n y el botón quedaba vacío al volver al estado normal.
-  }
-
-  async function verifyCode() {
-    var code = document.getElementById('codeInput').value.trim().toUpperCase();
-    showError('codeError', '');
-    document.getElementById('cardLogin').classList.remove('visible');
-    document.getElementById('cardEmail').classList.remove('visible');
-    document.getElementById('cardDone').classList.remove('visible');
-    if (!code) { showError('codeError', currentLang === 'es' ? 'Ingresá tu código.' : 'Enter your code.'); return; }
-    setLoading('btnVerify', true);
-    try {
-      var res = await fetch(FUNCTIONS_BASE + '/verifyGemCode?code=' + encodeURIComponent(code));
-      var data = await res.json();
-      if (!res.ok || !data.valid) {
-        showError('codeError', (ERRORS[currentLang][data.error]) || (currentLang === 'es' ? 'Código inválido.' : 'Invalid code.'));
-        return;
-      }
-      verifiedCode = code;
-      // El backend ya no devuelve `tier` por seguridad. Mostramos genérico.
-      document.getElementById('gemBadge').textContent = currentLang === 'es' ? '✓ Código válido' : '✓ Valid code';
-      // Si el user ya está logueado, saltamos directo al form de datos. Sino, pedimos login.
-      if (firebase.auth().currentUser) {
-        document.getElementById('cardEmail').classList.add('visible');
-        document.getElementById('nameInput').focus();
-      } else {
-        document.getElementById('cardLogin').classList.add('visible');
-        document.getElementById('loginEmail').focus();
-      }
-    } catch (e) {
-      showError('codeError', currentLang === 'es' ? 'Sin conexión. Verificá tu internet.' : 'No connection. Check your internet.');
-    } finally {
-      setLoading('btnVerify', false);
-      setLang(currentLang); // restaurar textos del botón
-    }
-  }
-
-  async function doLogin() {
-    var email = document.getElementById('loginEmail').value.trim();
-    var password = document.getElementById('loginPassword').value;
-    showError('loginError', '');
-    if (!email || !password) {
-      showError('loginError', currentLang === 'es' ? 'Completá email y contraseña.' : 'Fill in email and password.');
-      return;
-    }
-    setLoading('btnLogin', true);
-    try {
-      await firebase.auth().signInWithEmailAndPassword(email, password);
-      // Pre-llenar el email del form de canje (suele ser el mismo)
-      var emailInput = document.getElementById('emailInput');
-      if (emailInput && !emailInput.value) emailInput.value = email;
-      document.getElementById('cardLogin').classList.remove('visible');
-      document.getElementById('cardEmail').classList.add('visible');
-      document.getElementById('nameInput').focus();
-    } catch (e) {
-      var key = e && e.code ? e.code : '';
-      showError('loginError', (ERRORS[currentLang][key]) || (currentLang === 'es' ? 'Error al iniciar sesión.' : 'Sign in error.'));
-    } finally {
-      setLoading('btnLogin', false);
-      setLang(currentLang);
-    }
-  }
-
-  async function submitClaim() {
-    var name   = document.getElementById('nameInput').value.trim();
-    var email  = document.getElementById('emailInput').value.trim();
-    var phone  = document.getElementById('phoneInput').value.trim();
-    var wallet = document.getElementById('walletInput').value.trim();
-    showError('emailError', '');
-    var err = currentLang === 'es';
-    if (!name)   { showError('emailError', err ? 'Ingresá tu nombre completo.' : 'Enter your full name.'); return; }
-    if (!email)  { showError('emailError', err ? 'Ingresá tu email.' : 'Enter your email.'); return; }
-    if (!phone)  { showError('emailError', err ? 'Ingresá tu teléfono.' : 'Enter your phone number.'); return; }
-    // MEDIO-H18: validar formato exacto Ethereum (42 chars, 0x + 40 hex).
-    // Antes `wallet.length < 40` aceptaba wallets de 40 chars (incompletas).
-    if (!wallet || !/^0x[a-fA-F0-9]{40}$/.test(wallet)) { showError('emailError', err ? 'Ingresá una dirección de billetera válida (0x + 40 caracteres hex).' : 'Enter a valid wallet address (0x + 40 hex chars).'); return; }
-
-    // OPS-9: requerir Firebase ID token. Si la sesión expiró entre verifyCode
-    // y submitClaim, volver a la pantalla de login.
-    var user = firebase.auth().currentUser;
-    if (!user) {
-      document.getElementById('cardEmail').classList.remove('visible');
-      document.getElementById('cardLogin').classList.add('visible');
-      showError('loginError', err ? 'Tu sesión expiró. Iniciá sesión de nuevo.' : 'Your session expired. Sign in again.');
-      return;
-    }
-
-    setLoading('btnClaim', true);
-    try {
-      var idToken = await user.getIdToken();
-      var res = await fetch(FUNCTIONS_BASE + '/submitGemClaim', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + idToken,
-        },
-        body: JSON.stringify({ code: verifiedCode, name: name, email: email, phone: phone, wallet: wallet }),
-      });
-      var data = await res.json();
-      if (!res.ok || !data.success) {
-        showError('emailError', (ERRORS[currentLang][data.error]) || (currentLang === 'es' ? 'Error al enviar.' : 'Submit error.'));
-        return;
-      }
-      document.getElementById('cardEmail').classList.remove('visible');
-      document.getElementById('cardDone').classList.add('visible');
-    } catch (e) {
-      showError('emailError', currentLang === 'es' ? 'Sin conexión. Intentá más tarde.' : 'No connection. Try again later.');
-    } finally {
-      setLoading('btnClaim', false);
-      setLang(currentLang);
-    }
-  }
-
-  function updateAgeBtn() {
-    var ok = document.getElementById('check18').checked && document.getElementById('checkTC').checked;
-    var btn = document.getElementById('ageBtn');
-    btn.disabled = !ok;
-    btn.classList.toggle('active', ok);
-  }
-
-  function acceptAge() {
-    if (!document.getElementById('check18').checked || !document.getElementById('checkTC').checked) return;
-    localStorage.setItem('mtb_age_ok', '1');
-    document.getElementById('ageGate').style.display = 'none';
-  }
-
-  document.addEventListener('DOMContentLoaded', function() {
-    setLang('en');
-    detectReferral();
-    if (localStorage.getItem('mtb_age_ok') === '1') {
-      document.getElementById('ageGate').style.display = 'none';
-    }
-    document.getElementById('codeInput').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') verifyCode();
-    });
-    document.getElementById('emailInput').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') submitClaim();
-    });
-  });
-</script>
+<script src="js/app.js" defer></script>
 
 </body>
 </html>
