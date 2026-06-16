@@ -218,15 +218,18 @@ export default function Profile({ asModal = false, onClose }) {
             value={walletInput}
             onChangeText={setWalletInput}
             placeholder="0x..."
-            placeholderTextColor="#444"
+            placeholderTextColor="#888"
             autoCapitalize="none"
             autoCorrect={false}
+            accessibilityLabel={t('profile.wallet')}
           />
           <TouchableOpacity
             style={[styles.actionBtn, { marginTop: 8 }]}
             onPress={saveWallet}
             disabled={savingWallet}
             activeOpacity={0.85}
+            accessibilityLabel={t('profile.saveWallet')}
+            accessibilityState={{ disabled: savingWallet, busy: savingWallet }}
           >
             <Text style={styles.actionBtnTxt}>
               {savingWallet ? t('profile.saving') : t('profile.saveWallet')}
@@ -262,7 +265,7 @@ export default function Profile({ asModal = false, onClose }) {
                 value={referralInput}
                 onChangeText={setReferralInput}
                 placeholder={t('profile.referralPlaceholder')}
-                placeholderTextColor="#444"
+                placeholderTextColor="#888"
                 autoCapitalize="characters"
                 autoCorrect={false}
               />

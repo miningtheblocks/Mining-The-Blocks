@@ -250,6 +250,8 @@ export default function GetPeaks({ asModal = false, onClose }) {
             onPress={onClaimDaily}
             disabled={claimingDaily}
             activeOpacity={0.85}
+            accessibilityLabel={t('peaks.claimDaily')}
+            accessibilityState={{ disabled: claimingDaily, busy: claimingDaily }}
           >
             {claimingDaily
               ? <ActivityIndicator size="small" color="#0a0a0a" />
@@ -275,6 +277,8 @@ export default function GetPeaks({ asModal = false, onClose }) {
             onPress={() => onClaimAd(1)}
             disabled={claimingAd1}
             activeOpacity={0.85}
+            accessibilityLabel={`${t('peaks.watchAd')} (1)`}
+            accessibilityState={{ disabled: claimingAd1, busy: claimingAd1 }}
           >
             {claimingAd1
               ? <ActivityIndicator size="small" color="#fff" />
@@ -300,6 +304,8 @@ export default function GetPeaks({ asModal = false, onClose }) {
             onPress={() => onClaimAd(2)}
             disabled={claimingAd2}
             activeOpacity={0.85}
+            accessibilityLabel={`${t('peaks.watchAd')} (2)`}
+            accessibilityState={{ disabled: claimingAd2, busy: claimingAd2 }}
           >
             {claimingAd2
               ? <ActivityIndicator size="small" color="#fff" />

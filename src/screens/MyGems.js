@@ -137,7 +137,12 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
 
             {/* Código */}
             <Text style={styles.detailLabel}>{t('myGems.code')}</Text>
-            <TouchableOpacity style={styles.codeBox} onPress={() => copyCode(item.code)}>
+            <TouchableOpacity
+              style={styles.codeBox}
+              onPress={() => copyCode(item.code)}
+              accessibilityLabel={`${t('myGems.tapCopy')} ${item.code}`}
+              accessibilityHint={t('myGems.code')}
+            >
               <Text style={styles.codeText}>{item.code}</Text>
               <Text style={styles.copyHint}>{t('myGems.tapCopy')}</Text>
             </TouchableOpacity>
@@ -155,6 +160,8 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
                     style={[styles.actionBtn, styles.actionBtnNFT]}
                     onPress={() => handleClaimNFT(item)}
                     disabled={claiming === item.id}
+                    accessibilityLabel={t('myGems.claimNFT')}
+                    accessibilityState={{ disabled: claiming === item.id, busy: claiming === item.id }}
                   >
                     {claiming === item.id
                       ? <ActivityIndicator size="small" color="#fff" />
@@ -187,7 +194,13 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>{t('myGems.title')}</Text>
-        <TouchableOpacity onPress={loadGems} style={styles.refreshBtn}>
+        <TouchableOpacity
+          onPress={loadGems}
+          style={styles.refreshBtn}
+          accessibilityLabel={t('myGems.refresh') || 'Refresh'}
+          accessibilityRole="button"
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
           <Text style={styles.refreshTxt}>↻</Text>
         </TouchableOpacity>
       </View>

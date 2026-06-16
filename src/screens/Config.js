@@ -181,6 +181,9 @@ export default function Config({ asModal = false, onClose }) {
             style={[styles.toggleBtn, notifyAdReady && styles.toggleBtnOn]}
             onPress={() => toggle('notifyAdReady', !notifyAdReady)}
             activeOpacity={0.85}
+            accessibilityLabel={t('config.adReady')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyAdReady }}
           >
             <Text style={[styles.toggleTxt, notifyAdReady && styles.toggleTxtOn]}>
               {notifyAdReady ? t('common.on') : t('common.off')}
@@ -194,6 +197,9 @@ export default function Config({ asModal = false, onClose }) {
             style={[styles.toggleBtn, notifyDaily && styles.toggleBtnOn]}
             onPress={() => toggle('notifyDaily', !notifyDaily)}
             activeOpacity={0.85}
+            accessibilityLabel={t('config.dailyReady')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyDaily }}
           >
             <Text style={[styles.toggleTxt, notifyDaily && styles.toggleTxtOn]}>
               {notifyDaily ? t('common.on') : t('common.off')}
@@ -207,6 +213,9 @@ export default function Config({ asModal = false, onClose }) {
             style={[styles.toggleBtn, notifyRewards && styles.toggleBtnOn]}
             onPress={() => toggle('notifyRewards', !notifyRewards)}
             activeOpacity={0.85}
+            accessibilityLabel={t('config.rewardsAdded')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyRewards }}
           >
             <Text style={[styles.toggleTxt, notifyRewards && styles.toggleTxtOn]}>
               {notifyRewards ? t('common.on') : t('common.off')}
@@ -220,6 +229,9 @@ export default function Config({ asModal = false, onClose }) {
             style={[styles.toggleBtn, notifyNewLayer && styles.toggleBtnOn]}
             onPress={() => toggle('notifyNewLayer', !notifyNewLayer)}
             activeOpacity={0.85}
+            accessibilityLabel={t('config.newLayer')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyNewLayer }}
           >
             <Text style={[styles.toggleTxt, notifyNewLayer && styles.toggleTxtOn]}>
               {notifyNewLayer ? t('common.on') : t('common.off')}
@@ -236,6 +248,9 @@ export default function Config({ asModal = false, onClose }) {
               style={[styles.toggleBtn, language === 'en' && styles.toggleBtnOn]}
               onPress={() => setLanguage('en')}
               activeOpacity={0.85}
+              accessibilityLabel={t('config.english')}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: language === 'en' }}
             >
               <Text style={[styles.toggleTxt, language === 'en' && styles.toggleTxtOn]}>{t('config.english')}</Text>
             </TouchableOpacity>
@@ -243,6 +258,9 @@ export default function Config({ asModal = false, onClose }) {
               style={[styles.toggleBtn, language === 'es' && styles.toggleBtnOn]}
               onPress={() => setLanguage('es')}
               activeOpacity={0.85}
+              accessibilityLabel={t('config.spanish')}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: language === 'es' }}
             >
               <Text style={[styles.toggleTxt, language === 'es' && styles.toggleTxtOn]}>{t('config.spanish')}</Text>
             </TouchableOpacity>
