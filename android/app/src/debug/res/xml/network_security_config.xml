@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Round 2 follow-up: network_security_config para DEBUG builds.
+
+  El config de release (android/app/src/main/res/xml/network_security_config.xml)
+  prohibe cleartext y user CAs. Eso es correcto en release pero rompe el
+  desarrollo: Metro bundler corre en HTTP localhost:8081 (no HTTPS), y desde
+  el emulator se accede via 10.0.2.2 → la conexión cleartext es rechazada y
+  la app no carga el bundle JS.
+
+  Este overlay (solo activo en debug variant gracias a su ubicación en
+  src/debug/res/xml/ con el mismo nombre que el de main) reemplaza el
+  comportamiento global por uno permisivo SOLO para los hosts de dev típicos:
+    - 10.0.2.2 (host machine desde Android emulator AVD)
+    - 10.0.3.2 (host machine desde Genymotion)
+    - localhost (cuando se usa `adb reverse tcp:8081 tcp:8081`)
+    - 127.0.0.1 (mismo caso)
+
+  Para release/staging este archivo NO se incluye en el APK → el config de
+  main aplica → cleartext bloqueado correctamente.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false">
+    <trust-anchors>
+      <certificates src="system"/>
+    </trust-anchors>
+  </base-config>
+  <domain-config cleartextTrafficPermitted="true">
+    <domain includeSubdomains="false">10.0.2.2</domain>
+    <domain includeSubdomains="false">10.0.3.2</domain>
+    <domain includeSubdomains="false">localhost</domain>
+    <domain includeSubdomains="false">127.0.0.1</domain>
+  </domain-config>
+</network-security-config>
