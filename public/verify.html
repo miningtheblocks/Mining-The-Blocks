@@ -184,7 +184,14 @@
       )
       .then(function(res) { return res.json(); })
       .then(function(data) {
-        if (data.error) {
+        // Round 2 Agente #7 LOW: default-DENY en errores no enumerados.
+        // Pre-fix: el else de codes desconocidos llamaba showSuccess →
+        // CRIT-24 documentaba "default-deny" pero el código era default-success.
+        // Cualquier respuesta con .error y code no en el switch (que en el
+        // futuro Google agregue nuevos códigos: TOKEN_REVOKED, etc.) se
+        // mostraba como éxito al usuario. Ahora: cualquier .error presente
+        // → showError genérico (sigue siendo informativo).
+        if (data && data.error) {
           var code = (data.error.message || '').toString();
           if (code === 'EXPIRED_OOB_CODE') {
             showError('El link expiró. Pedí uno nuevo desde la app tocando "Reenviar email".');
@@ -193,10 +200,15 @@
           } else if (code === 'USER_DISABLED') {
             showError('Esta cuenta fue deshabilitada. Contactá soporte.');
           } else {
-            showSuccess();
+            showError('No se pudo verificar el email (' + code.slice(0, 32) + '). Pedí un nuevo link desde la app.');
           }
-        } else {
+        } else if (data && (data.email || data.localId || data.kind)) {
+          // Defense-in-depth: confirmar shape de respuesta exitosa esperada
+          // (Google Identity Toolkit devuelve email/localId/kind en success).
           showSuccess();
+        } else {
+          // Respuesta vacía o malformada → default-deny.
+          showError('Respuesta inesperada del servidor. Pedí un nuevo link desde la app.');
         }
       })
       .catch(function() {

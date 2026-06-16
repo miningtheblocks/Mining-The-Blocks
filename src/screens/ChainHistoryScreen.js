@@ -162,7 +162,14 @@ export default function ChainHistoryScreen() {
 
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => navigation.goBack()}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel={t('profile.back') || 'Back'}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
           <Text style={styles.backArrow}>‹</Text>
         </TouchableOpacity>
         <View style={styles.headerCenter}>
@@ -205,7 +212,13 @@ export default function ChainHistoryScreen() {
       )}
 
       {/* Report button */}
-      <TouchableOpacity style={styles.reportBtn} onPress={() => openModal('report')} activeOpacity={0.8}>
+      <TouchableOpacity
+        style={styles.reportBtn}
+        onPress={() => openModal('report')}
+        activeOpacity={0.8}
+        accessibilityRole="button"
+        accessibilityLabel={t('login.report') || 'Report problem'}
+      >
         <Text style={styles.reportTxt}>⚠ {t('login.report')}</Text>
       </TouchableOpacity>
     </SafeAreaView>
