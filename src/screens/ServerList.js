@@ -319,6 +319,9 @@ export default function ServerList() {
             style={styles.historyBtn}
             onPress={() => navigation.navigate('ChainHistory', { chainId: item.chainId, chainName: item.name })}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel={`${t('drawer.history') || 'Historial'}: ${item.name}`}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
             <Text style={styles.historyTxt}>📋</Text>
           </TouchableOpacity>
@@ -373,6 +376,9 @@ export default function ServerList() {
             style={styles.historyBtn}
             onPress={() => navigation.navigate('ChainHistory', { chainId: item.chainId, chainName: item.name })}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel={`${t('drawer.history') || 'Historial'}: ${item.name}`}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
             <Text style={styles.historyTxt}>📋</Text>
           </TouchableOpacity>
@@ -423,12 +429,23 @@ export default function ServerList() {
             style={[styles.finishedBtn, tab === 'finished' && styles.finishedBtnActive]}
             onPress={() => setTab(tab === 'finished' ? 'active' : 'finished')}
             activeOpacity={0.8}
+            accessibilityRole="tab"
+            accessibilityLabel={tab === 'finished' ? t('serverList.backActive') : t('serverList.finished')}
+            accessibilityState={{ selected: tab === 'finished' }}
           >
             <Text style={[styles.finishedBtnTxt, tab === 'finished' && styles.finishedBtnTxtActive]}>
               {tab === 'finished' ? t('serverList.backActive') : t('serverList.finished')}
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.menuBtn} onPress={() => setMenuVisible(true)} activeOpacity={0.8}>
+          <TouchableOpacity
+            style={styles.menuBtn}
+            onPress={() => setMenuVisible(true)}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel={t('drawer.menu')}
+            accessibilityHint={t('drawer.menu')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
             <Text style={styles.menuBtnTxt}>☰</Text>
           </TouchableOpacity>
         </View>
@@ -436,7 +453,13 @@ export default function ServerList() {
 
       {/* Slide-down menu modal */}
       <Modal transparent animationType="fade" visible={menuVisible} onRequestClose={() => setMenuVisible(false)}>
-        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
+        <TouchableOpacity
+          style={styles.menuOverlay}
+          activeOpacity={1}
+          onPress={() => setMenuVisible(false)}
+          accessibilityLabel={t('serverList.cancel') || 'Close menu'}
+          accessibilityRole="button"
+        >
           <View style={styles.menuPanel}>
             <Text style={styles.menuHeader}>{t('drawer.menu')}</Text>
             {[
@@ -450,7 +473,14 @@ export default function ServerList() {
                 ? [{ label: t('drawer.signIn') || 'Sign in', key: 'login' }]
                 : []),
             ].map((item) => (
-              <TouchableOpacity key={item.key} style={styles.menuItem} onPress={() => openItem(item.key)} activeOpacity={0.8}>
+              <TouchableOpacity
+                key={item.key}
+                style={styles.menuItem}
+                onPress={() => openItem(item.key)}
+                activeOpacity={0.8}
+                accessibilityRole="menuitem"
+                accessibilityLabel={item.label}
+              >
                 <Text style={styles.menuItemTxt}>{item.label}</Text>
               </TouchableOpacity>
             ))}
@@ -491,9 +521,10 @@ export default function ServerList() {
               value={serverName}
               onChangeText={setServerName}
               placeholder={t('serverList.serverNamePlaceholder')}
-              placeholderTextColor="#555"
+              placeholderTextColor="#888"
               maxLength={40}
               autoFocus
+              accessibilityLabel={t('serverList.serverNamePlaceholder')}
             />
             <View style={styles.createRow}>
               <TouchableOpacity
@@ -501,6 +532,8 @@ export default function ServerList() {
                 onPress={handleCreate}
                 disabled={creating || !serverName.trim()}
                 activeOpacity={0.85}
+                accessibilityLabel={t('serverList.create')}
+                accessibilityState={{ disabled: creating || !serverName.trim(), busy: creating }}
               >
                 <Text style={styles.btnTxt}>
                   {creating ? t('serverList.creating') : t('serverList.create')}
@@ -511,6 +544,8 @@ export default function ServerList() {
                 onPress={() => { setShowCreate(false); setServerName(''); }}
                 disabled={creating}
                 activeOpacity={0.85}
+                accessibilityLabel={t('serverList.cancel')}
+                accessibilityState={{ disabled: creating }}
               >
                 <Text style={styles.btnTxt}>{t('serverList.cancel')}</Text>
               </TouchableOpacity>
