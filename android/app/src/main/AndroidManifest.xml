@@ -49,9 +49,13 @@
        SEC-A4: tools:replace fuerza allowBackup=false aunque librerías
        transitivas (androidx.work, etc.) intenten setearlo a true. -->
   <application android:name=".MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:networkSecurityConfig="@xml/network_security_config" android:usesCleartextTraffic="false" android:theme="@style/AppTheme" android:supportsRtl="true" android:enableOnBackInvokedCallback="false" tools:replace="android:allowBackup,android:fullBackupContent,android:usesCleartextTraffic">
-    <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-4718826806092770~3631324090" tools:replace="android:value"/>
-    <meta-data android:name="com.google.android.gms.ads.flag.OPTIMIZE_AD_LOADING" android:value="true" tools:replace="android:value"/>
-    <meta-data android:name="com.google.android.gms.ads.flag.OPTIMIZE_INITIALIZATION" android:value="true" tools:replace="android:value"/>
+    <!-- Round 2 Commit Q follow-up: 3 meta-data tags de Google Mobile Ads
+         removidas. El SDK react-native-google-mobile-ads fue removido del
+         package.json en Commit Q, pero estos meta-data quedaban en el manifest
+         residuales. Sin el SDK gradle dep, son inert (no hay código que los
+         lea) pero ensucian el manifest merged.
+         Si vuelven a native ads: agregar react-native-google-mobile-ads dep,
+         agregar plugin a app.json, regenerar el android/ (prebuild una vez). -->
     <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_LAUNCH_WAIT_MS" android:value="0"/>
