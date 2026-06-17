@@ -20,7 +20,7 @@ manuales recurrentes. Pensado para single-operator (1 dev).
 | Payment wallet (USDC receiver) | `0x61f7E9df2113Ac2E4a3D18f802AF2EE77cFAAD4f` |
 | Polygon RPC | `https://polygon-bor-rpc.publicnode.com` (sin SLA — migrar a Alchemy antes de 10k DAU) |
 | Email notifs | Gmail `miningtheblocks@gmail.com` con app-password en `GMAIL_APP_PASSWORD` |
-| Keystore release | `@miningtheblock__miningtheblocks.jks` (NO en git, en working tree + 3 backups offline) |
+| Keystore release | `mtb-release-v2.keystore` en `~/Escritorio/claveminingtheblcoks/` (NO en git, 2 backups offline — pendiente USB físico). File SHA-256 `36785fb2...af9f6f64`. Cert SHA-256 `BF:8F:25:AC:C3:CC:CF:9B:DA:F7:63:53:FC:E5:DE:B2:25:11:89:16:9E:1C:32:20:6E:75:52:55:4D:AB:7D:C1`. Password en Bitwarden entry "MTB release keystore — v2 (2026-06-17)". Reemplaza la canonical previa `@miningtheblock__miningtheblocks.jks` cuya password se perdió (2026-06-17 — ver postmortem abajo). |
 | Secrets en GCP | `COMPANY_WALLET_KEY`, `GMAIL_APP_PASSWORD`, `SERVER_SEED` |
 | Contact email ops | `miningtheblocks@gmail.com` |
 
@@ -99,19 +99,25 @@ Señales manuales:
 **Tiempo a recovery:** N/A — recovery imposible sin backup intacto.
 
 **Mitigación pre-incident (CRÍTICA):**
-- 3 copias offline en USB/cloud encryptados:
-  - USB VeraCrypt en cajón físico.
-  - Servicio cloud personal con encryption (rclone + age, Bitwarden Send con expiración).
-  - Familiar de confianza (USB encriptado).
-- `sha256sum @miningtheblock__miningtheblocks.jks > KEYSTORE_HASH.txt` guardado en password manager (NO en git).
+- 3 copias offline en mediums distintos:
+  - **Bitwarden Notes** (cloud, base64 del `.gpg` cifrado AES-256).
+  - **Email a `miningtheblocks@gmail.com`** con `.gpg` adjunto (cloud distinto provider).
+  - **USB físico cifrado** en lugar distinto del laptop (PENDIENTE — ver task #53).
+- Hash file SHA-256 + cert SHA-256 documentados arriba en quick reference + en Bitwarden notes.
 - Verificación trimestral: comparar hash de cada backup contra el documentado.
-- `keytool -list -v -keystore @miningtheblock__miningtheblocks.jks` impreso en papel guardado en caja fuerte (incluye SHA-1, SHA-256, validity dates).
+- `keytool -list -v -keystore mtb-release-v2.keystore` impreso en papel guardado en caja fuerte (incluye SHA-1, SHA-256, validity dates).
 
 **Si ocurre (sin backups):**
-1. Anunciar end-of-life de v1.x.x para users existentes.
-2. Generar nueva keystore (`keytool -genkeypair -v -keystore mtb-release-v2.keystore ...`).
-3. Publicar v2.0.0 firmada con nueva cert. Users existentes tienen que uninstall+reinstall.
+1. Anunciar end-of-life de la versión actual para users existentes.
+2. Generar nueva keystore (`keytool -genkeypair -v -keystore mtb-release-vN.keystore ...`).
+3. Publicar nueva major version firmada con nueva cert. Users existentes tienen que uninstall+reinstall.
 4. Esperar pérdida de ~30-50% de base (data local perdida + fricción).
+
+**Postmortem 2026-06-17 (keystore v1 → v2):**
+- Pre-fix: el password de `@miningtheblock__miningtheblocks.jks` (y de `mtb-release.keystore` viejo) se perdió. Las 2 candidates en Bitwarden no abrieron ninguno. v1.1.0 release en GitHub firmada con cert `84eb85b5...` quedó como "deprecated" — sin posibilidad de update OTA.
+- Impacto real: 0 (smoke test fase, sin users reales).
+- Root cause: password no guardada inmediatamente al generar el keystore.
+- Acción correctiva: el flow nuevo (generar `mtb-release-v2.keystore`) guardó password en Bitwarden **antes** de generar el keystore, evitando el mismo error.
 
 ---
 
