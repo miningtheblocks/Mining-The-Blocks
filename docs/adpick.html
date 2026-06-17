@@ -115,22 +115,11 @@
 <!-- CRIT-22: extraer sid/t a sessionStorage y limpiar URL ANTES de cargar el
      script de ads. El script de effectivecpmnetwork ejecuta en este origen
      y podría leer la URL/referer; sin estos params no puede exfiltrar el
-     token. El script de aplicación (más abajo) los recupera de sessionStorage. -->
-<script>
-  (function() {
-    try {
-      var p = new URLSearchParams(window.location.search);
-      var sid = p.get('sid');
-      var t = p.get('t');
-      if (sid) sessionStorage.setItem('mtb_ad_sid', sid);
-      if (t) sessionStorage.setItem('mtb_ad_token', t);
-      if (sid || t) {
-        // Limpiar URL para que el script de ads no vea los params.
-        window.history.replaceState({}, document.title, window.location.pathname);
-      }
-    } catch (e) { /* no-op */ }
-  })();
-</script>
+     token. El script de aplicación (más abajo) los recupera de sessionStorage.
+     Smoke-test 2026-06-17: extraído a archivo externo porque el CSP
+     script-src 'self' (sin 'unsafe-inline') bloqueaba el bloque inline,
+     dejando el countdown congelado en 60. -->
+<script src="adpick-init.js"></script>
 
 <!-- Ad network script — runs immediately, no visible container needed.
      TODO (#22 long-term): reemplazar por una red reputable (AdSense, Coinzilla)
@@ -141,8 +130,8 @@
 
   <!-- Aviso anti-confusión -->
   <div style="width:100%;max-width:480px;background:#1a1000;border:1px solid #4a3000;border-radius:10px;padding:10px 14px;font-size:13px;color:#aa8800;line-height:1.6;text-align:center;font-weight:700;">
-    <span data-lang="es">⚠️ Esta página muestra anuncios externos. <strong>Cualquier premio que aparezca no es real, es la publicidad.</strong> Cerrá los popups y volvé acá. Al terminar el tiempo tu pico se acredita solo. <a href="#" onclick="openExamplesModal(event)" style="color:#4a9eff;font-weight:700;">Ver ejemplos</a></span>
-    <span data-lang="en visible">⚠️ This page shows external ads. <strong>Any prize that appears is not real, it's advertising.</strong> Close popups and come back here. When the timer ends your pick is credited automatically. <a href="#" onclick="openExamplesModal(event)" style="color:#4a9eff;font-weight:700;">See examples</a></span>
+    <span data-lang="es">⚠️ Esta página muestra anuncios externos. <strong>Cualquier premio que aparezca no es real, es la publicidad.</strong> Cerrá los popups y volvé acá. Al terminar el tiempo tu pico se acredita solo. <a href="#" data-action="open-examples" style="color:#4a9eff;font-weight:700;">Ver ejemplos</a></span>
+    <span data-lang="en visible">⚠️ This page shows external ads. <strong>Any prize that appears is not real, it's advertising.</strong> Close popups and come back here. When the timer ends your pick is credited automatically. <a href="#" data-action="open-examples" style="color:#4a9eff;font-weight:700;">See examples</a></span>
   </div>
 
   <!-- Modal ejemplos de publicidad engañosa -->
@@ -179,7 +168,7 @@
         </span>
       </div>
       <div style="margin-top:18px;text-align:center;">
-        <button onclick="closeExamplesModal()" style="background:#1a3a1a;border:1px solid #2e7d32;color:#5cb85c;font-size:14px;font-weight:800;padding:11px 32px;border-radius:10px;cursor:pointer;width:100%;">
+        <button data-action="close-examples" style="background:#1a3a1a;border:1px solid #2e7d32;color:#5cb85c;font-size:14px;font-weight:800;padding:11px 32px;border-radius:10px;cursor:pointer;width:100%;">
           <span data-lang="es">Entendido ✓</span>
           <span data-lang="en visible">Got it ✓</span>
         </button>
@@ -240,173 +229,7 @@
 
 </main>
 
-<script>
-
-  var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
-  var TIMER_SECONDS = 60;
-  // CRIT-22: leer credenciales de sessionStorage (movidas allí por el snippet
-  // pre-ad para que el script externo no las pueda exfiltrar). Fallback a
-  // URL params por compatibilidad si el snippet pre-ad falla (raro).
-  var params = new URLSearchParams(window.location.search);
-  var SESSION_ID = '';
-  var TOKEN = '';
-  try {
-    SESSION_ID = sessionStorage.getItem('mtb_ad_sid') || params.get('sid') || '';
-    TOKEN = sessionStorage.getItem('mtb_ad_token') || params.get('t') || '';
-  } catch (e) {
-    SESSION_ID = params.get('sid') || '';
-    TOKEN = params.get('t') || '';
-  }
-  var currentLang = (navigator.language || 'en').startsWith('es') ? 'es' : 'en';
-
-  var timerInterval = null;
-  var remaining = TIMER_SECONDS;
-
-  var CIRCUMFERENCE = 2 * Math.PI * 54; // 339.3
-
-  // Custom scheme registered in AndroidManifest — primary return mechanism.
-  var APP_SCHEME_URL = 'exp+miningtheblocks://peaks';
-  // Intent URL as fallback for Chrome when scheme navigation is intercepted.
-  var APP_INTENT_URL = 'intent://peaks/#Intent;scheme=exp%2Bminingtheblocks;package=com.bissi.miningtheblocks;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.bissi.miningtheblocks;end';
-
-  function setLang(lang) {
-    currentLang = lang;
-    document.querySelectorAll('[data-lang]').forEach(function(el) {
-      el.classList.toggle('visible', el.getAttribute('data-lang').split(' ')[0] === lang);
-    });
-    document.querySelectorAll('[data-lang-inline]').forEach(function(el) {
-      el.classList.toggle('visible', el.getAttribute('data-lang-inline').split(' ')[0] === lang);
-    });
-    document.documentElement.lang = lang;
-  }
-
-  function goBackToApp() {
-    // Primary: custom scheme — opens app directly if installed
-    window.location.href = APP_SCHEME_URL;
-    // Fallback: intent URL after 1.5s in case the scheme didn't trigger
-    setTimeout(function() {
-      if (!document.hidden) {
-        window.location.href = APP_INTENT_URL;
-      }
-    }, 1500);
-  }
-
-  function startTimer() {
-    if (!SESSION_ID || !TOKEN) {
-      showError(currentLang === 'es' ? 'Sesión inválida. Volvé a la app e intentá de nuevo.' : 'Invalid session. Go back to the app and try again.');
-      return;
-    }
-
-    var arc = document.getElementById('timerArc');
-    var numEl = document.getElementById('timerNum');
-
-    timerInterval = setInterval(function() {
-      remaining -= 1;
-      numEl.textContent = remaining;
-      var offset = CIRCUMFERENCE * (1 - remaining / TIMER_SECONDS);
-      arc.style.strokeDashoffset = offset;
-
-      if (remaining <= 0) {
-        clearInterval(timerInterval);
-        numEl.textContent = '✓';
-        arc.style.stroke = '#5cb85c';
-        arc.style.strokeDashoffset = 0;
-        startAutoClaim();
-      }
-    }, 1000);
-  }
-
-  function startAutoClaim() {
-    document.getElementById('timerWrap').style.opacity = '0.4';
-
-    var barWrap = document.getElementById('claimBarWrap');
-    barWrap.classList.add('visible');
-    setLang(currentLang);
-
-    // setTimeout(50) is more reliable than double-rAF on mobile Chrome
-    // to ensure the browser renders display:flex before starting the CSS transition
-    setTimeout(function() {
-      document.getElementById('claimBarFill').style.width = '100%';
-    }, 50);
-
-    setTimeout(function() {
-      claimPick();
-    }, 1300);
-  }
-
-  function showError(msg) {
-    document.getElementById('claimBarWrap').classList.remove('visible');
-    document.getElementById('timerWrap').style.display = 'none';
-    var errBox = document.getElementById('resultErr');
-    var errMsg = document.getElementById('errMsg');
-    errMsg.textContent = msg;
-    errBox.classList.add('visible');
-    setLang(currentLang);
-  }
-
-  async function claimPick() {
-    try {
-      var res = await fetch(FUNCTIONS_BASE + '/claimAdSession', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: SESSION_ID, token: TOKEN }),
-      });
-      var data = await res.json();
-      if (!res.ok || !data.ok) {
-        var errMsgs = {
-          es: {
-            not_found: 'Sesión no encontrada. Volvé a la app e intentá de nuevo.',
-            invalid_token: 'Token inválido.',
-            already_used: 'Este pico ya fue reclamado.',
-            expired: 'La sesión expiró. Volvé a la app para generar una nueva.',
-            not_ready: 'El anuncio todavía no está disponible. Esperá unas horas.',
-          },
-          en: {
-            not_found: 'Session not found. Go back to the app and try again.',
-            invalid_token: 'Invalid token.',
-            already_used: 'This pick was already claimed.',
-            expired: 'Session expired. Go back to the app to generate a new one.',
-            not_ready: 'Ad not ready yet. Wait a few hours.',
-          }
-        };
-        var msg = (errMsgs[currentLang] && errMsgs[currentLang][data.error]) ||
-          (currentLang === 'es' ? 'Error desconocido.' : 'Unknown error.');
-        showError(msg);
-        return;
-      }
-      // Éxito
-      document.getElementById('claimBarWrap').classList.remove('visible');
-      document.getElementById('timerWrap').style.display = 'none';
-      document.getElementById('resultOk').classList.add('visible');
-      setLang(currentLang);
-
-    } catch (e) {
-      showError(currentLang === 'es' ? 'Sin conexión. Revisá tu internet e intentá de nuevo.' : 'No connection. Check your internet and try again.');
-      setLang(currentLang);
-    }
-  }
-
-  function openExamplesModal(e) {
-    if (e) e.preventDefault();
-    var modal = document.getElementById('examplesModal');
-    modal.style.display = 'flex';
-    setLang(currentLang);
-  }
-
-  function closeExamplesModal() {
-    document.getElementById('examplesModal').style.display = 'none';
-  }
-
-  document.addEventListener('DOMContentLoaded', function() {
-    setLang(currentLang);
-
-    // Wire up back buttons
-    document.getElementById('backBtnOk').href = APP_SCHEME_URL;
-    document.getElementById('backBtnErr').href = APP_SCHEME_URL;
-
-    startTimer();
-  });
-</script>
+<script src="adpick.js"></script>
 
 </body>
 </html>
