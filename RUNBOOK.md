@@ -429,6 +429,103 @@ Ver sección "3. Keystore JKS pérdida" arriba.
 3. Subdomain: `status.miningtheblocks.com` (CNAME en Cloudflare).
 4. Linkear desde la app en `Login.js` → "¿Problemas? Status".
 
+### Migración a `@react-native-firebase` + App Check con Play Integrity
+
+**Why:** Smoke test 2026-06-16 expuso que el Firebase JS SDK no manda headers
+`X-Android-Package` + `X-Android-Cert` necesarios para que las API key
+restrictions de tipo "Android apps" (package + SHA-1) funcionen. Result:
+durante el smoke test tuvimos que crear una 3ra API key con
+`Application restrictions: None` y solo `API restrictions` por servicio. Eso
+es lo que hace el 80% de las apps RN con JS SDK y NO es inseguro (las
+Security Rules son la defensa real, no la key — que igual va embebida en el
+APK), PERO para una app de plata real como MTB el gold standard es:
+
+1. **`@react-native-firebase/app`** + módulos nativos (`/auth`, `/firestore`,
+   `/storage`, `/functions`, `/messaging`). El SDK nativo Android usa Play
+   Services para attestation automática → la Android-restricted key
+   funciona, no necesitás keys "None".
+2. **Firebase App Check con Play Integrity provider**. Verifica que cada
+   request viene de un APK no-modificado en un device no-rooteado.
+   Bloquea bots, emuladores, APKs reempaquetados.
+3. **Performance**: SDK nativo (Kotlin/Swift) vs JS bridge. Mejor cold start,
+   menos memoria, push notifications nativos sin wrapper.
+
+**Por qué NO se hizo en v1.1.0:** mid-audit Round 2 (349 findings, 32 CRIT)
+no es momento para SDK swap — contamina signals de Audit Round 3 y sin E2E
+tests automatizados el risk de regression en flujos críticos (auth, mining
+claim, USDC payment, NFT mint) es alto. Tracked como deuda explícita post
+v1.1.0 release, NO como "algún día".
+
+**Estimado:** 1-2 semanas dedicadas (sprint solo, no mezclar con otra cosa).
+Pasos:
+1. **Día 1-2 — Setup:**
+   - `npx expo install @react-native-firebase/app @react-native-firebase/auth @react-native-firebase/firestore @react-native-firebase/storage @react-native-firebase/functions @react-native-firebase/messaging`
+   - Bajar `google-services.json` de Firebase Console (Android app config) → poner en `android/app/google-services.json`.
+   - Plugin en `app.json`: `["@react-native-firebase/app", { "android_task_executor_maximum_pool_size": 10 }]`.
+   - `expo prebuild --clean` para regenerar android/ con el plugin de Google Services.
+   - Verificar que el SHA-1 del keystore release esté en la Android key de GCP (`5E:8F...` debug + el de release).
+2. **Día 3-5 — Refactor de imports:**
+   - Sed across codebase: `from 'firebase/auth'` → `from '@react-native-firebase/auth'` (y los demás módulos).
+   - **Diferencias de API** a manejar a mano (no es 1:1):
+     - `getAuth(app)` → `auth()` (call directo, no se pasa app).
+     - `signInWithEmailAndPassword(auth, email, pass)` → `auth().signInWithEmailAndPassword(email, pass)`.
+     - `onAuthStateChanged(auth, cb)` → `auth().onAuthStateChanged(cb)`.
+     - `doc(db, 'users', uid)` → `firestore().collection('users').doc(uid)`.
+     - `setDoc(ref, data, { merge: true })` → `ref.set(data, { merge: true })`.
+     - `serverTimestamp()` → `firestore.FieldValue.serverTimestamp()`.
+     - `httpsCallable(functions, 'name')` → `functions().httpsCallable('name')`.
+     - `getStorage(app)` → `storage()`.
+   - El archivo más afectado: `src/firebase/client.js` y `src/firebase/functions.js` se rescriben casi enteros.
+   - Search ALL files: `grep -rln "from 'firebase/" src/ App.js | wc -l` → estimar scope antes de empezar.
+3. **Día 6-7 — App Check setup:**
+   - Firebase Console → App Check → Apps → Android → Provider: Play Integrity.
+   - En GCP Console: habilitar Play Integrity API en el proyecto.
+   - Cliente: `import { firebase } from '@react-native-firebase/app-check'`. En `App.js` o init: `firebase.appCheck().activate('play-integrity', true)`. El `true` es `isTokenAutoRefreshEnabled`.
+   - **NO enforce todavía**. Dejar en "Monitor mode" 1-2 semanas para ver métricas de adopción (qué % de tokens válidos llegan).
+4. **Día 8-10 — Test E2E manual exhaustivo:**
+   - Flujos críticos a probar en orden, **APK release-signed** (no debug):
+     - [ ] Cold start, app llega a Login
+     - [ ] Sign up con email/password nuevo
+     - [ ] Email verification (callable Cloud Function)
+     - [ ] Login con email/password existente
+     - [ ] Persistencia: kill app, reabrir, sesión recuperada
+     - [ ] Forgot password flow completo
+     - [ ] Change email con re-auth
+     - [ ] Update profile (avatar upload to Storage, username availability check)
+     - [ ] ServerList load (Firestore listener)
+     - [ ] Mine cubos (callable + Firestore writes con offline cache)
+     - [ ] Daily claim + ad reward
+     - [ ] Buy credits con USDC (Polygon + Firestore audit log)
+     - [ ] NFT mint flow
+     - [ ] Withdrawal request
+     - [ ] FCM push notification recibido en background
+     - [ ] Sign out: AsyncStorage limpio, audio teardown, vuelta a Login
+5. **Día 11-12 — Enforce + cleanup:**
+   - Una vez App Check monitor reporte >95% tokens válidos: cambiar de Monitor a Enforce en Firebase Console.
+   - Borrar la 3ra API key (la "None" restriction) en GCP Console — ya no hace falta.
+   - La Android-restricted key vuelve a ser la única.
+   - Update `src/firebase/client.js`: cambiar apiKey de vuelta a la Android key (la `AIzaSyAtC4ItAQ5PpyKzzW7O6xIeh1xRkyW3pwo`).
+6. **Día 13-14 — Release v1.2.0 con changelog explícito.**
+
+**Criterios de éxito:**
+- [ ] Cero crashes durante smoke test en ambos debug y release variant.
+- [ ] App Check monitor mode reporta >95% válid tokens en 7 días.
+- [ ] Performance: cold start no más lento que v1.1.0 (medir con `adb shell am start-activity -W`).
+- [ ] Bundle size: aumento <5MB (los módulos nativos pesan pero JS SDK se va).
+- [ ] Push notifications: latency similar o mejor.
+
+**Riesgos a vigilar:**
+- Diferencias sutiles en `onAuthStateChanged` timing → podría romper persistencia.
+- Error codes de Firestore distintos → catch blocks específicos pueden mismatchear.
+- Storage upload progress callbacks tienen API distinta.
+- Si el dev del usuario rootea el device, App Check enforce lo bloquea → comunicar en release notes.
+
+**Lo que NO hace falta migrar:**
+- Cloud Functions backend (sigue siendo `firebase-functions` v2 + `firebase-admin`).
+- Firestore Rules + Indexes.
+- Polygon NFT contract.
+- Web landing en docs/index.html (es estático, no usa Firebase JS SDK).
+
 ---
 
 ## Tareas recurrentes

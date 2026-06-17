@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, ScrollView, TextInput, Share } from 'react-native';
-import { signOut } from 'firebase/auth';
+import { signOut, onAuthStateChanged } from 'firebase/auth';
 import { useAppAlert } from '../components/AppAlert';
 import { auth, db } from '../firebase/client';
 import { navigate } from '../utils/navigationRef';
@@ -33,32 +33,23 @@ export default function Profile({ asModal = false, onClose }) {
   // cross-user data leak (mostraba wallet/email del primer user al segundo).
   useEffect(() => {
     let unsub = null;
-    let cancelled = false;
-    // Re-import onAuthStateChanged dinámicamente para evitar imports adicionales arriba.
-    let unsubAuth = null;
-    (async () => {
-      const { onAuthStateChanged } = await import('firebase/auth');
-      if (cancelled) return;
-      unsubAuth = onAuthStateChanged(auth, (u) => {
-        // Cleanup previous listener cuando cambia el uid.
-        if (unsub) { try { unsub(); } catch (_) {} unsub = null; }
-        if (!u) {
-          setData(null);
-          setWalletInput('');
-          setLoading(false);
-          return;
-        }
-        const ref = doc(db, 'users', u.uid);
-        unsub = onSnapshot(ref, (snap) => {
-          const d = snap.exists() ? snap.data() : null;
-          setData(d);
-          setWalletInput(d?.walletAddress || '');
-          setLoading(false);
-        }, () => setLoading(false));
-      });
-    })();
+    const unsubAuth = onAuthStateChanged(auth, (u) => {
+      if (unsub) { try { unsub(); } catch (_) {} unsub = null; }
+      if (!u) {
+        setData(null);
+        setWalletInput('');
+        setLoading(false);
+        return;
+      }
+      const ref = doc(db, 'users', u.uid);
+      unsub = onSnapshot(ref, (snap) => {
+        const d = snap.exists() ? snap.data() : null;
+        setData(d);
+        setWalletInput(d?.walletAddress || '');
+        setLoading(false);
+      }, () => setLoading(false));
+    });
     return () => {
-      cancelled = true;
       if (unsub) { try { unsub(); } catch (_) {} }
       if (unsubAuth) { try { unsubAuth(); } catch (_) {} }
     };
@@ -229,10 +220,6 @@ export default function Profile({ asModal = false, onClose }) {
           <InfoRow label={t('profile.birthday')} value={data?.profile?.birthday} />
           <Sep />
           <InfoRow label={t('profile.phone')} value={data?.profile?.phone} />
-          <Sep />
-          <InfoRow label={t('profile.address')} value={data?.profile?.address} />
-          <Sep />
-          <InfoRow label={t('profile.postalCode')} value={data?.profile?.postalCode} />
         </View>
 
         {/* Wallet ETH */}

@@ -19,6 +19,13 @@ service cloud.firestore {
       // pushToken/pushTokenType/pushNotifications (van en update — el bootstrap
       // ya crea el doc con ensureUser y luego App.js hace setDoc(merge) que es
       // update, no create).
+      // Round 2 follow-up (smoke test 2026-06-16): create rule alineada con
+      // update rule — permitir null en displayName/email/avatarUrl/photoURL/language.
+      // Pre-fix: Registration.js manda `avatarUrl: avatarUrl || null` (null si el
+      // user no subió foto en signup, que es el caso default). La create rule
+      // exigía `is string` → rejection con `permission-denied` → setDoc del
+      // signup nunca escribía → profile data perdido. La update rule ya
+      // permitía null; ahora ambas son consistentes.
       allow create: if request.auth != null && request.auth.uid == uid
         && request.resource.data.keys().hasOnly([
              'picks', 'createdAt', 'updatedAt',
@@ -27,14 +34,19 @@ service cloud.firestore {
            ])
         && (!('picks' in request.resource.data) || request.resource.data.picks == 0)
         && (!('displayName' in request.resource.data) ||
+            request.resource.data.displayName == null ||
             (request.resource.data.displayName is string && request.resource.data.displayName.size() <= 60))
         && (!('email' in request.resource.data) ||
+            request.resource.data.email == null ||
             (request.resource.data.email is string && request.resource.data.email.size() <= 200))
         && (!('avatarUrl' in request.resource.data) ||
+            request.resource.data.avatarUrl == null ||
             (request.resource.data.avatarUrl is string && request.resource.data.avatarUrl.size() <= 500))
         && (!('photoURL' in request.resource.data) ||
+            request.resource.data.photoURL == null ||
             (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 500))
         && (!('language' in request.resource.data) ||
+            request.resource.data.language == null ||
             (request.resource.data.language is string && request.resource.data.language.size() <= 8));
 
       // SEC-P1-6: migrado a WHITELIST explícito. Antes era blacklist y si
