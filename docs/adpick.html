@@ -105,16 +105,21 @@
     [data-lang-inline] { display: none; }
     [data-lang-inline].visible { display: inline; }
 
-    /* ── Ad iframe sandbox (CRIT-22 v2) ── */
+    /* ── Ad iframe sandbox (CRIT-22 v2) ──
+       El ad-network es Social Bar — sticky bar al fondo + popunder.
+       Lo embebemos position:fixed al bottom para que renderee normalmente
+       dentro del iframe y NO desplace el contenido principal del padre. */
     .ad-iframe {
-      display: block;
+      position: fixed;
+      bottom: 0;
+      left: 0;
       width: 100%;
-      max-width: 480px;
-      height: 250px;
+      height: 70px;
       border: 0;
-      margin: 0 auto;
       background: transparent;
+      z-index: 100;
     }
+    main { padding-bottom: 80px; }
   </style>
 </head>
 <body>
