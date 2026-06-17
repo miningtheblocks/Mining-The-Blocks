@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <!-- CRIT-23: CSP estricta — script-src 'self' + Cloud Functions; el ad
        network NO está en allowlist del padre. El script vive aislado en
-       ad-frame.html dentro de <iframe sandbox> (CRIT-22 v2 2026-06-17). -->
-  <!-- frame-src 'self' permite embeber ad-frame.html. El sandbox del iframe
-       (sin allow-same-origin) garantiza que el ad-script no acceda al DOM,
-       sessionStorage (donde están sid+token) ni cookies del padre. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://*.cloudfunctions.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://*.cloudfunctions.net; frame-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+       ads.miningtheblocks.com (subdominio separado, CRIT-22 v3 2026-06-17). -->
+  <!-- frame-src https://ads.miningtheblocks.com permite embeber el subdominio.
+       El iframe usa sandbox="... allow-same-origin": el subdominio es origen
+       distinto, así que Same-Origin Policy del navegador bloquea acceso al
+       DOM / sessionStorage / cookies del padre (donde están sid+token). El
+       ad-network solo accede a su propio storage de ads.miningtheblocks.com. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://*.cloudfunctions.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://*.cloudfunctions.net; frame-src https://ads.miningtheblocks.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
   <meta http-equiv="X-Frame-Options" content="DENY">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
@@ -140,18 +142,20 @@
      dejando el countdown congelado en 60. -->
 <script src="adpick-init.js"></script>
 
-<!-- CRIT-22 v2 (2026-06-17): el script del ad-network vive en ad-frame.html,
-     embebido acá vía <iframe sandbox> sin allow-same-origin → malvertising
-     queda confinado al iframe sin acceso al DOM/storage/cookies del padre.
-     `allow-popups + allow-popups-to-escape-sandbox` permite que el script
-     abra nuevas tabs cuando el user clickea un ad (UX esperada de ad-network
-     interstitial). Sin allow-same-origin → no puede leer parent.* ni cookies.
-     Sin allow-forms → no puede submitear forms desde el sandbox.
-     TODO (#22 long-term): reemplazar por una red reputable (AdSense, Coinzilla). -->
+<!-- CRIT-22 v3 (2026-06-17): el script del ad-network vive en ad-frame.html
+     sirviéndose desde ads.miningtheblocks.com (subdominio separado, repo
+     mtb-ads). Embebido acá vía <iframe sandbox allow-same-origin>.
+     Por qué allow-same-origin es seguro acá: el iframe es origen
+     ads.miningtheblocks.com y el padre es miningtheblocks.com → Same-Origin
+     Policy del navegador los aísla. allow-same-origin solo le da al iframe
+     acceso a su propio storage (necesario para que el ad-network funcione),
+     no al storage/DOM del padre. allow-popups + allow-popups-to-escape-sandbox
+     permite que el script abra nuevas tabs cuando el user clickea un ad.
+     Sin allow-forms → no puede submitear forms desde el sandbox. -->
 <iframe
-  src="ad-frame.html"
+  src="https://ads.miningtheblocks.com/ad-frame.html"
   class="ad-iframe"
-  sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+  sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
   referrerpolicy="no-referrer"
   title="ad"
 ></iframe>
