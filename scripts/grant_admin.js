@@ -16,22 +16,17 @@
  *   - El log de la acción queda en Firestore `adminActions`.
  */
 
-const admin = require('../functions/node_modules/firebase-admin');
-const { getAuth } = require('../functions/node_modules/firebase-admin/auth');
-const { getFirestore } = require('../functions/node_modules/firebase-admin/firestore');
-const fs = require('fs');
+// Path absoluto a lib/auth + lib/firestore — las subpath exports
+// (firebase-admin/auth) NO resuelven cuando se usa filesystem-path require
+// desde fuera del package, por eso apuntamos directo a /lib.
+const { getAuth } = require('../functions/node_modules/firebase-admin/lib/auth');
+const { getFirestore } = require('../functions/node_modules/firebase-admin/lib/firestore');
 const { confirmDestructive } = require('./_confirm');
+const { initAdmin } = require('./_sa_init');
 
-const config = JSON.parse(fs.readFileSync('/home/code/.config/configstore/firebase-tools.json', 'utf8'));
-const accessToken = config.tokens.access_token;
-const PROJECT = 'miningtheblocks-669f6';
-
-admin.initializeApp({
-  credential: {
-    getAccessToken: () => Promise.resolve({ access_token: accessToken, expires_in: 3600 }),
-  },
-  projectId: PROJECT,
-});
+// SA dedicado mtb-admin-cli (Firebase Auth Admin + Cloud Datastore User).
+// Reemplaza firebase-tools.json (= roles/owner). Ver _sa_init.js + RUNBOOK.md.
+initAdmin();
 
 async function main() {
   const targetUid = process.argv[2];

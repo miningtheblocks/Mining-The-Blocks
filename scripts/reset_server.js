@@ -8,12 +8,12 @@
  *   node scripts/reset_server.js <serverId> --wipe-access   (también borra serverAccess de usuarios)
  */
 
-const admin = require('/run/media/code/c3c2291c-9fa2-4d6a-925f-b7f7876f676a/MTB/functions/node_modules/firebase-admin');
-const { getFirestore, FieldValue } = require('/run/media/code/c3c2291c-9fa2-4d6a-925f-b7f7876f676a/MTB/functions/node_modules/firebase-admin/firestore');
+const { getFirestore, FieldValue } = require('../functions/node_modules/firebase-admin/lib/firestore');
 const { confirmDestructive } = require('./_confirm');
+const { initAdmin, PROJECT } = require('./_sa_init');
 
-const PROJECT = 'miningtheblocks-669f6';
-admin.initializeApp({ projectId: PROJECT });
+// SA dedicado mtb-admin-cli — ver _sa_init.js + RUNBOOK.md.
+initAdmin();
 const db = getFirestore();
 
 const STARTING_LAYER = 100;

@@ -9,12 +9,12 @@
 //
 // Con --yes-i-am-sure salta el prompt (NO recomendado para producción).
 
-const admin = require('../functions/node_modules/firebase-admin');
-const { getFirestore, FieldValue } = require('../functions/node_modules/firebase-admin/firestore');
+const { getFirestore, FieldValue } = require('../functions/node_modules/firebase-admin/lib/firestore');
 const { confirmDestructive } = require('./_confirm');
+const { initAdmin, PROJECT } = require('./_sa_init');
 
-const PROJECT = 'miningtheblocks-669f6';
-admin.initializeApp({ projectId: PROJECT });
+// SA dedicado mtb-admin-cli — ver _sa_init.js + RUNBOOK.md.
+initAdmin();
 const db = getFirestore();
 
 const SERVER_ID_RE = /^[A-Za-z0-9_-]{6,40}$/;
