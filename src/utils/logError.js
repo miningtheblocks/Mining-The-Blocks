@@ -103,6 +103,14 @@ export function logError(scope, err, ctx) {
     // En __DEV__ no enviamos al backend para no saturarlo durante desarrollo.
     if (typeof __DEV__ === 'undefined' || !__DEV__) {
       reportRemote(scope, err, ctx);
+      // Pipeline dual: además del backend propio (Firestore errorLog) mandamos
+      // a Sentry. Sentry da issue grouping, source maps, breadcrumbs y release
+      // tracking. Firestore conserva search + dedupe que controlamos nosotros.
+      // Lazy import para evitar ciclo con utils/sentry → logError.
+      try {
+        // eslint-disable-next-line no-unused-expressions
+        import('./sentry').then((s) => s.captureException(err, ctx, scope)).catch(() => {});
+      } catch (_) {}
     }
   } catch (_) { /* swallow — no relanzar */ }
 }

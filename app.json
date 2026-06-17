@@ -38,7 +38,8 @@
           "androidMode": "default",
           "androidCollapsedTitle": "Mining The Blocks"
         }
-      ]
+      ],
+      "@sentry/react-native"
     ],
     "extra": {
       "eas": {

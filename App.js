@@ -17,6 +17,12 @@ import audioManager from './src/utils/audioManager';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import UpdateModal from './src/components/UpdateModal';
 import ErrorBoundary from './src/components/ErrorBoundary';
+import { initSentry, Sentry } from './src/utils/sentry';
+
+// Inicializar Sentry lo antes posible — antes de cualquier render para
+// capturar errores tempranos (init de Firebase, lazy imports, etc.).
+// Si EXPO_PUBLIC_SENTRY_DSN está vacío queda no-op.
+initSentry();
 
 import { APP_VERSION, TERMS_URL, compareVersions, StorageKeys } from './src/constants';
 import Home from './src/screens/Home';
@@ -405,7 +411,7 @@ function RootApp() {
   );
 }
 
-export default function App() {
+function App() {
   return (
     <ErrorBoundary>
       <I18nProvider initialLanguage="en">
@@ -416,6 +422,11 @@ export default function App() {
     </ErrorBoundary>
   );
 }
+
+// Sentry.wrap añade auto-tracking de navigation/screen + breadcrumbs de
+// React lifecycle. Si Sentry no está inicializado (DSN vacío), wrap es
+// efectivamente identity-función — no rompe nada.
+export default Sentry.wrap(App);
 
 function GameDrawer() {
   const { t } = useI18n();
