@@ -3,10 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-  <!-- CRIT-23: CSP restrictiva (script-src enumerado por host del ad network). -->
-  <!-- CRIT-22: el script de effectivecpmnetwork queda en allowlist hasta que se
-       migre a una red reputable; ver tarea #41 (sandbox o swap de network). -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://pl29683393.effectivecpmnetwork.com https://*.cloudfunctions.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://*.cloudfunctions.net; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+  <!-- CRIT-23: CSP estricta — script-src 'self' + Cloud Functions; el ad
+       network NO está en allowlist del padre. El script vive aislado en
+       ad-frame.html dentro de <iframe sandbox> (CRIT-22 v2 2026-06-17). -->
+  <!-- frame-src 'self' permite embeber ad-frame.html. El sandbox del iframe
+       (sin allow-same-origin) garantiza que el ad-script no acceda al DOM,
+       sessionStorage (donde están sid+token) ni cookies del padre. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://*.cloudfunctions.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://*.cloudfunctions.net; frame-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
   <meta http-equiv="X-Frame-Options" content="DENY">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
@@ -101,6 +104,17 @@
     [data-lang].visible { display: block; }
     [data-lang-inline] { display: none; }
     [data-lang-inline].visible { display: inline; }
+
+    /* ── Ad iframe sandbox (CRIT-22 v2) ── */
+    .ad-iframe {
+      display: block;
+      width: 100%;
+      max-width: 480px;
+      height: 250px;
+      border: 0;
+      margin: 0 auto;
+      background: transparent;
+    }
   </style>
 </head>
 <body>
@@ -121,10 +135,21 @@
      dejando el countdown congelado en 60. -->
 <script src="adpick-init.js"></script>
 
-<!-- Ad network script — runs immediately, no visible container needed.
-     TODO (#22 long-term): reemplazar por una red reputable (AdSense, Coinzilla)
-     o aislar en un iframe sandbox para reducir superficie de malvertising. -->
-<script src="https://pl29683393.effectivecpmnetwork.com/13/ce/c2/13cec2cd2d7b5f2302ef1e88a79a03f1.js"></script>
+<!-- CRIT-22 v2 (2026-06-17): el script del ad-network vive en ad-frame.html,
+     embebido acá vía <iframe sandbox> sin allow-same-origin → malvertising
+     queda confinado al iframe sin acceso al DOM/storage/cookies del padre.
+     `allow-popups + allow-popups-to-escape-sandbox` permite que el script
+     abra nuevas tabs cuando el user clickea un ad (UX esperada de ad-network
+     interstitial). Sin allow-same-origin → no puede leer parent.* ni cookies.
+     Sin allow-forms → no puede submitear forms desde el sandbox.
+     TODO (#22 long-term): reemplazar por una red reputable (AdSense, Coinzilla). -->
+<iframe
+  src="ad-frame.html"
+  class="ad-iframe"
+  sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+  referrerpolicy="no-referrer"
+  title="ad"
+></iframe>
 
 <main>
 
