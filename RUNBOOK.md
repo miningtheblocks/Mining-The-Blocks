@@ -316,6 +316,56 @@ Señales manuales:
 
 ---
 
+### 13. Pinata IPFS down / cuenta suspendida (NFTs sin imagen)
+
+**Detección:** OpenSea / wallets reportan "image not found" para los NFTs. Gateway `gateway.pinata.cloud/ipfs/<cid>` devuelve 404 / 403.
+
+**Impacto:** los NFTs ya minteados muestran imagen rota. Nuevos mints van OK pero quedan huérfanos del lado del CID en metadata.
+
+**Mitigación pre-incident (Agente #3 CRIT-5):** multi-pin a **Filebase** como mirror. Scripts `upload-to-ipfs.js` + `upload-metadata-to-ipfs.js` pinean a ambos providers vía `_ipfs_pin.js` helper. CIDs documentados abajo.
+
+**Failover si Pinata cae permanente:**
+1. Actualizar `scripts/generate-nft-metadata.js` → `IMAGE_CIDS` con los Filebase CIDs (Qm... lista abajo).
+2. Re-generar metadata JSONs: `node scripts/generate-nft-metadata.js`.
+3. Re-uploadear metadata a Filebase (Pinata fuera): `node scripts/upload-metadata-to-ipfs.js` (con `PINATA_*` quitadas del env para que falle Pinata silenciosamente y solo quede Filebase).
+4. Actualizar `TOKEN_URIS` en backend con los nuevos metadata CIDs de Filebase.
+5. Deploy backend. NFTs nuevos van con tokenURI nuevo. NFTs existentes mantienen su tokenURI viejo apuntando a Pinata (irrecuperable on-chain) — esto es **mitigación parcial** para los ya minteados.
+
+**Failover si Pinata cae temporal (outage 1-24h):**
+Los NFTs siguen accesibles vía gateway Filebase: `https://ipfs.filebase.io/ipfs/<filebase-cid>`. Cualquier IPFS gateway (cloudflare, ipfs.io) también sirve el CID de Pinata si el contenido se propagó a la red DHT.
+
+**Filebase mirror CIDs (registrados 2026-06-17, `mtb-nfts` bucket):**
+
+Imágenes PNG:
+```
+1: QmYqRbuk2aK7sfMvBqoRq1Z9W485kML1BPZjiNcCbgE5Ub
+2: QmTmUpootF4yNA7Vo2bXLJ5cSR1HUwkMW4ADf9BAwcfQh3
+3: QmdCgbHXbp6eL3PYZ1eV6MoTQRykNZoUa1hbtRM6pK5pUq
+4: QmNx85aAsJELxkLMAJzPUQ9UFR1qTMWgRPyfkXB1jykCj1
+5: QmeSVneMbgSihe4Ly6rgV6A4sU1NUPNptNFbena7SjiVn3
+6: QmP9MEtL8qFTdfevNxUCULrPmo6ZubHgq4q2psLbkQPBG2
+7: QmaWJnfW1QtsrmA18xY8vgcbk9MgEgTNotCZGMCoBvD5pt
+8: Qmd85qiqc8cE2EqEWe4g1VFwWJN9je3xieYAr68wedt1nx
+9: QmPEMFepdxZtQNYH4kbaTa4ZXBNyLq1AKbEq2kQDqMVy4v
+```
+
+Metadata JSON:
+```
+1: QmV9FREcq7XuXpazJ32s8jxTV7LtxxbUXFgbVf3uASDAbQ
+2: QmQmLYm56EY2RV2ECodFgiAvXucTFX6CME2sEMY1xTY4No
+3: QmanYuTXUDxamqEH182Vt5fCAUFzm9E3d7gWNtPyvpU9Nu
+4: QmW2JL3YtUtxo7zhGkm7BUBQo54pLXTqSTEURBm7co6jze
+5: QmTweggJegmZuU6WLUzpec6VGeHz8MNjsM29uWnn7Wn5yy
+6: QmUQDN834yk6cvouEhWwaKumtVcRy8HoAMmkkqQfxcUyWM
+7: QmRZGyvSPKcFxpmWfQRtCwbxhTV7zscPdz8uGpd1cdNGBF
+8: QmTpqcThEgwK5dpTqJnaVoj7AoziheKHvHpy3ihL7V7RkJ
+9: Qmf5VZhKxqfg8J8R6Vurfnsm2LYeoLmbooy5q5jcNoYoWH
+```
+
+**Tiempo a recovery:** < 30 min con `_ipfs_pin.js` + RUNBOOK steps + Filebase access keys en Bitwarden.
+
+---
+
 ## Setup operacional pendiente (NO código — pasos manuales para vos)
 
 ### Service Account dedicado para scripts admin
