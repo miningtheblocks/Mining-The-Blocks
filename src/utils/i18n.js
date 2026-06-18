@@ -95,6 +95,7 @@ const resources = {
       resendVerification: 'Resend verification email',
       verificationResent: 'Verification email sent. Check your inbox.',
       report: 'Report a Problem',
+      status: 'Service status',
     },
     report: {
       title: 'Report a Problem',
@@ -593,6 +594,7 @@ const resources = {
       resendVerification: 'Reenviar email de verificación',
       verificationResent: 'Email de verificación enviado. Revisa tu bandeja.',
       report: 'Reportar Problema',
+      status: 'Estado del servicio',
     },
     report: {
       title: 'Reportar Problema',

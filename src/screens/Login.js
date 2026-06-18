@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Switch, TextInput, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Switch, TextInput, Image, Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useOverlayModals } from '../components/OverlayModalsProvider';
 import { auth, db } from '../firebase/client';
@@ -252,6 +252,17 @@ export default function Login() {
       >
         <Text style={styles.reportTxt}>⚠ {t('login.report')}</Text>
       </TouchableOpacity>
+
+      {/* Status page público — para que users durante incidentes sepan
+          si es problema de la app o de su internet. */}
+      <TouchableOpacity
+        style={styles.statusBtn}
+        onPress={() => Linking.openURL('https://status.miningtheblocks.com').catch(() => {})}
+        activeOpacity={0.8}
+        accessibilityLabel={t('login.status')}
+      >
+        <Text style={styles.statusTxt}>📊 {t('login.status')}</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -298,4 +309,6 @@ const styles = StyleSheet.create({
   resendTxt: { color: '#ff8866', fontWeight: '700', fontSize: 13 },
   reportBtn: { marginTop: 20, alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 16 },
   reportTxt: { color: '#444', fontWeight: '700', fontSize: 13 },
+  statusBtn: { marginTop: 6, alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 16 },
+  statusTxt: { color: '#444', fontWeight: '700', fontSize: 13 },
 });
