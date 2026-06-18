@@ -131,13 +131,20 @@
 
     function showSuccess() {
       var body = clearBody();
+      var isEmailChange = mode === 'verifyAndChangeEmail';
       body.appendChild(el('div', { cls: 'status-icon', html: '&#9989;' }));
-      body.appendChild(el('p', { cls: 'title', text: '¡Email verificado!' }));
+      body.appendChild(el('p', { cls: 'title', text: isEmailChange ? '¡Email actualizado!' : '¡Email verificado!' }));
 
       var sub = el('p', { cls: 'subtitle' });
-      sub.appendChild(document.createTextNode('Tu cuenta está activa. '));
-      sub.appendChild(el('span', { cls: 'highlight', text: 'Ya podés iniciar sesión' }));
-      sub.appendChild(document.createTextNode(' en la app.'));
+      if (isEmailChange) {
+        sub.appendChild(document.createTextNode('Tu email cambió correctamente. '));
+        sub.appendChild(el('span', { cls: 'highlight', text: 'Usá el nuevo email' }));
+        sub.appendChild(document.createTextNode(' para iniciar sesión la próxima vez.'));
+      } else {
+        sub.appendChild(document.createTextNode('Tu cuenta está activa. '));
+        sub.appendChild(el('span', { cls: 'highlight', text: 'Ya podés iniciar sesión' }));
+        sub.appendChild(document.createTextNode(' en la app.'));
+      }
       body.appendChild(sub);
 
       var steps = el('div', { cls: 'steps' });
@@ -169,9 +176,14 @@
     var mode = getParam('mode');
     var oobCode = getParam('oobCode');
 
+    // Ultrareview bug_018: Registration.js usa verifyBeforeUpdateEmail para
+    // cambiar email post-signup. Ese flow manda mode=verifyAndChangeEmail
+    // (no verifyEmail). Sin aceptarlo acá, el user clickea el link y se
+    // queda con el email viejo permanentemente. Identity Toolkit
+    // accounts:update soporta ambos modes con el mismo body.
     if (!mode || !oobCode) {
       showError('Link inválido. Pedí uno nuevo desde la app tocando "Reenviar email".');
-    } else if (mode !== 'verifyEmail') {
+    } else if (mode !== 'verifyEmail' && mode !== 'verifyAndChangeEmail') {
       showError('Acción no reconocida. Pedí un nuevo link de verificación desde la app.');
     } else {
       fetch(

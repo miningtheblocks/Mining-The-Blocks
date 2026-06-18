@@ -52,10 +52,19 @@ function RootApp() {
     // dispare deep-link a la screen relevante. Sin esto, el tap solo abre la
     // app en la última screen — el user que recibe "Tu NFT llegó!" no llega
     // automáticamente a MyGems.
+    // Ultrareview bug_016: race entre `clearTimeout + cleanup` y la resolución
+    // del await dentro de setupNotifications. Si el componente se desmonta
+    // entre `setTimeout fires` y `addNotificationResponseReceivedListener
+    // resuelve`, el cleanup leía `responseSubscription === null` (closure
+    // stale) y el listener nuevo quedaba huérfano sin cleanup.
+    // Fix: ref que sobrevive la closure stale + flag `active` que setup
+    // chequea post-await para auto-removerse si ya unmount.
+    let active = true;
     let responseSubscription = null;
     const setupNotifications = async () => {
       try {
         const Notifications = await import('expo-notifications');
+        if (!active) return;
         Notifications.setNotificationHandler({
           handleNotification: async () => ({
             shouldShowAlert: true,
@@ -93,7 +102,7 @@ function RootApp() {
         // (e.g. 'exp+miningtheblocks://gems') en el payload de mint complete,
         // payment received, etc. Linking.openURL dispara el DeepLinkHandler
         // de abajo, que ya conoce el scheme.
-        responseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
+        const sub = Notifications.addNotificationResponseReceivedListener((response) => {
           try {
             const data = response?.notification?.request?.content?.data || {};
             if (data && typeof data.url === 'string' && data.url.startsWith('exp+miningtheblocks://')) {
@@ -103,6 +112,11 @@ function RootApp() {
             console.warn('Notification response handler error:', handlerErr?.message);
           }
         });
+        // Ultrareview bug_016: si unmount ocurrió mientras awaitamos, removemos
+        // el listener inmediatamente sin esperar al cleanup (que ya corrió
+        // con responseSubscription=null en la closure stale).
+        if (!active) { try { sub.remove(); } catch (_) {} return; }
+        responseSubscription = sub;
       } catch (e) {
         console.warn('Notifications setup failed:', e.message);
       }
@@ -233,6 +247,7 @@ function RootApp() {
     });
 
     return () => {
+      active = false;
       clearTimeout(notifSetupTimer);
       if (responseSubscription) {
         try { responseSubscription.remove(); } catch (_) {}
@@ -260,7 +275,6 @@ function RootApp() {
   useEffect(() => {
     if (!user) return;
     let active = true;
-    const { I18nText } = {};  // shim para evitar import circular; usamos hardcoded EN strings con fallback
 
     const setupPushToken = async () => {
       try {
@@ -312,10 +326,14 @@ function RootApp() {
           return setupPushToken();
         }
         // No preguntado → mostrar pre-permission Alert.
-        // Strings hardcoded EN/ES porque i18n context no es accesible desde acá.
-        // El user todavía puede preferir el idioma device default; cuando vaya
-        // a Profile/Config y vea las strings traducidas, ya estará consistente.
-        const lang = Platform.OS === 'ios' ? 'en' : 'es'; // heurística simple; mejor sería leer settings.language post-login
+        // Ultrareview merged_bug_006: antes el lang dependía de Platform.OS
+        // (ios=en, android=es). Como la app es Android-only sideload, TODOS
+        // veían el Alert en español aunque su device fuera EN → user EN
+        // confundido tildaba "No gracias" → opt-out permanente sin re-prompt.
+        // Ahora leemos AsyncStorage StorageKeys.LANGUAGE (que Login + Config
+        // ya persisten), fallback EN.
+        const storedLang = await AsyncStorage.getItem(StorageKeys.LANGUAGE);
+        const lang = (storedLang === 'es') ? 'es' : 'en';
         const strings = lang === 'es' ? {
           title: '¿Querés enterarte cuándo pasa algo?',
           body: 'Mandamos 3 tipos de notificaciones: cuando se mintea tu NFT, cuando se acredita un pago tuyo, y cuando llega un bonus de referido. Podés mutear cada categoría en Configuración. Sin spam.',

@@ -79,8 +79,12 @@ class MainApplication : Application(), ReactApplication {
       for (sig in signatures) {
         val hash = md.digest(sig.toByteArray()).joinToString("") { "%02X".format(it) }
         // SHA-256 esperado de la release keystore de MTB.
-        // Actualizar si rotás la keystore (raro).
-        val EXPECTED = "84EB85B5F62585C3792716539CD3ED317BF4125CBCFAC78984F074C42C6CD8DF"
+        // Actualizado 2026-06-18: rotamos del keystore viejo
+        // (84EB85B5F625... = @miningtheblock__miningtheblocks.jks, password
+        // perdida — ver postmortem RUNBOOK) al nuevo mtb-release-v2.keystore.
+        // Si se vuelve a rotar, actualizar este hash. La key activa vive en
+        // ~/Escritorio/claveminingtheblcoks/mtb-release-v2.keystore.
+        val EXPECTED = "BF8F25ACC3CCCF9BDAF76353FCE5DEB2251189169E1C32206E7552554DAB7DC1"
         if (hash.equals(EXPECTED, ignoreCase = true)) {
           return // OK, firma legítima
         }

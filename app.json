@@ -39,7 +39,14 @@
           "androidCollapsedTitle": "Mining The Blocks"
         }
       ],
-      "@sentry/react-native"
+      [
+        "@sentry/react-native",
+        {
+          "organization": "miningtheblocks",
+          "project": "mining-the-blocks",
+          "url": "https://sentry.io/"
+        }
+      ]
     ],
     "extra": {
       "eas": {

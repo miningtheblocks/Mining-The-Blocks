@@ -62,6 +62,17 @@ function safeCtx(ctx) {
   }
 }
 
+// Ultrareview bug_011: variante que devuelve OBJETO scrubeado (no JSON string)
+// para pasar a Sentry.scope.setExtras. Sin esto, el path a Sentry recibía el
+// ctx raw — violando privacy.html disclosure ("Sentry procesa stack traces
+// anonimizados sin email/uid") + exponiendo password/wallet keys directo a
+// Sentry UI. Reutiliza safeCtx vía parse del JSON ya scrubeado.
+function scrubCtxObject(ctx) {
+  const json = safeCtx(ctx);
+  if (!json) return undefined;
+  try { return JSON.parse(json); } catch { return undefined; }
+}
+
 // Reporte remoto: debouncea + cap diario para no saturar Firestore/Cloud Functions.
 // Si el error es repetitivo (mismo scope+msg en <60s) lo descartamos.
 const _recentErrors = new Map();
@@ -107,9 +118,13 @@ export function logError(scope, err, ctx) {
       // a Sentry. Sentry da issue grouping, source maps, breadcrumbs y release
       // tracking. Firestore conserva search + dedupe que controlamos nosotros.
       // Lazy import para evitar ciclo con utils/sentry → logError.
+      // Ultrareview bug_011: pasamos ctx SCRUBBED (no raw) — Sentry.setExtras
+      // serializa cualquier objeto que reciba; sin scrub, email/wallet/password
+      // leakean a Sentry contradiciendo el disclosure de privacy.html.
       try {
+        const safeCtxObj = scrubCtxObject(ctx);
         // eslint-disable-next-line no-unused-expressions
-        import('./sentry').then((s) => s.captureException(err, ctx, scope)).catch(() => {});
+        import('./sentry').then((s) => s.captureException(err, safeCtxObj, scope)).catch(() => {});
       } catch (_) {}
     }
   } catch (_) { /* swallow — no relanzar */ }

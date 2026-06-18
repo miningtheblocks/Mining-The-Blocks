@@ -2941,6 +2941,12 @@ exports.markGemRedeemed = onCall(async (request) => {
   const gemId = pathParts[3];
 
   // Idempotency: TX que verifica status antes de marcar.
+  // Ultrareview bug_003: además de redeemed/minted, bloqueamos también
+  // 'minting' (state intermedio entre claimGemNFT y mintProcessorScheduled).
+  // Sin esto, admin cashea durante la ventana de cron (~5min) y el cron
+  // mintea el NFT igual → doble-pago tier-1 = $100k irrecuperable.
+  // Atomicidad: el pendingMints/{uid_gemId} se borra DENTRO de la misma
+  // TX, así si el cron arranca después no encuentra qué mintear.
   await db.runTransaction(async (tx) => {
     const fresh = await tx.get(gemDoc.ref);
     if (!fresh.exists) throw new HttpsError("not-found", "gem_gone");
@@ -2951,6 +2957,21 @@ exports.markGemRedeemed = onCall(async (request) => {
     if (data.status === "minted") {
       // Gema ya minteada como NFT — no se canjea por cash adicional.
       throw new HttpsError("failed-precondition", "already_minted");
+    }
+    if (data.status === "minting") {
+      // Race window: claimGemNFT corrió pero el cron todavía no minteó.
+      // Necesitamos cancelar el pendingMints en la misma TX para que el
+      // cron no minte después del cash payment.
+      const pendingMintRef = db.collection("pendingMints").doc(`${ownerUid}_${gemId}`);
+      const pendingMint = await tx.get(pendingMintRef);
+      if (pendingMint.exists && pendingMint.data().status === "pending") {
+        tx.delete(pendingMintRef);
+      } else if (pendingMint.exists && pendingMint.data().status === "processing") {
+        // mintProcessor agarró el lock antes que nosotros — no podemos
+        // cancelar; abortamos para no doble-pagar. Operador espera al
+        // próximo cron tick (~5min) y reintenta.
+        throw new HttpsError("failed-precondition", "mint_in_progress");
+      }
     }
     tx.set(gemDoc.ref, {
       status: "redeemed",

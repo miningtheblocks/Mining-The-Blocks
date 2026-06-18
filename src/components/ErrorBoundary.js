@@ -7,7 +7,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { logError } from '../utils/logError';
-import { captureException } from '../utils/sentry';
 
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -20,12 +19,11 @@ export default class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(err, info) {
-    // logError → Cloud Function (errorLog en Firestore con dedupe + cap diario).
+    // logError ya dispara ambos pipelines (Firestore errorLog + Sentry via
+    // lazy import en src/utils/logError.js). Ultrareview bug_014: antes
+    // llamábamos captureException acá adicionalmente → cada error iba 2×
+    // a Sentry quemando el free tier de 5k events/mes.
     logError('ErrorBoundary', err, { componentStack: info && info.componentStack });
-    // captureException → Sentry (con breadcrumbs, source maps, grouping).
-    // Pipeline doble: Firestore para search/dedupe propio + Sentry para UX
-    // de triage (issue grouping, release tracking, alerts).
-    captureException(err, { componentStack: info && info.componentStack }, 'ErrorBoundary');
   }
 
   handleReset = () => {
