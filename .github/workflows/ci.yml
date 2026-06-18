@@ -113,3 +113,30 @@ jobs:
       - name: npm audit (functions)
         working-directory: functions
         run: npm audit --omit=dev --audit-level=critical
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Round 2 Agente #7 P3: SBOM (Software Bill of Materials) en formato
+      # CycloneDX para tracking de dependencias + scanning de CVE futuros.
+      # Generado en cada push, attachable a la release. Tools: @cyclonedx/cdxgen
+      # (genera SBOM agnóstico al language). El JSON queda en artifacts.
+      - name: Generate functions SBOM
+        run: npx -y @cyclonedx/cdxgen@latest -t nodejs -o sbom-functions.json functions
+      - name: Generate root SBOM
+        run: npx -y @cyclonedx/cdxgen@latest -t nodejs -o sbom-root.json .
+      - name: Upload SBOMs as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom-*.json
+          retention-days: 90
