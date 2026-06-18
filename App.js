@@ -514,6 +514,10 @@ function DeepLinkHandler() {
         host = url.replace('exp+miningtheblocks://', '').split(/[?\/]/)[0].toLowerCase();
       } else if (url.startsWith('mtb://')) {
         host = url.replace('mtb://', '').split(/[?\/]/)[0].toLowerCase();
+      } else if (url.startsWith('https://miningtheblocks.com/app/')) {
+        // Round 2 #9 HIGH-09-04: App Links HTTPS verificadas via autoVerify
+        // + assetlinks.json. El path después de /app/ mapea al modal target.
+        host = url.replace('https://miningtheblocks.com/app/', '').split(/[?\/]/)[0].toLowerCase();
       } else {
         return;
       }

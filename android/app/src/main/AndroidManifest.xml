@@ -81,6 +81,25 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="mtb"/>
       </intent-filter>
+      <!-- Round 2 Agente #9 HIGH-09-04: App Links HTTPS verificadas.
+           autoVerify="true" instruye a Android a fetchear
+           https://miningtheblocks.com/.well-known/assetlinks.json al install
+           del APK; verifica que el SHA-256 de la firma matchea + entonces
+           registra la app como handler EXCLUSIVO de estos URLs (sin chooser,
+           sin posibilidad de hijack por otra app maliciosa que declare el
+           mismo intent filter — el scheme `mtb://` solo NO ofrece esa
+           garantía). assetlinks.json declara la huella SHA-256
+           BF:8F:25:AC:... del keystore mtb-release-v2. Si en el futuro
+           cambia el keystore, actualizar assetlinks.json en el repo
+           mismo (vive en docs/.well-known/). -->
+      <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="https"
+              android:host="miningtheblocks.com"
+              android:pathPrefix="/app/"/>
+      </intent-filter>
     </activity>
     <!-- Round 2 Agente #9 MED-09-12: CropImageActivity (libreria canhub.cropper
          via expo-image-picker) auto-injecta exported=true. Override a false:

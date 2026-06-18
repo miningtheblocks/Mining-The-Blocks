@@ -1126,7 +1126,21 @@ export function I18nProvider({ children, initialLanguage = 'en' }) {
     return value;
   }, [language]);
 
-  const value = useMemo(() => ({ language, setLanguage, t }), [language, setLanguage, t]);
+  // Round 2 #10 follow-up: pluralization helper. CLDR plural rules para
+  // en + es son ambas binary (one / other) — count === 1 → suffix `_one`,
+  // resto → suffix `_other`. Para idiomas con más formas (ru, ar) habría
+  // que ampliar el switch.
+  //
+  // Uso: tn('gem.found', 5, { tier: 3 })  → busca key 'gem.found_one' o
+  //      'gem.found_other' según count.
+  //      El propio `count` se inyecta como var `{count}` por conveniencia.
+  const tn = useCallback((key, count, vars) => {
+    const n = Number(count) || 0;
+    const suffix = (n === 1) ? '_one' : '_other';
+    return t(key + suffix, { count: n, ...(vars || {}) });
+  }, [t]);
+
+  const value = useMemo(() => ({ language, setLanguage, t, tn }), [language, setLanguage, t, tn]);
   return (
     <I18nContext.Provider value={value}>
       {children}

@@ -110,8 +110,12 @@ service cloud.firestore {
 
       // Mined cubes: any authenticated user can read
       // Writes only via Cloud Functions (admin bypasses rules)
+      // Round 2 #2/#12 HIGH: cap query.limit a 500 (servidor con 6 capas
+      // tiene hasta ~50k cubos minados; sin cap el cliente puede traer
+      // toda la colección en bucle).
       match /mined/{cubeId} {
-        allow read: if request.auth != null;
+        allow read: if request.auth != null
+          && (request.query == null || request.query.limit <= 500);
         allow write: if false;
       }
 
@@ -195,9 +199,13 @@ service cloud.firestore {
       }
     }
 
-    // Activity feed: any authenticated user can read (global live feed)
+    // Activity feed: any authenticated user can read (global live feed).
+    // Round 2 #2/#12 HIGH: cap explícito de query.limit a 100 para evitar
+    // cost amplification (cliente authed haciendo .get() sin limit descargaba
+    // toda la colección en bucle).
     match /activityFeed/{eventId} {
-      allow read: if request.auth != null;
+      allow read: if request.auth != null
+        && (request.query == null || request.query.limit <= 100);
       allow write: if false;
     }
 
