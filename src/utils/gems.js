@@ -156,3 +156,30 @@ export function getGemDef(tier) {
   if (!Number.isInteger(idx) || idx < 0 || idx >= GEMS.length) return GEMS[0];
   return GEMS[idx];
 }
+
+// Audit feedback 2026-06-23+: mapeo capa K → cantidad de miembros que el
+// server necesita para liberar TODOS los tiers que esa capa premia. Espejo
+// EXACTO de functions/helpers.js#getLayerUnlockThreshold. Si cambian los
+// thresholds en functions/constants.js, actualizar acá también.
+//
+// Devuelve 0 para capas warmup (K=98+) — sin lock.
+const GEM_UNLOCK_THRESHOLDS_CLIENT = [
+  54167, 45834, 41667, 37500, 33334, 29167, 25000, 20834, 12500,
+];
+
+export function getLayerUnlockThreshold(K) {
+  if (typeof K !== 'number' || !Number.isFinite(K) || K < 0) return 0;
+  if (K >= 98) return 0;                              // warmup
+  if (K >= 82) return GEM_UNLOCK_THRESHOLDS_CLIENT[7]; // tier 8 → 20834
+  if (K >= 47) return GEM_UNLOCK_THRESHOLDS_CLIENT[5]; // tier 6 → 29167
+  if (K >= 27) return GEM_UNLOCK_THRESHOLDS_CLIENT[3]; // tier 4 → 37500
+  if (K >= 17) return GEM_UNLOCK_THRESHOLDS_CLIENT[2]; // tier 3 → 41667
+  if (K >= 7)  return GEM_UNLOCK_THRESHOLDS_CLIENT[1]; // tier 2 → 45834
+  return GEM_UNLOCK_THRESHOLDS_CLIENT[0];              // tier 1 → 54167
+}
+
+export function isLayerUnlocked(K, memberCount) {
+  const threshold = getLayerUnlockThreshold(K);
+  if (threshold === 0) return true;
+  return (Number(memberCount) || 0) >= threshold;
+}

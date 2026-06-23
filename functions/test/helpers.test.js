@@ -10,6 +10,8 @@ const {
   fnv1a,
   getRewardForCube,
   getGemForCube,
+  getLayerUnlockThreshold,
+  isLayerUnlocked,
   generateReferralCode,
   generateGemCode,
   esc,
@@ -142,6 +144,68 @@ describe('generateGemCode', () => {
     expect(a).not.toBe(b);
     expect(a.slice(0, 5)).toBe('MTB3-');
     expect(b.slice(0, 5)).toBe('MTB3-');
+  });
+});
+
+describe('getLayerUnlockThreshold', () => {
+  test('K=0..6 → 54167 (tier 1 binding)', () => {
+    expect(getLayerUnlockThreshold(0)).toBe(54167);
+    expect(getLayerUnlockThreshold(6)).toBe(54167);
+  });
+  test('K=7..16 → 45834 (tier 2 binding)', () => {
+    expect(getLayerUnlockThreshold(7)).toBe(45834);
+    expect(getLayerUnlockThreshold(16)).toBe(45834);
+  });
+  test('K=17..26 → 41667 (tier 3 binding)', () => {
+    expect(getLayerUnlockThreshold(17)).toBe(41667);
+    expect(getLayerUnlockThreshold(26)).toBe(41667);
+  });
+  test('K=27..46 → 37500 (tier 4 binding)', () => {
+    expect(getLayerUnlockThreshold(27)).toBe(37500);
+    expect(getLayerUnlockThreshold(46)).toBe(37500);
+  });
+  test('K=47..81 → 29167 (tier 6 binding)', () => {
+    expect(getLayerUnlockThreshold(47)).toBe(29167);
+    expect(getLayerUnlockThreshold(81)).toBe(29167);
+  });
+  test('K=82..97 → 20834 (tier 8 binding)', () => {
+    expect(getLayerUnlockThreshold(82)).toBe(20834);
+    expect(getLayerUnlockThreshold(97)).toBe(20834);
+  });
+  test('K>=98 → 0 (warmup, sin lock)', () => {
+    expect(getLayerUnlockThreshold(98)).toBe(0);
+    expect(getLayerUnlockThreshold(99)).toBe(0);
+    expect(getLayerUnlockThreshold(100)).toBe(0);
+  });
+  test('K inválido (NaN, negativo, string) → 0 fallback seguro', () => {
+    expect(getLayerUnlockThreshold(NaN)).toBe(0);
+    expect(getLayerUnlockThreshold(-5)).toBe(0);
+    expect(getLayerUnlockThreshold(null)).toBe(0);
+    expect(getLayerUnlockThreshold(undefined)).toBe(0);
+  });
+});
+
+describe('isLayerUnlocked', () => {
+  test('warmup K=100 con 0 miembros → unlocked', () => {
+    expect(isLayerUnlocked(100, 0)).toBe(true);
+    expect(isLayerUnlocked(98, 1)).toBe(true);
+  });
+  test('K=50 con 30000 miembros (>29167) → unlocked', () => {
+    expect(isLayerUnlocked(50, 30000)).toBe(true);
+  });
+  test('K=50 con 28000 miembros (<29167) → locked', () => {
+    expect(isLayerUnlocked(50, 28000)).toBe(false);
+  });
+  test('K=0 con 60000 (>54167) → unlocked', () => {
+    expect(isLayerUnlocked(0, 60000)).toBe(true);
+  });
+  test('K=0 con 50000 (<54167) → locked', () => {
+    expect(isLayerUnlocked(0, 50000)).toBe(false);
+  });
+  test('memberCount inválido (undefined/null) → tratado como 0', () => {
+    expect(isLayerUnlocked(50, undefined)).toBe(false);
+    expect(isLayerUnlocked(50, null)).toBe(false);
+    expect(isLayerUnlocked(100, undefined)).toBe(true); // warmup OK
   });
 });
 

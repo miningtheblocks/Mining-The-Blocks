@@ -89,7 +89,10 @@ function getRewardForCube(serverId, K, cubeNumber, serverSeed, episodeNumber) {
 }
 
 function getGemForCube(serverId, K, cubeNumber, memberCount, serverSeed, episodeNumber) {
-  if (K >= 98) return null;
+  // Audit feedback 2026-06-23+: K>=98 ahora puede premiar tier 8 ($25) +
+  // tier 9 ($15). Antes esas capas eran "warmup" sin premios. Tier 1-7
+  // mantienen sus guards K<=N originales.
+  if (K < 0) return null;
 
   // Computar effectiveSeed UNA vez (no por iteración de hasPrize) para no
   // recalcular el HMAC en cada chequeo de tier.
@@ -146,6 +149,42 @@ function getGemForCube(serverId, K, cubeNumber, memberCount, serverSeed, episode
   if (hasPrize(9, 10000, 0, 7529340)) return 9;
 
   return null;
+}
+
+// ─── Layer unlock (audit Round 2 sesión 2026-06-23+) ─────────────────────────
+
+// Mapeo K → threshold de miembros que el server necesita para que la capa
+// esté "desbloqueada". El threshold = MAX de los thresholds de tier que la
+// capa puede premiar (tabla derivada de getGemForCube). Si memberCount es
+// menor al threshold, algún tier no se asignaría → la capa queda locked y
+// nadie puede minar hasta llegar al threshold.
+//
+// K=98-100 son "warmup" — siempre minables aunque tier 8/9 todavía no se
+// asignen. Para esas capas devolvemos 0 (sin lock), aunque getGemForCube
+// igualmente respeta tierUnlocked() para no asignar tier 8/9 hasta que el
+// memberCount lo permita.
+function getLayerUnlockThreshold(K) {
+  if (typeof K !== "number" || !Number.isFinite(K) || K < 0) return 0;
+  // K=98+ warmup: sin lock (cualquiera puede minar las capas externas).
+  if (K >= 98) return 0;
+  // K=82-97: tier MÁS raro que puede aparecer es 8 → 20834.
+  if (K >= 82) return GEM_UNLOCK_THRESHOLDS[8 - 1];
+  // K=47-81: tier MÁS raro es 6 → 29167.
+  if (K >= 47) return GEM_UNLOCK_THRESHOLDS[6 - 1];
+  // K=27-46: tier MÁS raro es 4 → 37500.
+  if (K >= 27) return GEM_UNLOCK_THRESHOLDS[4 - 1];
+  // K=17-26: tier MÁS raro es 3 → 41667.
+  if (K >= 17) return GEM_UNLOCK_THRESHOLDS[3 - 1];
+  // K=7-16: tier MÁS raro es 2 → 45834.
+  if (K >= 7) return GEM_UNLOCK_THRESHOLDS[2 - 1];
+  // K=0-6: tier MÁS raro es 1 → 54167.
+  return GEM_UNLOCK_THRESHOLDS[1 - 1];
+}
+
+function isLayerUnlocked(K, memberCount) {
+  const threshold = getLayerUnlockThreshold(K);
+  if (threshold === 0) return true; // warmup / sin restricción
+  return (Number(memberCount) || 0) >= threshold;
 }
 
 // ─── Códigos (referidos / canje) ───────────────────────────────────────────
@@ -238,6 +277,8 @@ module.exports = {
   getEffectiveSeed,
   getRewardForCube,
   getGemForCube,
+  getLayerUnlockThreshold,
+  isLayerUnlocked,
   generateReferralCode,
   generateGemCode,
   toMillis,

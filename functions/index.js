@@ -59,6 +59,8 @@ const {
   cubeNumberToFaceGridForK,
   getRewardForCube,
   getGemForCube,
+  getLayerUnlockThreshold,
+  isLayerUnlocked,
   generateReferralCode,
   generateGemCode,
   toMillis,
@@ -647,6 +649,15 @@ exports.getServers = onCall(async (request) => {
     const out = { id: d.id };
     // eslint-disable-next-line security/detect-object-injection -- k de whitelist constante PUBLIC_FIELDS
     for (const k of PUBLIC_FIELDS) if (k in data) out[k] = data[k];
+    // Audit feedback 2026-06-23+: anexar unlock status de la capa actual para
+    // que el frontend pueda mostrar el lock modal sin tener que hacer otra
+    // call. layerUnlockThreshold=0 significa "warmup, sin lock".
+    const K = data.currentLayer;
+    if (typeof K === "number") {
+      const threshold = getLayerUnlockThreshold(K);
+      out.layerUnlockThreshold = threshold;
+      out.layerUnlocked = threshold === 0 || (data.memberCount || 0) >= threshold;
+    }
     return out;
   });
   return { servers };
@@ -817,6 +828,17 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     // Enforce payment — user must have joined (paid) this server
     if (!accessSnap.exists) throw new HttpsError("permission-denied", "No server access. Join the server first.");
 
+    // Audit feedback 2026-06-23+: capa locked si el server no llega al
+    // threshold de miembros para los premios de la capa actual. Defensa
+    // server-side (el frontend muestra modal y bloquea, pero un cliente
+    // modificado podría llamar mineCube igual). Error code "layer_locked"
+    // con formato current/required para que el frontend pueda parsearlo.
+    const memberCountForUnlock = serverData.memberCount || 0;
+    if (!isLayerUnlocked(K, memberCountForUnlock)) {
+      const required = getLayerUnlockThreshold(K);
+      throw new HttpsError("failed-precondition", `layer_locked:${memberCountForUnlock}/${required}`);
+    }
+
     // SEC-009: Rate limit ANTES del check alreadyMined. Sin esto, un atacante
     // que ya tenga serverAccess podría sondear cubos sin costo (oracle).
     // Rate limit: máximo 1 mine cada 2s por usuario — previene bots.
@@ -907,15 +929,18 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     // la operación es atómica: o se commitea TODO (mined + layer + user + gem +
     // pendingMint) o no se commitea NADA. Además determinismo del ID asegura
     // idempotencia ante retries del client (mismo cubo → mismo gem doc).
-    if (gem) {
-      const gemCode = generateGemCode(serverId, K, cubeNumber, gem, uid);
-      const rawWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
-      const userWallet = (rawWallet && /^0x[a-fA-F0-9]{40}$/.test(rawWallet)) ? rawWallet : null;
-      const gemStatus = userWallet ? "minting" : "unclaimed";
-      const gemDocId = `${serverId}_${K}_${cubeNumber}`;
+    const rawWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
+    const userWallet = (rawWallet && /^0x[a-fA-F0-9]{40}$/.test(rawWallet)) ? rawWallet : null;
+    const gemStatus = userWallet ? "minting" : "unclaimed";
+
+    // Helper interno: persiste un gem doc + opcional pendingMint en la TX.
+    // Reusable para la gema probabilística + la gema bonus del episodio.
+    const persistGem = (tier, gemDocSuffix) => {
+      const gemCode = generateGemCode(serverId, K, cubeNumber, tier, uid);
+      const gemDocId = `${serverId}_${K}_${cubeNumber}${gemDocSuffix || ""}`;
       const gemRef = userRef.collection("gems").doc(gemDocId);
       tx.set(gemRef, {
-        gemTier: gem,
+        gemTier: tier,
         code: gemCode,
         serverId,
         chainId: serverData.chainId || null,
@@ -926,27 +951,51 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
         status: gemStatus,
         redeemedAt: null,
         walletAddress: userWallet,
-        priceUSD: GEM_PRICES[gem - 1] || 0,
+        priceUSD: GEM_PRICES[tier - 1] || 0,
+        // Marca "bonus por cerrar episodio" para distinguir en UI / analytics.
+        ...(gemDocSuffix === "_winner" ? { episodeWinnerBonus: true } : {}),
       });
       if (userWallet) {
         const pendingMintRef = db.collection("pendingMints").doc(`mint_${gemDocId}`);
         tx.set(pendingMintRef, {
           uid,
           gemId: gemDocId,
-          gemTier: gem,
+          gemTier: tier,
           gemCode,
           walletAddress: userWallet,
-          priceUSD: GEM_PRICES[gem - 1] || 0,
+          priceUSD: GEM_PRICES[tier - 1] || 0,
           createdAt: Date.now(),
           status: "pending",
         });
       }
+    };
+
+    // Round 2 audit #4 HIGH-M1: gem creation + auto-pendingMint DENTRO de la TX.
+    // Pre-fix: el gem se persistía con `.add()` después del runTransaction. Si
+    // el process moría entre el TX commit y el .add() (deploy, OOM, timeout,
+    // SIGKILL), el user perdía permanentemente el gem. docId determinístico
+    // garantiza atomicidad + idempotencia ante retries.
+    if (gem) {
+      persistGem(gem, "");
+    }
+
+    // Audit feedback 2026-06-23+: premio fijo tier 6 ($100) garantizado al
+    // jugador que cierra el episodio (mina la cara final del K=0). Se suma
+    // a la gema probabilística (si la hubo) — el winner puede recibir 2
+    // gemas distintas en la misma mining tx (ej: tier 1 + tier 6 bonus).
+    // El "_winner" suffix en el docId evita colisión con la gema regular.
+    let winnerBonusGem = null;
+    if (episodeComplete) {
+      const WINNER_TIER = 6;
+      persistGem(WINNER_TIER, "_winner");
+      winnerBonusGem = WINNER_TIER;
     }
 
     return {
       ok: true,
       reward,
       gem: gem || null,
+      winnerBonusGem,
       layerComplete,
       episodeComplete,
       currentLayer: layerComplete && !episodeComplete ? K - 1 : K,

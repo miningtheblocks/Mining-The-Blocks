@@ -16,6 +16,7 @@ import { auth, ensureUser, db } from './src/firebase/client';
 import audioManager from './src/utils/audioManager';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import UpdateModal from './src/components/UpdateModal';
+import NotificationsRationaleModal from './src/components/NotificationsRationaleModal';
 import ErrorBoundary from './src/components/ErrorBoundary';
 import { initSentry, Sentry } from './src/utils/sentry';
 
@@ -44,6 +45,12 @@ function RootApp() {
   const [user, setUser] = useState(null);
   const isFirstAuthCheck = useRef(true);
   const [updateInfo, setUpdateInfo] = useState(null); // { forceUpdate, latestVersion, downloadUrl, messageEn, messageEs }
+  // Pre-prompt MTB de notifs: handlers cargados lazy en askConsentThenSetup
+  // (necesita acceso a `active` flag local del effect para evitar setup tras
+  // unmount/logout). Por eso usamos un ref con { onAccept, onDecline } en vez
+  // de un useState directo.
+  const [notifRationaleVisible, setNotifRationaleVisible] = useState(false);
+  const notifRationaleHandlers = useRef({ onAccept: null, onDecline: null });
 
   useEffect(() => {
     // LAZY LOAD: Load Notifications only when needed to avoid EventEmitter crash
@@ -325,47 +332,21 @@ function RootApp() {
           // User opt-in previo — push token setup directo.
           return setupPushToken();
         }
-        // No preguntado → mostrar pre-permission Alert.
-        // Ultrareview merged_bug_006: antes el lang dependía de Platform.OS
-        // (ios=en, android=es). Como la app es Android-only sideload, TODOS
-        // veían el Alert en español aunque su device fuera EN → user EN
-        // confundido tildaba "No gracias" → opt-out permanente sin re-prompt.
-        // Ahora leemos AsyncStorage StorageKeys.LANGUAGE (que Login + Config
-        // ya persisten), fallback EN.
-        const storedLang = await AsyncStorage.getItem(StorageKeys.LANGUAGE);
-        const lang = (storedLang === 'es') ? 'es' : 'en';
-        const strings = lang === 'es' ? {
-          title: '¿Querés enterarte cuándo pasa algo?',
-          body: 'Mandamos 3 tipos de notificaciones: cuando se mintea tu NFT, cuando se acredita un pago tuyo, y cuando llega un bonus de referido. Podés mutear cada categoría en Configuración. Sin spam.',
-          accept: 'Activar',
-          decline: 'No gracias',
-        } : {
-          title: 'Stay in the loop?',
-          body: 'We send 3 kinds of notifications: when your NFT is minted, when your payment is credited, and when referral bonuses arrive. You can mute each category in Settings. No marketing spam.',
-          accept: 'Enable',
-          decline: 'No thanks',
+        // No preguntado → mostrar NotificationsRationaleModal (estética MTB).
+        // Reemplaza el Alert.alert nativo (genérico, sin íconos) por un modal
+        // con la paleta dark de la app, bullets con íconos y CTA primario verde.
+        // i18n se resuelve dentro del componente vía useI18n() (no necesita
+        // strings inline acá).
+        notifRationaleHandlers.current.onAccept = async () => {
+          setNotifRationaleVisible(false);
+          try { await AsyncStorage.setItem(StorageKeys.NOTIFICATIONS_CONSENT, 'yes'); } catch {}
+          if (active) setupPushToken();
         };
-        Alert.alert(
-          strings.title,
-          strings.body,
-          [
-            {
-              text: strings.decline,
-              style: 'cancel',
-              onPress: async () => {
-                try { await AsyncStorage.setItem(StorageKeys.NOTIFICATIONS_CONSENT, 'no'); } catch {}
-              },
-            },
-            {
-              text: strings.accept,
-              onPress: async () => {
-                try { await AsyncStorage.setItem(StorageKeys.NOTIFICATIONS_CONSENT, 'yes'); } catch {}
-                if (active) setupPushToken();
-              },
-            },
-          ],
-          { cancelable: false },
-        );
+        notifRationaleHandlers.current.onDecline = async () => {
+          setNotifRationaleVisible(false);
+          try { await AsyncStorage.setItem(StorageKeys.NOTIFICATIONS_CONSENT, 'no'); } catch {}
+        };
+        setNotifRationaleVisible(true);
       } catch (e) {
         console.warn('askConsentThenSetup error:', String(e));
       }
@@ -390,6 +371,11 @@ function RootApp() {
         messageEn={updateInfo?.messageEn}
         messageEs={updateInfo?.messageEs}
         onDismiss={() => setUpdateInfo(null)}
+      />
+      <NotificationsRationaleModal
+        visible={notifRationaleVisible}
+        onAccept={() => notifRationaleHandlers.current.onAccept?.()}
+        onDecline={() => notifRationaleHandlers.current.onDecline?.()}
       />
       <OverlayModalsProvider>
         <DeepLinkHandler />

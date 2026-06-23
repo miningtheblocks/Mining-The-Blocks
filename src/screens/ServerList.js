@@ -15,6 +15,8 @@ import { useI18n } from '../utils/i18n';
 import { useOverlayModals } from '../components/OverlayModalsProvider';
 import audioManager from '../utils/audioManager';
 import UpdateModal from '../components/UpdateModal';
+import LayerLockedModal from '../components/LayerLockedModal';
+import { getLayerUnlockThreshold, isLayerUnlocked } from '../utils/gems';
 import { APP_VERSION, compareVersions } from '../constants';
 import { logError } from '../utils/logError';
 
@@ -44,6 +46,12 @@ export default function ServerList() {
   const [referralBonusNotif, setReferralBonusNotif] = useState(null); // { id } referrer bonus
   const [referralBonusSelfNotif, setReferralBonusSelfNotif] = useState(null); // { id } buyer bonus
   const [updateInfo, setUpdateInfo] = useState(null);
+  // Audit feedback 2026-06-23+: modal cuando el user intenta entrar a un server
+  // cuya capa actual no tiene quorum suficiente. Bloquea entrada hasta cumplir
+  // threshold + CTA de share. Info viene de getServers (layerUnlocked/Threshold).
+  const [layerLockedInfo, setLayerLockedInfo] = useState(null);
+  // referralCode del usuario actual — usado en el share message del modal locked.
+  const [myReferralCode, setMyReferralCode] = useState(null);
   const [showWelcomePicks, setShowWelcomePicks] = useState(false);
   const [pendingServer, setPendingServer] = useState(null); // server to navigate to after welcome modal
   const { showAlert, AlertComponent } = useAppAlert();
@@ -120,9 +128,16 @@ export default function ServerList() {
   }, []);
 
   useEffect(() => {
-    if (!currentUid) { setServerCredits(0); return; }
+    if (!currentUid) { setServerCredits(0); setMyReferralCode(null); return; }
     const unsub = onSnapshot(doc(db, 'users', currentUid), (snap) => {
-      setServerCredits(snap.exists() ? (snap.data()?.serverCredits ?? 0) : 0);
+      if (snap.exists()) {
+        const data = snap.data() || {};
+        setServerCredits(data.serverCredits ?? 0);
+        setMyReferralCode(data.referralCode || null);
+      } else {
+        setServerCredits(0);
+        setMyReferralCode(null);
+      }
     });
     return () => unsub();
   }, [currentUid]);
@@ -193,6 +208,22 @@ export default function ServerList() {
 
   const joinServer = async (server) => {
     if (!currentUser) { goToRegister(); return; }
+    // Audit feedback 2026-06-23+: bloquear entrada si la capa actual del
+    // server no tiene quorum suficiente. Modal explica + CTA share. El user
+    // no gasta créditos en un server que no puede minar todavía.
+    // Computamos en cliente (espejo de functions/helpers.js#isLayerUnlocked)
+    // porque ServerList lee via onSnapshot directo a Firestore, no via
+    // callGetServers (que sí anexaría layerUnlocked al payload).
+    const K = server?.currentLayer;
+    const members = server?.memberCount || 0;
+    if (typeof K === 'number' && !isLayerUnlocked(K, members)) {
+      setLayerLockedInfo({
+        current: members,
+        required: getLayerUnlockThreshold(K),
+        K,
+      });
+      return;
+    }
     setJoining(server.id);
     const doJoin = async () => {
       const { hasAccess, serverCredits } = await callCheckServerAccess(server.id);
@@ -312,6 +343,30 @@ export default function ServerList() {
         <Text style={styles.serverMeta}>
           👥 {(item.memberCount || 0).toLocaleString()} / 100,000 {t('serverList.members')}
         </Text>
+        {(() => {
+          // Audit feedback 2026-06-23+: indicador visual de unlock por capa.
+          // Si la capa actual está locked, mostrar "🔒 faltan N jugadores".
+          // Si está unlocked y la capa tiene threshold > 0, mostrar "🔓 desbloqueada".
+          const K = item.currentLayer;
+          if (typeof K !== 'number') return null;
+          const threshold = getLayerUnlockThreshold(K);
+          if (threshold === 0) return null; // capa warmup, sin info
+          const members = item.memberCount || 0;
+          const unlocked = members >= threshold;
+          if (unlocked) {
+            return (
+              <Text style={[styles.serverMeta, { color: '#5cb85c' }]}>
+                🔓 {t('serverList.layerUnlocked', { defaultValue: 'Capa desbloqueada' })}
+              </Text>
+            );
+          }
+          const remaining = Math.max(0, threshold - members);
+          return (
+            <Text style={[styles.serverMeta, { color: '#f59e0b' }]}>
+              🔒 {t('serverList.layerLocked', { remaining: remaining.toLocaleString(), defaultValue: `Faltan ${remaining.toLocaleString()} jugadores` })}
+            </Text>
+          );
+        })()}
       </View>
       <View style={styles.cardActions}>
         {item.chainId ? (
@@ -658,6 +713,15 @@ export default function ServerList() {
       </Modal>
 
       {AlertComponent}
+
+      <LayerLockedModal
+        visible={!!layerLockedInfo}
+        currentMembers={layerLockedInfo?.current || 0}
+        requiredMembers={layerLockedInfo?.required || 0}
+        layerK={layerLockedInfo?.K ?? null}
+        referralCode={myReferralCode}
+        onClose={() => setLayerLockedInfo(null)}
+      />
 
     </View>
   );
