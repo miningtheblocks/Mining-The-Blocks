@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
-  View, Text, TouchableOpacity, FlatList,
+  View, Text, TouchableOpacity, FlatList, TextInput,
   StyleSheet, ActivityIndicator, SafeAreaView, Linking,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -51,6 +51,39 @@ function formatDate(ts) {
   const pad = (n) => String(n).padStart(2, '0');
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}  ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+// Audit feedback 2026-06-23+: pill tipo "filter chip" para el toggle de
+// tipo de evento. Variante activa con fondo + border más visibles.
+function Pill({ active, onPress, color = '#5cb85c', children }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.8}
+      style={[
+        pillStyles.pill,
+        active && { backgroundColor: color + '22', borderColor: color },
+      ]}
+    >
+      <Text style={[pillStyles.pillTxt, active && { color }]}>{children}</Text>
+    </TouchableOpacity>
+  );
+}
+
+const pillStyles = StyleSheet.create({
+  pill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    backgroundColor: '#0e0e0e',
+  },
+  pillTxt: {
+    color: '#777',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+});
 
 function SeqBadge({ seq, color }) {
   if (!seq) return null;
@@ -205,6 +238,12 @@ export default function ChainHistoryScreen() {
 
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Audit feedback 2026-06-23+: filtros para el historial.
+  //   - searchText: texto libre, matchea contra gemCode/wallet/txHash/displayName/episodeNumber/cubeNumber
+  //   - typeFilter: pill activa. 'all' | 'mine' | 'episode_complete' | 'episode_redeemed'
+  //   episode_start no tiene pill propio porque siempre va junto a episode_complete del mismo episodio.
+  const [searchText, setSearchText] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
 
   useEffect(() => {
     // BAJO-CH-01: si no hay chainId, igual hay que dejar loading=false sino
@@ -232,6 +271,36 @@ export default function ChainHistoryScreen() {
   const keyExtractor = useCallback((item) => item.id, []);
 
   const lastSeq = events.length > 0 ? (events[0]?.seq ?? events.length) : 0;
+
+  // Audit feedback 2026-06-23+: filtros aplicados sobre `events`. Match
+  // case-insensitive contra varios campos según el tipo de evento. typeFilter
+  // 'episode' agrupa episode_complete + episode_start del mismo episodio
+  // (visualmente van juntos en el feed).
+  const filteredEvents = useMemo(() => {
+    const q = searchText.trim().toLowerCase();
+    return events.filter((ev) => {
+      // Filtro de tipo (pill)
+      if (typeFilter !== 'all') {
+        if (typeFilter === 'episode') {
+          if (ev.type !== 'episode_complete' && ev.type !== 'episode_start') return false;
+        } else if (ev.type !== typeFilter) {
+          return false;
+        }
+      }
+      // Filtro de texto libre
+      if (!q) return true;
+      const haystack = [
+        ev.gemCode, ev.winnerWallet, ev.nftTxHash, ev.payoutTxHash,
+        ev.displayName, ev.episodeNumber, ev.cubeNumber, ev.layerK,
+        ev.gemTier != null ? `tier ${ev.gemTier}` : null,
+        ev.priceUSD != null ? `$${ev.priceUSD}` : null,
+      ]
+        .filter((x) => x !== null && x !== undefined)
+        .map((x) => String(x).toLowerCase())
+        .join(' | ');
+      return haystack.includes(q);
+    });
+  }, [events, searchText, typeFilter]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -264,6 +333,50 @@ export default function ChainHistoryScreen() {
 
       <View style={styles.divider} />
 
+      {/* Filtros: input search + pills por tipo. Audit feedback 2026-06-23+. */}
+      {events.length > 0 && (
+        <View style={styles.filterBar}>
+          <View style={styles.searchInputWrap}>
+            <Text style={styles.searchIcon}>🔍</Text>
+            <TextInput
+              style={styles.searchInput}
+              placeholder={t('chainHistory.searchPlaceholder', { defaultValue: 'Buscar código, wallet, hash…' })}
+              placeholderTextColor="#555"
+              value={searchText}
+              onChangeText={setSearchText}
+              autoCorrect={false}
+              autoCapitalize="none"
+              returnKeyType="search"
+            />
+            {searchText.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setSearchText('')}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.searchClear}>×</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          <View style={styles.pillsRow}>
+            <Pill active={typeFilter === 'all'} onPress={() => setTypeFilter('all')}>
+              {t('chainHistory.filterAll', { defaultValue: 'Todos' })}
+            </Pill>
+            <Pill active={typeFilter === 'mine'} onPress={() => setTypeFilter('mine')} color="#4a9eff">⛏</Pill>
+            <Pill active={typeFilter === 'episode'} onPress={() => setTypeFilter('episode')} color="#ffd700">🏆</Pill>
+            <Pill active={typeFilter === 'episode_redeemed'} onPress={() => setTypeFilter('episode_redeemed')} color="#22c55e">💸</Pill>
+          </View>
+          {(searchText.length > 0 || typeFilter !== 'all') && (
+            <Text style={styles.resultCount}>
+              {t('chainHistory.resultsCount', {
+                n: filteredEvents.length,
+                defaultValue: `${filteredEvents.length} resultados`,
+              })}
+            </Text>
+          )}
+        </View>
+      )}
+
       {/* Content */}
       {loading ? (
         <View style={styles.centered}>
@@ -275,9 +388,19 @@ export default function ChainHistoryScreen() {
           <Text style={styles.emptyTxt}>{t('chainHistory.empty')}</Text>
           <Text style={styles.emptySub}>{t('chainHistory.emptySub')}</Text>
         </View>
+      ) : filteredEvents.length === 0 ? (
+        <View style={styles.centered}>
+          <Text style={styles.emptyIcon}>🔍</Text>
+          <Text style={styles.emptyTxt}>
+            {t('chainHistory.noMatch', { defaultValue: 'Sin resultados' })}
+          </Text>
+          <Text style={styles.emptySub}>
+            {t('chainHistory.noMatchSub', { defaultValue: 'Probá con otra búsqueda o cambiá el filtro.' })}
+          </Text>
+        </View>
       ) : (
         <FlatList
-          data={events}
+          data={filteredEvents}
           keyExtractor={keyExtractor}
           renderItem={renderItem}
           contentContainerStyle={styles.listContent}
@@ -448,6 +571,54 @@ const styles = StyleSheet.create({
   linkText: { color: '#5cb85c', textDecorationLine: 'underline' },
   // gemCode con look monospace para distinguirlo de hashes truncados.
   codeText: { fontFamily: 'monospace', color: '#888' },
+
+  // Audit feedback 2026-06-23+: filter bar (search input + pills + result count).
+  filterBar: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 4,
+    gap: 8,
+  },
+  searchInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0e0e0e',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    gap: 8,
+  },
+  searchIcon: {
+    fontSize: 14,
+    color: '#555',
+  },
+  searchInput: {
+    flex: 1,
+    color: '#ddd',
+    fontSize: 14,
+    paddingVertical: 8,
+  },
+  searchClear: {
+    color: '#888',
+    fontSize: 22,
+    fontWeight: '800',
+    paddingHorizontal: 4,
+  },
+  pillsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
+  resultCount: {
+    color: '#666',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
+    fontStyle: 'italic',
+  },
 
   rewardBadge: {
     backgroundColor: '#0c1805',

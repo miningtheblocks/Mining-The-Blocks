@@ -503,6 +503,11 @@ const resources = {
       payoutLabel: 'USDC payout',
       winner: 'Winner: {name}',
       blocks: '· {n} blocks',
+      searchPlaceholder: 'Search code, wallet, hash…',
+      filterAll: 'All',
+      resultsCount: '{n} results',
+      noMatch: 'No results',
+      noMatchSub: 'Try another search or change the filter.',
     },
     demo: {
       megaTitle: 'MEGA CUBE 200×200×200',
@@ -1030,6 +1035,11 @@ const resources = {
       payoutLabel: 'Pago USDC',
       winner: 'Ganador: {name}',
       blocks: '· {n} bloques',
+      searchPlaceholder: 'Buscar código, wallet, hash…',
+      filterAll: 'Todos',
+      resultsCount: '{n} resultados',
+      noMatch: 'Sin resultados',
+      noMatchSub: 'Probá con otra búsqueda o cambiá el filtro.',
     },
     demo: {
       megaTitle: 'MEGA CUBO 200×200×200',
