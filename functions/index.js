@@ -1789,7 +1789,56 @@ exports.createCryptoPayment = onCall(async (request) => {
     return { paymentId: existing.docs[0].id, amount: d.amountDisplay, wallet: PAYMENT_WALLET, expiresAt: d.expiresAt };
   }
 
-  // Loop: probar centavos aleatorios hasta encontrar uno libre (con docId determinístico)
+  // Audit feedback 2026-06-23+: si el cliente declara senderWalletAddress,
+  // saltamos los cents random → cobramos $15.00 redondo. El processor matchea
+  // por `from` address (ya implementado en runCryptoPaymentProcessing) en
+  // lugar del monto. UX claramente más limpia para el 90%+ de users que
+  // tienen 1 wallet única vinculada.
+  if (senderWalletAddress) {
+    const amountUnits = CREDIT_PRICE_USD * 100 * 10000; // $15.00 redondo
+    const amountDisplay = `${CREDIT_PRICE_USD}.00`;
+    // docId basado en sender wallet (1 pending por wallet de origen). Si el
+    // user ya tiene un pending vigente con esa wallet, la check existing al
+    // inicio de la función ya lo habría retornado — pero igualmente
+    // protegemos con TX atómica.
+    const docId = `walletpay_${senderWalletAddress}`;
+    const ref = db.collection("pendingCryptoPayments").doc(docId);
+    const expiresAt = Date.now() + PAYMENT_WINDOW_MS;
+    try {
+      await db.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists) {
+          const data = snap.data() || {};
+          if (data.status === "waiting" && (data.expiresAt || 0) > Date.now()) {
+            // Si ya hay un pending vigente para esta wallet, devolver el mismo
+            // en vez de fallar. Soporta retries del cliente.
+            throw new Error("__reuse__");
+          }
+        }
+        tx.set(ref, {
+          uid, amountUnits, amountDisplay,
+          status: "waiting",
+          createdAt: Date.now(),
+          expiresAt,
+          senderWalletAddress,
+        });
+      });
+      return { paymentId: docId, amount: amountDisplay, wallet: PAYMENT_WALLET, expiresAt };
+    } catch (e) {
+      if (e.message === "__reuse__") {
+        // Re-leer y devolver el existing.
+        const fresh = await ref.get();
+        if (fresh.exists) {
+          const d = fresh.data();
+          return { paymentId: docId, amount: d.amountDisplay, wallet: PAYMENT_WALLET, expiresAt: d.expiresAt };
+        }
+      }
+      throw e;
+    }
+  }
+
+  // Fallback (sin senderWalletAddress declarada): cents random para
+  // identificación de pago por amount. Comportamiento legacy.
   for (let attempt = 0; attempt < 30; attempt++) {
     const cents = Math.floor(Math.random() * 99) + 1;
     const amountUnits = (CREDIT_PRICE_USD * 100 + cents) * 10000; // USDC 6 decimales
@@ -1814,10 +1863,8 @@ exports.createCryptoPayment = onCall(async (request) => {
           status: "waiting",
           createdAt: Date.now(),
           expiresAt,
-          // Round 2 audit #2 HIGH-1: opcional, guardado para validar el `from`
-          // del Transfer event en el processor. Null si el cliente no lo declaró
-          // (legacy/migration window).
-          senderWalletAddress,
+          // Round 2 audit #2 HIGH-1: null porque el cliente no la declaró.
+          senderWalletAddress: null,
         });
       });
       return { paymentId: docId, amount: amountDisplay, wallet: PAYMENT_WALLET, expiresAt };

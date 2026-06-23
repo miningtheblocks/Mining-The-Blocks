@@ -152,11 +152,16 @@ export async function callRevokeMySessions() {
   return res.data;
 }
 
-// Creates a pending crypto payment (USDC/Polygon) with a unique amount
-// Returns { paymentId, amount, expiresAt }
-export async function callCreateCryptoPayment() {
+// Creates a pending crypto payment (USDC/Polygon).
+// Audit feedback 2026-06-23+: si el caller pasa `senderWalletAddress`
+// (la wallet desde la que el user va a pagar), el backend devuelve $15.00
+// redondo y matchea por `from` address en el processor. Sin esa wallet
+// declarada, fallback a cents random ($15.XX) para identificación por amount.
+// Returns { paymentId, amount, wallet, expiresAt }
+export async function callCreateCryptoPayment(senderWalletAddress) {
   const fn = httpsCallable(functions, 'createCryptoPayment');
-  const res = await fn({});
+  const payload = senderWalletAddress ? { senderWalletAddress } : {};
+  const res = await fn(payload);
   return res.data;
 }
 

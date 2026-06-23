@@ -70,7 +70,12 @@ export default function BuyCredits({ onClose }) {
   const generatePayment = async () => {
     setLoading(true);
     try {
-      const result = await callCreateCryptoPayment();
+      // Audit feedback 2026-06-23+: pasamos walletAddress del user (si la
+      // tiene linked) → backend cobra $15.00 redondo en vez de $15.XX random.
+      // Si user no tiene wallet linked, omitimos → backend hace fallback a
+      // cents random para identificación por monto (comportamiento legacy).
+      const senderWallet = userData?.walletAddress || null;
+      const result = await callCreateCryptoPayment(senderWallet);
       setPayment(result);
       setStatus('waiting');
       // ALTO-49: persistir para recovery si el user cierra la app.
