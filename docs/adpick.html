@@ -154,14 +154,22 @@
      acceso a su propio storage (necesario para que el ad-network funcione),
      no al storage/DOM del padre. allow-popups + allow-popups-to-escape-sandbox
      permite que el script abra nuevas tabs cuando el user clickea un ad.
-     Sin allow-forms → no puede submitear forms desde el sandbox. -->
+     Sin allow-forms → no puede submitear forms desde el sandbox.
+
+     Round 2 audit #8 HIGH-6: src cambiado a data-src para defer loading
+     hasta que el user dé consent (GDPR/LGPD/CCPA). cookie-consent.js
+     hace el swap data-src -> src cuando el user acepta. -->
 <iframe
-  src="https://ads.miningtheblocks.com/ad-frame.html"
+  data-src="https://ads.miningtheblocks.com/ad-frame.html"
   class="ad-iframe"
   sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
   referrerpolicy="no-referrer"
   title="ad"
 ></iframe>
+
+<!-- Round 2 audit #8 HIGH-6: banner de consentimiento de cookies. Debe
+     cargar ANTES de adpick.js para inicializar el estado del iframe. -->
+<script src="js/cookie-consent.js"></script>
 
 <main>
 
