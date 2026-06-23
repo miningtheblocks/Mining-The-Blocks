@@ -6,7 +6,7 @@ import Constants from 'expo-constants';
 
 // Fallback hardcoded sincronizado manualmente con app.json/package.json en cada bump.
 // El proceso de release es: bumpear 3 lugares (app.json.expo.version + package.json.version + acá).
-const FALLBACK_APP_VERSION = '1.1.0';
+const FALLBACK_APP_VERSION = '1.2.0';
 
 export const APP_VERSION =
   Constants?.expoConfig?.version ||
