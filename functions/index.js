@@ -3445,15 +3445,18 @@ exports.markGemRedeemed = onCall({ secrets: [gmailAppPassword] }, async (request
         const cs = await tx.get(counterRef);
         const seq = ((cs.exists && cs.data().seq) || 0) + 1;
         const histRef = chainRef.collection("history").doc();
-        // Audit feedback 2026-06-23+: privacy-by-default. Solo info pública
+        // Audit feedback 2026-06-23+: privacy-by-default. Publicamos solo info
         // verificable on-chain o data del episodio que cualquier miembro de
         // la chain ya conoce. NO publicamos:
-        //   - uid (Firebase UID — interno, no debería estar en feeds públicos)
-        //   - gemCode (aunque ya canjeado, evita enumeration / privacy leak)
+        //   - uid (Firebase UID — identificador interno correlativo, no debería
+        //     estar en feeds públicos: permite enumeration cross-event).
         //   - paymentRefLabel cuando NO es tx hash on-chain (admin podría
         //     poner notas internas tipo "Pago vía Wise ref XYZ" — sensible).
-        // Si paymentRef no es 0x..64, simplemente omitimos el campo payoutTxHash
-        // (el user puede contactar soporte si necesita la referencia exacta).
+        //     Si paymentRef no es 0x..64, omitimos payoutTxHash completo.
+        // SÍ publicamos gemCode aunque sea sensitive-sounding porque post-canje
+        // ya está marcado como redeemed (backend bloquea re-claim). El código
+        // sirve para identificación inequívoca + verificación pública en
+        // /verify ("¿este código fue canjeado?" → sí, monto, fecha).
         tx.set(histRef, {
           type: "episode_redeemed",
           seq,
@@ -3462,6 +3465,7 @@ exports.markGemRedeemed = onCall({ secrets: [gmailAppPassword] }, async (request
           serverId: gemData.serverId || null,
           chainId,
           // Datos PÚBLICOS verificables on-chain o info del episodio:
+          gemCode: code,
           gemTier: gemData.gemTier || null,
           priceUSD: gemData.priceUSD || 0,
           winnerWallet: winnerWallet,

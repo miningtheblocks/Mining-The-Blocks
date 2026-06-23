@@ -142,6 +142,11 @@ function EventRow({ item, t }) {
           <Text style={styles.rowSub}>
             {tierLabel}{priceLabel ? ` · ${priceLabel}` : ''}
           </Text>
+          {item.gemCode && (
+            <Text style={[styles.rowSub, styles.codeText]}>
+              🎟  {item.gemCode}
+            </Text>
+          )}
           {item.winnerWallet && (
             <TouchableOpacity onPress={() => openPolygonscanAddr(item.winnerWallet)} activeOpacity={0.7}>
               <Text style={[styles.rowSub, styles.linkText]}>
@@ -441,6 +446,8 @@ const styles = StyleSheet.create({
   // Audit feedback 2026-06-23+: links tappables a Polygonscan (tx hashes y
   // wallets post-canje). Mismo color verde MTB para consistencia.
   linkText: { color: '#5cb85c', textDecorationLine: 'underline' },
+  // gemCode con look monospace para distinguirlo de hashes truncados.
+  codeText: { fontFamily: 'monospace', color: '#888' },
 
   rewardBadge: {
     backgroundColor: '#0c1805',
