@@ -3445,22 +3445,28 @@ exports.markGemRedeemed = onCall({ secrets: [gmailAppPassword] }, async (request
         const cs = await tx.get(counterRef);
         const seq = ((cs.exists && cs.data().seq) || 0) + 1;
         const histRef = chainRef.collection("history").doc();
+        // Audit feedback 2026-06-23+: privacy-by-default. Solo info pública
+        // verificable on-chain o data del episodio que cualquier miembro de
+        // la chain ya conoce. NO publicamos:
+        //   - uid (Firebase UID — interno, no debería estar en feeds públicos)
+        //   - gemCode (aunque ya canjeado, evita enumeration / privacy leak)
+        //   - paymentRefLabel cuando NO es tx hash on-chain (admin podría
+        //     poner notas internas tipo "Pago vía Wise ref XYZ" — sensible).
+        // Si paymentRef no es 0x..64, simplemente omitimos el campo payoutTxHash
+        // (el user puede contactar soporte si necesita la referencia exacta).
         tx.set(histRef, {
           type: "episode_redeemed",
           seq,
           ts: Date.now(),
-          uid: ownerUid,
           episodeNumber: gemData.episodeNumber || null,
           serverId: gemData.serverId || null,
           chainId,
-          // Datos públicos para transparencia post-canje:
-          gemCode: code,
+          // Datos PÚBLICOS verificables on-chain o info del episodio:
           gemTier: gemData.gemTier || null,
           priceUSD: gemData.priceUSD || 0,
           winnerWallet: winnerWallet,
           nftTxHash: gemData.nftTxHash || null,
           payoutTxHash: /^0x[a-fA-F0-9]{64}$/.test(paymentRef) ? paymentRef : null,
-          paymentRefLabel: !/^0x[a-fA-F0-9]{64}$/.test(paymentRef) ? paymentRef.slice(0, 80) : null,
           redeemedAt: Date.now(),
         });
         tx.set(counterRef, { seq }, { merge: true });
