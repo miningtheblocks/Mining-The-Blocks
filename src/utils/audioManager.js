@@ -19,6 +19,70 @@ class AudioManager {
     // Objetivo actual de música = base * factor
     this.targetMusicVolume = this.baseMusicMax * this.musicVolumeFactor;
     this.crescendoInterval = null;
+    this.miningSound = null;
+    this.miningCancelled = false;
+    this.miningOkPreloaded = null; // instancia precargada para reproducción instantánea
+  }
+
+  // Reproducir sonido de confirmación de minado (instantáneo, sin lag de carga)
+  async playMiningOkSound() {
+    if (!this.soundEnabled) return;
+    try {
+      // Si no está precargado todavía, precargarlo ahora
+      if (!this.miningOkPreloaded) {
+        const source = this.sounds.mining_ok;
+        if (!source) return;
+        const vol = Math.max(0, Math.min(1.0, this.sfxVolumeFactor));
+        const { sound } = await Audio.Sound.createAsync(source, { volume: vol, shouldPlay: false });
+        this.miningOkPreloaded = sound;
+      }
+      // Reproducir desde el principio (instantáneo)
+      try { await this.miningOkPreloaded.setPositionAsync(0); } catch {}
+      try { await this.miningOkPreloaded.playAsync(); } catch {}
+    } catch (error) {
+      console.warn('Error reproduciendo mining_ok:', error?.message || error);
+    }
+  }
+
+  // Reproducir sonido de minado (loop=false, cancelable). Usado durante el long-press.
+  async playMiningSound() {
+    if (!this.soundEnabled) return;
+    // Si ya hay uno sonando, detenerlo
+    await this.stopMiningSound();
+    this.miningCancelled = false;
+    try {
+      const source = this.sounds.mining;
+      if (!source) return;
+      const vol = Math.max(0, Math.min(1.0, this.sfxVolumeFactor));
+      const { sound } = await Audio.Sound.createAsync(source, { volume: vol, shouldPlay: true });
+      if (this.miningCancelled) {
+        // El caller pidió cancelar antes de que terminara de cargar
+        try { await sound.stopAsync(); } catch {}
+        try { await sound.unloadAsync(); } catch {}
+        return;
+      }
+      this.miningSound = sound;
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.didJustFinish) {
+          try { sound.setOnPlaybackStatusUpdate(null); } catch {}
+          try { sound.unloadAsync().catch(() => {}); } catch {}
+          if (this.miningSound === sound) this.miningSound = null;
+        }
+      });
+    } catch (error) {
+      console.warn('Error reproduciendo mining:', error?.message || error);
+    }
+  }
+
+  async stopMiningSound() {
+    this.miningCancelled = true;
+    const s = this.miningSound;
+    this.miningSound = null;
+    if (s) {
+      try { s.setOnPlaybackStatusUpdate(null); } catch {}
+      try { await s.stopAsync(); } catch {}
+      try { await s.unloadAsync(); } catch {}
+    }
   }
 
   // Inicializar sistema de audio
@@ -48,7 +112,18 @@ class AudioManager {
         explosion: require('../../assets/sonidos/explosion.m4a'),
         win: require('../../assets/sonidos/win.m4a'),
         lose: require('../../assets/sonidos/lose.m4a'),
+        mining: require('../../assets/sonidos/mining.m4a'),
+        mining_ok: require('../../assets/sonidos/mining_ok.m4a'),
       };
+
+      // Precargar mining_ok para reproducción instantánea (evita lag de createAsync)
+      try {
+        const vol = Math.max(0, Math.min(1.0, this.sfxVolumeFactor));
+        const { sound } = await Audio.Sound.createAsync(this.sounds.mining_ok, { volume: vol, shouldPlay: false });
+        this.miningOkPreloaded = sound;
+      } catch (e) {
+        console.warn('No se pudo precargar mining_ok:', e?.message || e);
+      }
 
     } catch (error) {
       console.error('Error cargando sonidos:', error);

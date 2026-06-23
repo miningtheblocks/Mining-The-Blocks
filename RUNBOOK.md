@@ -15,12 +15,14 @@ manuales recurrentes. Pensado para single-operator (1 dev).
 | Domain | `miningtheblocks.com` (Cloudflare Registrar) |
 | GitHub repo | `miningtheblocks/Mining-The-Blocks` |
 | APK download | `github.com/miningtheblocks/Mining-The-Blocks/releases/latest` |
-| Smart contract | `0x54c2859411afCb51fcfE42054aDcA3484B3f29E6` (MTBGems, Polygon mainnet) |
-| Company wallet (NFT owner) | EOA, private key en Secret Manager `COMPANY_WALLET_KEY` |
+| Smart contract V2 (activo) | `0x2933Ff14AdeC0a4D74aD8380E5c491321bBd3195` (MTBGemsV2, Polygon mainnet, AccessControl) — deploy tx `0x4d7813a702d96bc42bd6549da8c016d34cdcac8ce27f463ee462d2ec037742cb` (2026-06-23) |
+| Smart contract V1 (deprecated) | `0x54c2859411afCb51fcfE42054aDcA3484B3f29E6` — Ownable, sin caps, 0 NFTs minteados (audit R2 CRIT-S1/S2/S3) |
+| Safe multisig (V2 ADMIN+PAUSER) | `0x83a3F5Bd15302F17B7f2e430900F1d2A40F86aCD` (Gnosis Safe 2-of-3 en Polygon) |
+| Backend minter (V2 MINTER_ROLE) | `0x0a285CA8BaE2FbA3808bd260f936bCa22F06941e` (EOA "nftv2"). Private key en Secret Manager `COMPANY_WALLET_KEY` |
 | Payment wallet (USDC receiver) | `0x61f7E9df2113Ac2E4a3D18f802AF2EE77cFAAD4f` |
 | Polygon RPC | `https://polygon-bor-rpc.publicnode.com` (sin SLA — migrar a Alchemy antes de 10k DAU) |
 | Email notifs | Gmail `miningtheblocks@gmail.com` con app-password en `GMAIL_APP_PASSWORD` |
-| Keystore release | `mtb-release-v2.keystore` en `~/Escritorio/claveminingtheblcoks/` (NO en git, 2 backups offline — pendiente USB físico). File SHA-256 `36785fb2...af9f6f64`. Cert SHA-256 `BF:8F:25:AC:C3:CC:CF:9B:DA:F7:63:53:FC:E5:DE:B2:25:11:89:16:9E:1C:32:20:6E:75:52:55:4D:AB:7D:C1`. Password en Bitwarden entry "MTB release keystore — v2 (2026-06-17)". Reemplaza la canonical previa `@miningtheblock__miningtheblocks.jks` cuya password se perdió (2026-06-17 — ver postmortem abajo). |
+| Keystore release | `mtb-release-v2.keystore` — path local NO documentado (ver env var `MTB_KEYSTORE_PATH` y Bitwarden entry "MTB keystore path"). NO en git, 2 backups offline — pendiente USB físico. File SHA-256 `36785fb2...af9f6f64`. Cert SHA-256 `BF:8F:25:AC:C3:CC:CF:9B:DA:F7:63:53:FC:E5:DE:B2:25:11:89:16:9E:1C:32:20:6E:75:52:55:4D:AB:7D:C1`. Password en Bitwarden entry "MTB release keystore — v2 (2026-06-17)". Reemplaza la canonical previa `@miningtheblock__miningtheblocks.jks` cuya password se perdió (2026-06-17 — ver postmortem abajo). |
 | Secrets en GCP | `COMPANY_WALLET_KEY`, `GMAIL_APP_PASSWORD`, `SERVER_SEED` |
 | Contact email ops | `miningtheblocks@gmail.com` |
 

@@ -73,7 +73,7 @@ jobs:
 
       - name: Verify .env NOT committed (besides example)
         run: |
-          if git ls-files | grep -E '^\.env$|^\.env\.local$|service-account.*\.json'; then
+          if git ls-files | grep -E '^\.env$|^\.env\.local$|^\.env\..+\.local$|service-account.*\.json|^credentials\.json$|^mtb-admin-cli.*\.json$|\.runtimeconfig\.json$|\.(p12|pfx|pem)$'; then
             echo "ERROR: secret file committed!"
             exit 1
           fi
@@ -114,6 +114,12 @@ jobs:
         working-directory: functions
         run: npm audit --omit=dev --audit-level=critical
 
+      # Round 2 audit #5 HIGH-4: extender el gate de npm audit al root.
+      # Pre-fix solo cubría functions/; vulns en deps de la app móvil (Expo,
+      # RN, etc.) no rompían CI aunque fueran críticas.
+      - name: npm audit (root)
+        run: npm audit --omit=dev --audit-level=critical
+
   sbom:
     name: SBOM (CycloneDX)
     runs-on: ubuntu-latest
@@ -130,10 +136,13 @@ jobs:
       # CycloneDX para tracking de dependencias + scanning de CVE futuros.
       # Generado en cada push, attachable a la release. Tools: @cyclonedx/cdxgen
       # (genera SBOM agnóstico al language). El JSON queda en artifacts.
+      # Round 2 audit #5 HIGH-5: pinned cdxgen version. `@latest` es supply-chain
+      # risk: si el package se compromete, código malicioso corre en CI con
+      # secrets del repo. Pinned a 11.5.0 (verificar releases periódicamente).
       - name: Generate functions SBOM
-        run: npx -y @cyclonedx/cdxgen@latest -t nodejs -o sbom-functions.json functions
+        run: npx -y @cyclonedx/cdxgen@11.5.0 -t nodejs -o sbom-functions.json functions
       - name: Generate root SBOM
-        run: npx -y @cyclonedx/cdxgen@latest -t nodejs -o sbom-root.json .
+        run: npx -y @cyclonedx/cdxgen@11.5.0 -t nodejs -o sbom-root.json .
       - name: Upload SBOMs as artifacts
         uses: actions/upload-artifact@v4
         with:

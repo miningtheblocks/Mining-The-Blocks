@@ -104,7 +104,7 @@
   <ul>
     <li>Datos de cuenta: mientras tu cuenta exista.</li>
     <li>Logs de errores y feeds de actividad: máximo 90 días.</li>
-    <li>Registros de canje de gemas: hasta 5 años (para auditoría fiscal).</li>
+    <li>Registros de canje de gemas y datos KYC/AML asociados: hasta 5 años, en cumplimiento de obligaciones regulatorias antilavado (espejo de Términos §13.3).</li>
     <li>Transacciones blockchain: permanentes (no las podemos borrar).</li>
   </ul>
 
@@ -119,6 +119,7 @@
 
   <h2>6. Seguridad</h2>
   <p>Usamos Firebase Auth con tokens JWT, TLS 1.2+ en todas las conexiones, y Firestore Rules para que cada usuario sólo acceda a sus propios datos. Las claves privadas de la wallet de empresa están en Google Secret Manager.</p>
+  <p><strong>Método de autenticación:</strong> Mining The Blocks usa <strong>únicamente email + contraseña</strong> para el registro e inicio de sesión. <strong>NO</strong> integramos proveedores OAuth de terceros (Apple Sign-In, Google Sign-In, Facebook, etc.), por lo que tu cuenta no comparte datos de identidad con ninguna red social ni con Apple/Google fuera de los servicios de infraestructura listados en §3 (Firebase Auth).</p>
 
   <h2>7. Menores de edad</h2>
   <p>La app está restringida a usuarios de <strong>18 años o más</strong> y NO recolecta intencionalmente datos de menores. Si descubrís que un menor está usando la app, contactanos para eliminar su cuenta inmediatamente.</p>
@@ -175,7 +176,7 @@
   <ul>
     <li>Account data: as long as your account exists.</li>
     <li>Error logs and activity feeds: max 90 days.</li>
-    <li>Gem claim records: up to 5 years (audit).</li>
+    <li>Gem claim records and associated KYC/AML data: up to 5 years, for regulatory anti-money-laundering compliance (mirrors Terms §13.3).</li>
     <li>Blockchain transactions: permanent.</li>
   </ul>
 
@@ -187,6 +188,7 @@
 
   <h2>6. Security</h2>
   <p>Firebase Auth (JWT), TLS 1.2+, Firestore Rules per-user access, secrets in Google Secret Manager.</p>
+  <p><strong>Authentication method:</strong> Mining The Blocks uses <strong>email + password only</strong> for account registration and sign-in. We do <strong>NOT</strong> integrate third-party OAuth providers (Apple Sign-In, Google Sign-In, Facebook, etc.), so your account does not share identity data with any social network or with Apple/Google beyond the infrastructure services listed in §3 (Firebase Auth).</p>
 
   <h2>7. Minors</h2>
   <p>This app is restricted to users <strong>18 years of age or older</strong> and does not knowingly collect data from minors. If you discover a minor using the app, contact us to delete the account immediately.</p>

@@ -33,7 +33,7 @@ const _PII_VALUE_RES = [
   { re: /\b0x[a-fA-F0-9]{40}\b/g, to: '[redacted-wallet]' },
   { re: /\+\d{1,3}[\s\-]?\d{6,14}/g, to: '[redacted-phone]' },
 ];
-function scrubPiiValue(s) {
+export function scrubPiiValue(s) {
   if (typeof s !== 'string') return s;
   let out = s;
   for (const { re, to } of _PII_VALUE_RES) {

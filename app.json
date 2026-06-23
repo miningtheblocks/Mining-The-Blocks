@@ -22,7 +22,11 @@
         "backgroundColor": "#0a0a0a"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.bissi.miningtheblocks"
+      "package": "com.bissi.miningtheblocks",
+      "versionCode": 5
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
     },
     "web": {
       "favicon": "./assets/favicon.png"

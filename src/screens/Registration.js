@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, ActivityIndicator, Switch, Linking, Modal } from 'react-native';
 import { useAppAlert } from '../components/AppAlert';
-import { TERMS_URL } from '../constants';
+import { TERMS_URL, PRIVACY_URL } from '../constants';
 import { auth, db, storage } from '../firebase/client';
 import { createUserWithEmailAndPassword, EmailAuthProvider, linkWithCredential, verifyBeforeUpdateEmail, reauthenticateWithCredential, sendEmailVerification, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
@@ -124,6 +124,43 @@ export default function Registration({ asModal = false, onClose }) {
       // Required fields
       if (!firstName.trim() || !lastName.trim() || !username.trim() || !birthday.trim() || !phone.trim()) {
         showAlert(t('registration.requiredFields'), t('registration.requiredFieldsBody'));
+        return;
+      }
+      // CRIT-2 (audit 2026-06-21): validar edad >=18 contra la fecha de nacimiento.
+      // El checkbox accept18 es self-attest y se puede tildar sin reflejar la realidad.
+      // Format esperado: DD/MM/YYYY.
+      const ageCheck = (() => {
+        const m = String(birthday).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (!m) return { ok: false, reason: 'format' };
+        const dd = parseInt(m[1], 10);
+        const mm = parseInt(m[2], 10);
+        const yyyy = parseInt(m[3], 10);
+        const now = new Date();
+        const thisYear = now.getFullYear();
+        // Sanity: año razonable (no en el futuro, no antes de 1900)
+        if (yyyy < 1900 || yyyy > thisYear) return { ok: false, reason: 'range' };
+        if (mm < 1 || mm > 12) return { ok: false, reason: 'range' };
+        if (dd < 1 || dd > 31) return { ok: false, reason: 'range' };
+        // Construir fecha y verificar que es válida (no 31/02 etc.)
+        const dob = new Date(yyyy, mm - 1, dd);
+        if (dob.getFullYear() !== yyyy || dob.getMonth() !== mm - 1 || dob.getDate() !== dd) {
+          return { ok: false, reason: 'range' };
+        }
+        // Calcular edad considerando si ya cumplió años este año
+        let age = thisYear - yyyy;
+        const thisMonth = now.getMonth();
+        const thisDay = now.getDate();
+        if (thisMonth < (mm - 1) || (thisMonth === (mm - 1) && thisDay < dd)) {
+          age -= 1;
+        }
+        if (age < 18) return { ok: false, reason: 'under18' };
+        return { ok: true };
+      })();
+      if (!ageCheck.ok) {
+        const msg = ageCheck.reason === 'under18'
+          ? t('registration.under18Body')
+          : t('registration.birthdayInvalidBody');
+        showAlert(t('registration.errorTitle'), msg);
         return;
       }
       // Username must be available
@@ -563,6 +600,10 @@ export default function Registration({ asModal = false, onClose }) {
 
         <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL).catch(() => {})} style={styles.termsLinkBtn}>
           <Text style={styles.termsLinkTxt}>{t('registration.viewTerms')}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_URL).catch(() => {})} style={styles.termsLinkBtn}>
+          <Text style={styles.termsLinkTxt}>{t('registration.viewPrivacy')}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity

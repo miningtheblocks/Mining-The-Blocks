@@ -16,10 +16,63 @@
 //     mandan por default.
 
 import * as Sentry from '@sentry/react-native';
+import { scrubPiiValue } from './logError';
 
 const DSN = process.env.EXPO_PUBLIC_SENTRY_DSN || '';
 
 let _initialized = false;
+
+// Round 2 audit #3 MED-4: hooks defense-in-depth ante PII fugada vía
+// unhandled exceptions y breadcrumbs.
+//
+// Por qué existen: logError() scrubea el ctx que le pasa el caller, pero hay
+// dos rutas que bypasean ese path:
+//   1. Unhandled exceptions globales — Sentry las captura automáticamente con
+//      `event.message` y `event.exception.values[].value` que pueden incluir
+//      strings con email/wallet/phone (ej: "fetch failed for user a@b.com").
+//   2. Breadcrumbs de fetch/console/navigation con URLs que llevan el wallet
+//      o email en query params.
+// El scrubber aplica los mismos regex de _PII_VALUE_RES sobre ambos canales
+// antes de que salgan del device.
+function _scrubInPlace(obj, keys) {
+  if (!obj) return;
+  for (const k of keys) {
+    if (typeof obj[k] === 'string') {
+      obj[k] = scrubPiiValue(obj[k]);
+    }
+  }
+}
+
+function beforeSendScrub(event) {
+  try {
+    _scrubInPlace(event, ['message']);
+    if (event.exception && Array.isArray(event.exception.values)) {
+      for (const exc of event.exception.values) {
+        _scrubInPlace(exc, ['value']);
+      }
+    }
+    if (event.request) {
+      _scrubInPlace(event.request, ['url']);
+      if (event.request.headers) {
+        // Authorization/Cookie ya quedan strippeados por sendDefaultPii:false,
+        // pero por las dudas no pasamos referer + URL crudos.
+        delete event.request.headers['Cookie'];
+        delete event.request.headers['Authorization'];
+      }
+    }
+  } catch (_) { /* no-op: never break Sentry pipeline */ }
+  return event;
+}
+
+function beforeBreadcrumbScrub(crumb) {
+  try {
+    _scrubInPlace(crumb, ['message']);
+    if (crumb.data) {
+      _scrubInPlace(crumb.data, ['url', 'to', 'from', 'email', 'message']);
+    }
+  } catch (_) { /* no-op */ }
+  return crumb;
+}
 
 export function initSentry() {
   if (_initialized) return;
@@ -38,6 +91,10 @@ export function initSentry() {
       tracesSampleRate: __DEV__ ? 1.0 : 0.2,
       // PII off — el usuario no envía nombre/email a Sentry automáticamente.
       sendDefaultPii: false,
+      // Round 2 audit #3 MED-4: hooks que scrubean PII en unhandled exceptions
+      // y breadcrumbs (paths que bypasean logError).
+      beforeSend: beforeSendScrub,
+      beforeBreadcrumb: beforeBreadcrumbScrub,
       // Native crashes — captura crashes nativos (Android JNI / iOS Obj-C)
       // además de los JS errors. Necesario para fail-fast en native modules.
       enableNative: true,

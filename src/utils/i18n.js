@@ -119,6 +119,9 @@ const resources = {
     },
     registration: {
       viewTerms: 'Read Terms & Conditions',
+      viewPrivacy: 'Read Privacy Policy',
+      under18Body: 'You must be 18 or older to use Mining The Blocks.',
+      birthdayInvalidBody: 'Invalid date of birth. Please use DD/MM/YYYY format with a valid date.',
       back: '← Back',
       title: 'Registration',
       avatar: 'Avatar',
@@ -618,6 +621,9 @@ const resources = {
     },
     registration: {
       viewTerms: 'Leer Términos y Condiciones',
+      viewPrivacy: 'Leer Política de Privacidad',
+      under18Body: 'Tenés que tener 18 años o más para usar Mining The Blocks.',
+      birthdayInvalidBody: 'Fecha de nacimiento inválida. Usá el formato DD/MM/AAAA con una fecha válida.',
       back: '← Volver',
       title: 'Registro',
       avatar: 'Avatar',

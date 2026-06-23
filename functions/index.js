@@ -188,6 +188,15 @@ async function assertFreshToken(request) {
 // automáticamente. 7 días es suficiente para "feed activo" (los users solo ven
 // los últimos 50-100 events).
 const ACTIVITY_FEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Round 2 audit #4 HIGH-R1: cap de bonificaciones de referido al referidor.
+// Pre-fix: un referrer con 1000 invitaciones legítimas (o farm de cuentas
+// falsas) acumulaba 5000 picks → minería gratuita masiva → eventualmente
+// NFTs tier-1 ($100k c/u). Cap de 50 invitados rewarded limita el daño a
+// 250 picks lifetime — sigue siendo generoso pero acotado. El referido SÍ
+// recibe sus 5 picks (cap solo se aplica al referrer; el referido es 1×
+// per-user via referralBonusPaid). Documentado en TOS §6.2 (program rules).
+const REFERRER_BONUS_CAP = 50;
 async function writeActivity(type, data) {
   try {
     await db.collection("activityFeed").add({
@@ -555,12 +564,21 @@ exports.joinServer = onCall(async (request) => {
       await db.runTransaction(async (tx) => {
         const uRef = db.collection("users").doc(uid);
         const rRef = db.collection("users").doc(referredBy);
-        const freshU = await tx.get(uRef);
+        // Round 2 audit #4 HIGH-R1: leer referrer ANTES de cualquier write
+        // (Firestore exige reads-before-writes en TX). Si está capeado, el
+        // referido igual cobra sus 5 picks pero el referrer no.
+        const [freshU, freshR] = await Promise.all([tx.get(uRef), tx.get(rRef)]);
         if (!freshU.exists) return;
         const fud = freshU.data();
         if (fud.referralBonusPaid) return; // ya pagado
         tx.set(uRef, { picks: FieldValue.increment(5), referralBonusPaid: true }, { merge: true });
-        tx.set(rRef, { picks: FieldValue.increment(5) }, { merge: true });
+        const referrerRewardedSoFar = (freshR.exists && Number(freshR.data().referralsRewarded || 0)) || 0;
+        if (referrerRewardedSoFar < REFERRER_BONUS_CAP) {
+          tx.set(rRef, {
+            picks: FieldValue.increment(5),
+            referralsRewarded: FieldValue.increment(1),
+          }, { merge: true });
+        }
         bonusGranted = true;
       });
       if (bonusGranted) {
@@ -880,6 +898,50 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
 
     tx.set(serverRef, serverUpdate, { merge: true });
 
+    // Round 2 audit #4 HIGH-M1: gem creation + auto-pendingMint DENTRO de la TX.
+    // Pre-fix: el gem se persistía con `.add()` después del runTransaction. Si
+    // el process moría entre el TX commit y el .add() (deploy, OOM, timeout,
+    // SIGKILL), el user perdía permanentemente el gem (tier-1 = ~$100k de pérdida
+    // documentada por el whitepaper). Ahora con docId determinístico `${serverId}_${K}_${cubeNumber}`
+    // la operación es atómica: o se commitea TODO (mined + layer + user + gem +
+    // pendingMint) o no se commitea NADA. Además determinismo del ID asegura
+    // idempotencia ante retries del client (mismo cubo → mismo gem doc).
+    if (gem) {
+      const gemCode = generateGemCode(serverId, K, cubeNumber, gem, uid);
+      const rawWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
+      const userWallet = (rawWallet && /^0x[a-fA-F0-9]{40}$/.test(rawWallet)) ? rawWallet : null;
+      const gemStatus = userWallet ? "minting" : "unclaimed";
+      const gemDocId = `${serverId}_${K}_${cubeNumber}`;
+      const gemRef = userRef.collection("gems").doc(gemDocId);
+      tx.set(gemRef, {
+        gemTier: gem,
+        code: gemCode,
+        serverId,
+        chainId: serverData.chainId || null,
+        episodeNumber: serverData.episodeNumber || 1,
+        cubeNumber: Number(cubeNumber),
+        layerK: K,
+        discoveredAt: Date.now(),
+        status: gemStatus,
+        redeemedAt: null,
+        walletAddress: userWallet,
+        priceUSD: GEM_PRICES[gem - 1] || 0,
+      });
+      if (userWallet) {
+        const pendingMintRef = db.collection("pendingMints").doc(`mint_${gemDocId}`);
+        tx.set(pendingMintRef, {
+          uid,
+          gemId: gemDocId,
+          gemTier: gem,
+          gemCode,
+          walletAddress: userWallet,
+          priceUSD: GEM_PRICES[gem - 1] || 0,
+          createdAt: Date.now(),
+          status: "pending",
+        });
+      }
+    }
+
     return {
       ok: true,
       reward,
@@ -892,53 +954,6 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
       cubesRemaining: cubesRemaining - 1,
     };
   });
-
-  // Guardar gema en la wallet del usuario (fuera de transacción para no bloquearla)
-  if (result.gem) {
-    try {
-      const gemCode = generateGemCode(serverId, result.currentLayer, cubeNumber, result.gem, uid);
-      const serverSnap = await serverRef.get();
-      const serverData = serverSnap.data() || {};
-
-      // Verificar si el usuario tiene wallet vinculada para auto-mintear el NFT
-      const userSnap = await db.collection("users").doc(uid).get();
-      const rawWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
-      const userWallet = (rawWallet && /^0x[a-fA-F0-9]{40}$/.test(rawWallet)) ? rawWallet : null;
-      const gemStatus = userWallet ? 'minting' : 'unclaimed';
-
-      const gemRef = await db.collection("users").doc(uid).collection("gems").add({
-        gemTier: result.gem,
-        code: gemCode,
-        serverId,
-        chainId: serverData.chainId || null,
-        episodeNumber: serverData.episodeNumber || 1,
-        cubeNumber: Number(cubeNumber),
-        layerK: result.currentLayer,
-        discoveredAt: Date.now(),
-        status: gemStatus,
-        redeemedAt: null,
-        walletAddress: userWallet,
-        priceUSD: GEM_PRICES[result.gem - 1] || 0,
-      });
-
-      // Si tiene wallet, crear el pendingMint automáticamente
-      if (userWallet) {
-        await db.collection("pendingMints").add({
-          uid,
-          gemId: gemRef.id,
-          gemTier: result.gem,
-          gemCode,
-          tokenURI: GEM_TOKEN_URIS[(result.gem - 1)] || null,
-          walletAddress: userWallet,
-          priceUSD: GEM_PRICES[result.gem - 1] || 0,
-          createdAt: Date.now(),
-          status: 'pending',
-        });
-      }
-    } catch (e) {
-      console.warn("Gem save warning:", e.message);
-    }
-  }
 
   // Activity feed: gema encontrada
   if (result.gem) {
@@ -1154,8 +1169,12 @@ exports.claimAdSession = onRequest(async (req, res) => {
 
 // ─── Worker: procesa pendingMints y mintea NFTs en Polygon ───────────────────
 
+// V2 ABI (deploy 2026-06-23): mintGem ya no toma tokenURI_ como argumento — el
+// URI se deriva del tier on-chain (cierra MED-S1 del audit R2: vector "backend
+// comprometido podía mintear con URI fraudulenta"). Caller solo elige tier+code.
 const MTBGEMS_ABI = [
-  "function mintGem(address to, uint8 gemTier, string calldata gemCode, string calldata tokenURI_) external returns (uint256)",
+  "function mintGem(address to, uint8 gemTier, string calldata gemCode) external returns (uint256)",
+  "event GemMinted(uint256 indexed tokenId, address indexed to, uint8 tier, string gemCode)",
 ];
 
 // titles/bodies can be plain strings or {en, es} objects for bilingual support
@@ -1357,7 +1376,6 @@ async function runMintProcessing() {
           data.walletAddress,
           data.gemTier,
           data.gemCode,
-          data.tokenURI || GEM_TOKEN_URIS[(data.gemTier - 1)],
       );
       // CRIT (Round 2 Agentes #3 + #8): tx.wait() sin confirmaciones es
       // vulnerable a reorgs Polygon (PoS Heimdall confirma "checkpoints" cada
@@ -1619,6 +1637,23 @@ exports.createCryptoPayment = onCall(async (request) => {
   const okRate = await _rateLimitFirestore(`ccp_${uid}`, 3, 60 * 60 * 1000);
   if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
 
+  // Round 2 audit #2 HIGH-1: bind sender wallet para evitar cross-attribution.
+  // Sin esto, un Transfer USDC de $15.42 de un tercero hacia PAYMENT_WALLET por
+  // CUALQUIER motivo acreditaba el pago waiting del user con amount=15.42. El
+  // matching usaba solo `to + value`, no `from`. Ahora el cliente puede declarar
+  // su wallet origen; si lo hace, el processor exige que el `from` del Transfer
+  // event coincida (case-insensitive). Si el caller no la pasa, fallback a
+  // comportamiento legacy (warn en logs) — pensado como migration window. El
+  // frontend nuevo siempre la incluirá.
+  const senderWalletInput = request.data && request.data.senderWalletAddress;
+  let senderWalletAddress = null;
+  if (typeof senderWalletInput === "string" && senderWalletInput.length > 0) {
+    if (!/^0x[a-fA-F0-9]{40}$/.test(senderWalletInput)) {
+      throw new HttpsError("invalid-argument", "senderWalletAddress must be a 0x-prefixed 40-hex string");
+    }
+    senderWalletAddress = senderWalletInput.toLowerCase();
+  }
+
   const nowMs = Date.now();
 
   // Si ya tiene un pago pendiente vigente, devolverlo
@@ -1658,6 +1693,10 @@ exports.createCryptoPayment = onCall(async (request) => {
           status: "waiting",
           createdAt: Date.now(),
           expiresAt,
+          // Round 2 audit #2 HIGH-1: opcional, guardado para validar el `from`
+          // del Transfer event en el processor. Null si el cliente no lo declaró
+          // (legacy/migration window).
+          senderWalletAddress,
         });
       });
       return { paymentId: docId, amount: amountDisplay, wallet: PAYMENT_WALLET, expiresAt };
@@ -1768,9 +1807,30 @@ async function runCryptoPaymentProcessing() {
       const amount = Number(event.args.value);
       const docs = pendingByAmount.get(amount);
       if (!docs || docs.length === 0) continue;
-      // FCFS: tomar el más antiguo (createdAt asc) para resolver colisiones legacy
-      docs.sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0));
-      const paymentDoc = docs.shift();
+      const eventFrom = (event.args.from || "").toLowerCase();
+      // Round 2 audit #2 HIGH-1: si algún pending tiene `senderWalletAddress`
+      // declarado, exigimos match. Preferir pendings con sender declarado y
+      // matching; si ninguno matchea, intentar pendings sin sender (legacy).
+      // FCFS dentro de cada grupo (createdAt asc).
+      const sorted = [...docs].sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0));
+      const matching = sorted.find((d) => {
+        const s = (d.data().senderWalletAddress || "").toLowerCase();
+        return s && s === eventFrom;
+      });
+      const legacy = sorted.find((d) => !d.data().senderWalletAddress);
+      const paymentDoc = matching || legacy;
+      if (!paymentDoc) {
+        // Hay pendings con sender declarado que NO matchean el `from` del event.
+        // Esto es exactamente el ataque cross-attribution bloqueado. Log + skip.
+        console.warn(
+            "USDC Transfer no atribuible (cross-attribution bloqueado):",
+            { txHash: event.transactionHash, from: eventFrom, amount, pendingCount: sorted.length },
+        );
+        continue;
+      }
+      // Quitar del array compartido del Map para que próximos events no lo reusen.
+      const idx = docs.indexOf(paymentDoc);
+      if (idx >= 0) docs.splice(idx, 1);
       const { uid } = paymentDoc.data();
       const txHash = event.transactionHash;
 
@@ -1823,7 +1883,16 @@ async function runCryptoPaymentProcessing() {
             if (referredBy && !referralBonusPaid) {
               bonusReferredBy = referredBy;
               const referrerRef = db.collection("users").doc(referredBy);
-              tx.set(referrerRef, { picks: FieldValue.increment(5) }, { merge: true });
+              // Round 2 audit #4 HIGH-R1: cap del referrer (50 rewarded). El
+              // referido cobra siempre (1× per-user). Read antes de write.
+              const referrerSnap = await tx.get(referrerRef);
+              const referrerRewardedSoFar = (referrerSnap.exists && Number(referrerSnap.data().referralsRewarded || 0)) || 0;
+              if (referrerRewardedSoFar < REFERRER_BONUS_CAP) {
+                tx.set(referrerRef, {
+                  picks: FieldValue.increment(5),
+                  referralsRewarded: FieldValue.increment(1),
+                }, { merge: true });
+              }
               tx.set(userRef, {
                 picks: FieldValue.increment(5),
                 referralBonusPaid: true,
@@ -1868,8 +1937,7 @@ async function runCryptoPaymentProcessing() {
           console.warn("Push notification failed:", pushErr.message);
         }
 
-        // Si todavía hay docs legacy con este amount, no borrar el Map entry —
-        // ya hicimos shift(). Si quedó vacío el array, limpiar.
+        // Limpiar el Map si quedó vacío el array para no consumir memoria.
         if (docs.length === 0) pendingByAmount.delete(amount);
         processed++;
       } catch (e) {
@@ -2304,13 +2372,17 @@ async function _rateLimitFirestore(bucket, max, windowMs) {
     const snap = await tx.get(ref);
     const now = Date.now();
     const arr = (snap.exists ? (snap.data().ts || []) : []).filter((t) => now - t < windowMs);
+    // Round 2 audit #2 HIGH-2: Firestore TTL policy requiere Timestamp, no
+    // un number plano. Sin esto los docs no se borraban automáticamente y
+    // `rateLimits/` crecía indefinido (cost, no security).
+    const expiresAt = Timestamp.fromMillis(now + windowMs * 2);
     if (arr.length >= max) {
       allowed = false;
-      tx.set(ref, { ts: arr, expiresAt: now + windowMs * 2 }, { merge: true });
+      tx.set(ref, { ts: arr, expiresAt }, { merge: true });
       return;
     }
     arr.push(now);
-    tx.set(ref, { ts: arr, expiresAt: now + windowMs * 2 }, { merge: true });
+    tx.set(ref, { ts: arr, expiresAt }, { merge: true });
     allowed = true;
   });
   return allowed;

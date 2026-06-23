@@ -33,7 +33,11 @@ const GEM_TOKEN_URIS = [
   'ipfs://bafkreibx455uher6cdea6sm3fagj4qdu6u4rfu3w52leptffoorrmzdd5y',
 ];
 
-const MTBGEMS_CONTRACT = process.env.MTBGEMS_CONTRACT || '0x54c2859411afCb51fcfE42054aDcA3484B3f29E6';
+// V2 desplegado 2026-06-23 (audit R2 CRIT-S1/S2/S3 + MED-S1 fix).
+// AccessControl 2-of-3 Safe (0x83a3F5...86aCD) como ADMIN+PAUSER,
+// nftv2 EOA (0x0a2858...41e) como MINTER, supply caps inmutables.
+// V1 deprecated: 0x54c2859411afCb51fcfE42054aDcA3484B3f29E6 (Ownable, sin caps).
+const MTBGEMS_CONTRACT = process.env.MTBGEMS_CONTRACT || '0x2933Ff14AdeC0a4D74aD8380E5c491321bBd3195';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

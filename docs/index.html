@@ -18,7 +18,30 @@
   <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
-  <title>Mining The Blocks</title>
+  <title>Mining The Blocks — Mine the cube, win real USDC</title>
+  <!-- Round 2 audit #10 HIGH-5: frame-buster JS (anti-clickjacking).
+       GitHub Pages no soporta X-Frame-Options/frame-ancestors HTTP headers.
+       Script síncrono en head para correr antes del render. -->
+  <script src="js/frame-buster.js"></script>
+
+  <!-- Round 2 audit #10 HIGH-7: OG / Twitter Card / canonical para previews
+       en Discord, Twitter, Telegram, Slack, WhatsApp. Target audience crypto =
+       comparten links sin titular text → preview es crítico. -->
+  <link rel="canonical" href="https://miningtheblocks.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Mining The Blocks">
+  <meta property="og:title" content="Mining The Blocks — Mine the cube, win real USDC">
+  <meta property="og:description" content="Excavá un cubo de 8 millones de celdas y ganá premios reales en USDC. Pagos en Polygon. NFT con valor garantizado.">
+  <meta property="og:url" content="https://miningtheblocks.com/">
+  <meta property="og:image" content="https://miningtheblocks.com/icon.png">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:locale" content="es_AR">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Mining The Blocks — Mine the cube, win real USDC">
+  <meta name="twitter:description" content="Excavá un cubo de 8M celdas y ganá premios reales en USDC. Pagos en Polygon.">
+  <meta name="twitter:image" content="https://miningtheblocks.com/icon.png">
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -327,6 +350,19 @@
     }
     .ref-copy-btn:hover { opacity: 0.75; }
     .ref-banner-hint { font-size: 12px; color: #166534; font-weight: 500; }
+
+    /* Round 2 audit #10 HIGH-8: utility para etiquetas accesibles ocultas
+       visualmente. El input/textarea queda con label asociado para screen
+       readers + autofill, sin romper layout existente. */
+    .sr-only {
+      position: absolute !important;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
   </style>
 </head>
 <body>
@@ -364,7 +400,9 @@
 
     <div id="stepCode">
       <div class="input-row">
-        <input type="text" id="codeInput" placeholder="MTB3-XXXXXXXX-XXXXXX" maxlength="24" autocomplete="off" spellcheck="false">
+        <label for="codeInput" class="sr-only" data-lang-inline="es">Código de gema o NFT</label>
+        <label for="codeInput" class="sr-only" data-lang-inline="en">Gem or NFT code</label>
+        <input type="text" id="codeInput" placeholder="MTB3-XXXXXXXX-XXXXXX" maxlength="24" autocomplete="off" spellcheck="false" aria-required="true">
         <button class="btn" data-action="verifyCode" id="btnVerify">
           <span data-lang-inline="es">Verificar</span>
           <span data-lang-inline="en visible">Verify</span>
@@ -384,11 +422,11 @@
       </p>
       <div class="claim-grid">
         <div>
-          <p class="claim-label">Email</p>
+          <label class="claim-label" for="loginEmail">Email</label>
           <input type="email" id="loginEmail" placeholder="email@ejemplo.com" autocomplete="email">
         </div>
         <div>
-          <p class="claim-label"><span data-lang-inline="es">Contraseña</span><span data-lang-inline="en visible">Password</span></p>
+          <label class="claim-label" for="loginPassword"><span data-lang-inline="es">Contraseña</span><span data-lang-inline="en visible">Password</span></label>
           <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
         </div>
       </div>
@@ -412,19 +450,19 @@
 
       <div class="claim-grid">
         <div>
-          <p class="claim-label"><span data-lang-inline="es">Nombre completo</span><span data-lang-inline="en visible">Full name</span></p>
+          <label class="claim-label" for="nameInput"><span data-lang-inline="es">Nombre completo</span><span data-lang-inline="en visible">Full name</span></label>
           <input type="text" id="nameInput" placeholder="Juan García / John Smith">
         </div>
         <div>
-          <p class="claim-label">Email</p>
+          <label class="claim-label" for="emailInput">Email</label>
           <input type="email" id="emailInput" placeholder="email@ejemplo.com">
         </div>
         <div>
-          <p class="claim-label"><span data-lang-inline="es">Teléfono / WhatsApp</span><span data-lang-inline="en visible">Phone / WhatsApp</span></p>
+          <label class="claim-label" for="phoneInput"><span data-lang-inline="es">Teléfono / WhatsApp</span><span data-lang-inline="en visible">Phone / WhatsApp</span></label>
           <input type="tel" id="phoneInput" placeholder="+54 9 11 1234-5678">
         </div>
         <div>
-          <p class="claim-label"><span data-lang-inline="es">Billetera USDC (Polygon)</span><span data-lang-inline="en visible">USDC Wallet (Polygon)</span></p>
+          <label class="claim-label" for="walletInput"><span data-lang-inline="es">Billetera USDC (Polygon)</span><span data-lang-inline="en visible">USDC Wallet (Polygon)</span></label>
           <input type="text" id="walletInput" placeholder="0x..." autocomplete="off" spellcheck="false">
           <div class="wallet-warning">
             <span data-lang-inline="es">⚠️ Verificá dos veces tu dirección de billetera. Los fondos enviados a una dirección incorrecta no pueden recuperarse. Asegurate de que sea una billetera Polygon (MATIC) compatible con USDC.</span>
@@ -601,7 +639,7 @@
     </div>
 
     <div class="dl-grid">
-      <a href="https://github.com/miningtheblocks/Mining-The-Blocks/releases/download/v1.1.0/MTB-v1.1.0.apk" class="dl-btn" id="downloadAndroid">
+      <a href="https://github.com/miningtheblocks/Mining-The-Blocks/releases/latest/download/MTB-v1.1.0.apk" class="dl-btn" id="downloadAndroid">
         <svg class="dl-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-10C2.67 8 2 8.67 2 9.5v7c0 .83.67 1.5 1.5 1.5S5 17.33 5 16.5v-7C5 8.67 4.33 8 3.5 8zm17 0c-.83 0-1.5.67-1.5 1.5v7c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5v-7c0-.83-.67-1.5-1.5-1.5zm-4.97-5.84 1.3-1.3a.496.496 0 0 0 0-.71.503.503 0 0 0-.71 0l-1.48 1.48A5.84 5.84 0 0 0 12 1c-1.1 0-2.15.23-3.09.63L7.43.15a.503.503 0 0 0-.71 0 .496.496 0 0 0 0 .71l1.3 1.3C6.41 3.07 5 5.38 5 8h14c0-2.62-1.41-4.93-3.47-5.84zM10 6H9V5h1v1zm5 0h-1V5h1v1z" fill="#3ddc84"/>
         </svg>

@@ -122,7 +122,11 @@ function getIntersectables(scene) {
   if (_intersectablesCache) return _intersectablesCache;
   const list = [];
   scene.traverse((child) => {
-    if (child.isMesh && child.userData && child.userData.faceIndex !== undefined) {
+    // Solo backgrounds (1 plano por cara, 6 totales). NO incluir cubesMesh (InstancedMesh
+    // con hasta ~60k instancias en K=50). El raycast contra InstancedMesh con muchas instancias
+    // bloquea el JS thread ~1s. El backgroundMesh cubre toda el área de la cara y el cálculo
+    // de gridX/gridY se hace desde intersection.point, no necesita las instancias.
+    if (child.isMesh && child.userData && child.userData.kind === 'bg') {
       list.push(child);
     }
   });
@@ -1559,6 +1563,7 @@ const handleZoomButton = useCallback((direction) => {
   const preHoldTimerRef = useRef(null); // indicador temprano de hold (~300ms)
   const modalTimerRef = useRef(null);
   const longPressStartPos = useRef(null);
+  const prePickedCubeRef = useRef(null); // cache del raycast del confirm para evitar duplicarlo en handleLongPress
   const raycasterRef = useRef(new THREE.Raycaster());
   const buildLayerRef = useRef(null);
   // PosiciÃƒÂ³n del ÃƒÂºltimo toque de 1 dedo para rotaciÃ³n incremental
@@ -2013,20 +2018,25 @@ const handleZoomButton = useCallback((direction) => {
 
     const sz = glSizeRef.current || { width: screenWidth, height: screenHeight };
 
-    // PRIORIDAD 1: RAYCAST 3D (preciso al cubo tocado)
+    // PRIORIDAD 1: REUSAR raycast cacheado por el confirm del long-press (evita doblar el costo ~30-80ms)
+    // Si no hay cache (ej: confirm sin pick válido), recién entonces raycastear acá.
     let selectedCube = null;
     try {
-      const picked = findCubeAtScreenPosition(
-        screenX,
-        screenY,
-        cameraRef.current,
-        sceneRef.current,
-        sz.width,
-        sz.height,
-        currentLayer,
-        0,
-        0
-      );
+      let picked = prePickedCubeRef.current;
+      prePickedCubeRef.current = null; // consumir el cache (single-use)
+      if (!picked) {
+        picked = findCubeAtScreenPosition(
+          screenX,
+          screenY,
+          cameraRef.current,
+          sceneRef.current,
+          sz.width,
+          sz.height,
+          currentLayer,
+          0,
+          0
+        );
+      }
       const pickedApiId = picked ? (picked.apiCubeNumber || faceGridToCubeNumber(picked.faceIndex, picked.gridX, picked.gridY)) : null;
       if (picked && pickedApiId && !minedCubes.has(pickedApiId)) {
         selectedCube = picked;
@@ -2522,7 +2532,7 @@ const handleZoomButton = useCallback((direction) => {
               // Definir punto inicial y registrar inicio antes de programar timers
               const start = { x: touch.locationX, y: touch.locationY };
               longPressStartPos.current = start;
-              // Indicador visual temprano (~250ms) para feedback inmediato de "hold"
+              // Indicador visual temprano (~100ms) para feedback inmediato de "hold"
               if (preHoldTimerRef.current) { clearTimeout(preHoldTimerRef.current); preHoldTimerRef.current = null; }
               preHoldTimerRef.current = setTimeout(() => {
                 try {
@@ -2536,8 +2546,8 @@ const handleZoomButton = useCallback((direction) => {
                   if (moved > 18) return; // umbral ligeramente mayor para el indicador
                   setLongPressActive(true);
                 } catch {}
-              }, 250);
-              // Iniciar long press con requisito de quietud 0.5s
+              }, 100);
+              // Iniciar long press con requisito de quietud 0.1s
               longPressTimer.current = setTimeout(() => {
                 try {
                   // Verificar que no se haya convertido en gesto de zoom
@@ -2548,7 +2558,7 @@ const handleZoomButton = useCallback((direction) => {
                   const dx = (curr.x || 0) - start.x;
                   const dy = (curr.y || 0) - start.y;
                   const moved = Math.hypot(dx, dy);
-                  if (moved > 16) return;
+                  if (moved > 24) return;
 
                   // Detener animación de cámara para que las coordenadas del toque sean válidas
                   if (camAnimRef.current) {
@@ -2572,6 +2582,8 @@ const handleZoomButton = useCallback((direction) => {
                       0
                     );
                     if (picked && picked.worldPosition && cameraRef.current) {
+                      // Cachear el picked completo para que handleLongPress lo reuse y evite raycastear de nuevo
+                      prePickedCubeRef.current = picked;
                       const wp = picked.worldPosition.clone();
                       const sp = wp.project(cameraRef.current);
                       const sx = (sp.x * 0.5 + 0.5) * (sz.width || screenWidth);
@@ -2601,7 +2613,9 @@ const handleZoomButton = useCallback((direction) => {
                   
                   // Asegurar indicador activo si aún no se activó por el preHold
                   setLongPressActive((v) => v || true);
-                  // Programar apertura de modal 1 segundo después del long press
+                  // Reproducir sonido de minado durante el long-press (2s aprox, coincide con el modalTimer)
+                  audioManager.playMiningSound();
+                  // Programar apertura de modal 1.9 segundos después del long press (total dedo→modal = 2s)
                   if (modalTimerRef.current) { clearTimeout(modalTimerRef.current); modalTimerRef.current = null; }
                   modalTimerRef.current = setTimeout(() => {
                     if (gestureZoomingRef.current) return; // cancelar si se convirtió en zoom
@@ -2611,11 +2625,11 @@ const handleZoomButton = useCallback((direction) => {
                     // forzar reconstrucción del panResponder en cada cambio.
                     handleLongPressRef.current(touch.locationX, touch.locationY);
                     modalTimerRef.current = null;
-                  }, 1000);
+                  }, 1900);
                 } finally {
                   longPressTimer.current = null;
                 }
-              }, 500);
+              }, 100);
             }
           }
         },
@@ -2885,6 +2899,9 @@ const handleZoomButton = useCallback((direction) => {
             preHoldTimerRef.current = null;
           }
           longPressStartPos.current = null;
+          prePickedCubeRef.current = null; // descartar cache del raycast si soltó sin abrir modal
+          // Cortar el sonido mining al soltar (no-op si no estaba sonando)
+          try { audioManager.stopMiningSound(); } catch {}
           setLongPressActive(false);
           longPressInitiatedRef.current = false; // Liberar bloqueo de pan al soltar
           setSelectedCube(null);
@@ -2956,6 +2973,8 @@ const handleZoomButton = useCallback((direction) => {
             clearTimeout(preHoldTimerRef.current);
             preHoldTimerRef.current = null;
           }
+          prePickedCubeRef.current = null;
+          try { audioManager.stopMiningSound(); } catch {}
           setLongPressActive(false);
           setSelectedCube(null);
           setCamState((prev) => {
@@ -4299,7 +4318,9 @@ const handleZoomButton = useCallback((direction) => {
                 if (miningModal.status === 'mining') {
                   return;
                 }
-                
+                // Sonido de confirmación de minado instantáneo (precargado, sin lag)
+                try { audioManager.playMiningOkSound(); } catch {}
+
                 if (!authReady) {
                   showAlert(t('cube.waitTitle'), t('cube.connectingBody'));
                   showHudToast(t('cube.toastConnecting'));
