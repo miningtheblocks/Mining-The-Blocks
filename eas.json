@@ -23,7 +23,7 @@
         "NODE_ENV": "production"
       },
       "android": {
-        "buildType": "app-bundle"
+        "buildType": "apk"
       }
     }
   },
