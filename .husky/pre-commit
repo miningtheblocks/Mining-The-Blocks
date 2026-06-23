@@ -36,7 +36,7 @@ fi
 DIFF=$(git diff --cached -U0 -- ':!*.md' ':!*.html' ':!*.txt' ':!*.sol')
 SECRET_HITS=$(printf '%s' "$DIFF" | \
   grep -E '0x[a-fA-F0-9]{64}\b|AKIA[0-9A-Z]{16}|sk_live_[0-9a-zA-Z]{20,}|ghp_[0-9a-zA-Z]{30,}|github_pat_[0-9a-zA-Z_]{50,}' | \
-  grep -vE '0x0{64}|_ROLE\s*=|ROLE_HASH|tokenURI|polygonscan\.com|etherscan\.io|deploymentTransaction|tx\.hash|receipt\.|txHash' | \
+  grep -vE '0x0{64}|_ROLE\s*=|ROLE_HASH|_TOPIC\s*=|EVENT_SIG|keccak256\(|tokenURI|polygonscan\.com|etherscan\.io|deploymentTransaction|tx\.hash|receipt\.|txHash' | \
   head -3 || true)
 if [ -n "$SECRET_HITS" ]; then
   echo "❌ pre-commit: posible secreto en el diff staged."

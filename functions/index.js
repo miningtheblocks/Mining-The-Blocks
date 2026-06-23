@@ -45,6 +45,7 @@ const {
   MTBGEMS_CONTRACT,
   DAY_MS,
   PAYMENT_WALLET,
+  NFT_RECEIVER_WALLET,
   USDC_CONTRACTS,
   USDC_ABI,
   CREDIT_PRICE_USD,
@@ -2903,35 +2904,261 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
     }
 
     let gemTier;
-    // Atomic check-and-mark: prevents double-claim race condition
+    let gemTokenId = null;
+    let requiresNftTransfer = false;
+    // Atomic check-and-mark: prevents double-claim race condition.
+    // Round 2 audit #4 HIGH (swap flow): si el NFT está minteado (status='minted'),
+    // el user DEBE enviarlo a NFT_RECEIVER_WALLET antes de cobrar. Marcamos
+    // como 'awaiting_nft_transfer' y el flow termina cuando llaman
+    // confirmGemNftSent con el txHash. Si NO está minteado (legacy/sin wallet),
+    // mantenemos el flow viejo: claim_submitted → admin marca pagado vía
+    // markGemRedeemed.
     await db.runTransaction(async (tx) => {
       const freshSnap = await tx.get(gemDoc.ref);
       if (!freshSnap.exists) throw new Error("not_found");
       const gem = freshSnap.data();
-      if (gem.status !== "unclaimed") {
-        const errKey = gem.status === "redeemed" || gem.status === "claim_submitted" ? "already_redeemed" : "already_minted";
+      // 'unclaimed' o 'minted' son los dos únicos estados válidos para iniciar
+      // un claim. 'minting' = pendiente del worker, esperar. 'redeemed' /
+      // 'claim_submitted' / 'awaiting_nft_transfer' / 'nft_received_pending_payout'
+      // = ya en proceso o cerrado.
+      if (gem.status !== "unclaimed" && gem.status !== "minted") {
+        const errKey =
+            gem.status === "redeemed" || gem.status === "claim_submitted" ||
+            gem.status === "awaiting_nft_transfer" || gem.status === "nft_received_pending_payout" ?
+              "already_redeemed" :
+              "minting_in_progress";
         throw new Error(errKey);
       }
       gemTier = gem.gemTier || gem.tier || null;
-      tx.set(gemDoc.ref, { status: "claim_submitted", claimSubmittedAt: Date.now() }, { merge: true });
+      gemTokenId = gem.tokenId || null;
+      requiresNftTransfer = gem.status === "minted" && !!gemTokenId;
+      const newStatus = requiresNftTransfer ? "awaiting_nft_transfer" : "claim_submitted";
+      tx.set(gemDoc.ref, { status: newStatus, claimSubmittedAt: Date.now() }, { merge: true });
     });
 
     const gemName = gemTier ? (GEM_NAMES_ES[gemTier - 1] || `Tier ${gemTier}`) : "Desconocida";
     const gemPrize = gemTier ? (`$${GEM_PRICES[gemTier - 1].toLocaleString()}`) : "-";
 
-    await db.collection("gemClaims").add({
+    const claimRef = await db.collection("gemClaims").add({
       code,
       name,
       email,
       phone,
       wallet,
       gemTier,
+      tokenId: gemTokenId,
+      requiresNftTransfer,
       gemRef: gemDoc.ref.path,
       submittedAt: Date.now(),
-      status: "pending",
+      status: requiresNftTransfer ? "awaiting_nft_transfer" : "pending",
     });
 
-    // Enviar notificación al admin
+    // Si requiere transfer del NFT, NO mandamos email al admin todavía — solo
+    // cuando el user confirme el envío en confirmGemNftSent. Esto evita ruido
+    // de claims iniciados que nunca completan.
+    if (!requiresNftTransfer) {
+      try {
+        const appPassword = gmailAppPassword.value();
+        if (appPassword) {
+          const transporter = nodemailer.createTransport({
+            service: "gmail",
+            auth: { user: NOTIFY_EMAIL, pass: appPassword },
+          });
+          const fecha = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+          await transporter.sendMail({
+            from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
+            to: NOTIFY_EMAIL,
+            subject: `🎉 Nuevo canje de gema (sin NFT) — ${esc(gemName)} (${esc(gemPrize)})`,
+            html: `
+              <h2>Nuevo canje de gema recibido (legacy/sin NFT)</h2>
+              <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Gema</td><td style="padding:6px 12px">${esc(gemName)} — Tier ${esc(String(gemTier))}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Premio</td><td style="padding:6px 12px;font-weight:bold;color:#000">${esc(gemPrize)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Código</td><td style="padding:6px 12px;font-family:monospace">${esc(code)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Nombre</td><td style="padding:6px 12px">${esc(name)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Email</td><td style="padding:6px 12px">${esc(email)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Teléfono</td><td style="padding:6px 12px">${esc(phone)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Billetera</td><td style="padding:6px 12px;font-family:monospace;font-size:12px">${esc(wallet)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Fecha</td><td style="padding:6px 12px">${esc(fecha)}</td></tr>
+              </table>
+              <p style="margin-top:16px;font-size:12px;color:#888">Mining The Blocks · Firestore: gemClaims/${claimRef.id}</p>
+            `,
+          });
+        }
+      } catch (mailErr) {
+        console.error("submitGemClaim email error:", mailErr.message);
+      }
+    }
+
+    // Si requiere transfer del NFT, devolvemos las instrucciones para el paso 2.
+    if (requiresNftTransfer) {
+      return res.json({
+        success: true,
+        requiresNftTransfer: true,
+        nftReceiverWallet: NFT_RECEIVER_WALLET,
+        tokenId: gemTokenId,
+        gemName,
+        gemPrize,
+        claimId: claimRef.id,
+        message: "Enviá el NFT a la wallet indicada. Después pegá el txHash para confirmar.",
+      });
+    }
+    return res.json({ success: true, requiresNftTransfer: false });
+  } catch (e) {
+    console.error("submitGemClaim:", e.message);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+// Round 2 audit #4 HIGH (swap flow 2026-06-23): el user envía el NFT a
+// NFT_RECEIVER_WALLET (pagosmtb) y nos pasa el txHash. Verificamos on-chain:
+//   1. txHash existe + status=1 (success) + >=3 confirmaciones (anti-reorg)
+//   2. El receipt incluye un event Transfer del MTBGEMS_CONTRACT
+//   3. El tokenId del Transfer = el del gemClaim (no envió otro NFT)
+//   4. from = wallet del user (la registrada con setUserWallet)
+//   5. to   = NFT_RECEIVER_WALLET
+//   6. txHash no fue usado antes (anti-replay)
+// Si todo pasa: gem.status -> nft_received_pending_payout + email al admin
+// con todos los datos para que apruebe + transfiera USDC manual.
+const ERC721_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"; // keccak256("Transfer(address,address,uint256)")
+
+exports.confirmGemNftSent = onRequest({ secrets: [gmailAppPassword] }, async (req, res) => {
+  setRestrictedCorsHeaders(req, res);
+  if (req.method === "OPTIONS") return res.status(204).send("");
+  if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
+
+  // Auth — mismo patrón que submitGemClaim (token verifyWithRevocationCheck).
+  let authUid = null;
+  try {
+    const authHeader = req.get("Authorization") || "";
+    const m = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (!m) return res.status(401).json({ error: "unauthenticated" });
+    const decoded = await getAuth().verifyIdToken(m[1], true);
+    const provider = decoded.firebase && decoded.firebase.sign_in_provider;
+    if (provider === "password" && decoded.email_verified === false) {
+      return res.status(403).json({ error: "email_not_verified" });
+    }
+    authUid = decoded.uid;
+  } catch (authErr) {
+    console.error("confirmGemNftSent auth error: invalid_token (code=" + (authErr && authErr.code ? authErr.code : "unknown") + ")");
+    return res.status(401).json({ error: "invalid_token" });
+  }
+
+  const body = req.body || {};
+  const code = (body.code || "").toString().trim().toUpperCase().slice(0, 30);
+  const txHash = (body.txHash || "").toString().trim().toLowerCase().slice(0, 100);
+
+  if (!code) return res.status(400).json({ error: "missing_code" });
+  if (!/^0x[a-f0-9]{64}$/.test(txHash)) return res.status(400).json({ error: "invalid_txhash" });
+
+  try {
+    // 1. Anti-replay: el txHash no debe haber sido usado en otro claim.
+    const txDocRef = db.collection("nftTxHashes").doc(txHash);
+    const txSnap = await txDocRef.get();
+    if (txSnap.exists) {
+      console.warn("confirmGemNftSent replay attempt:", { txHash, authUid });
+      return res.status(409).json({ error: "tx_already_used" });
+    }
+
+    // 2. Localizar la gema del user.
+    const gemQuery = await db.collectionGroup("gems").where("code", "==", code).limit(1).get();
+    if (gemQuery.empty) return res.status(404).json({ error: "gem_not_found" });
+    const gemDoc = gemQuery.docs[0];
+    const pathParts = gemDoc.ref.path.split("/");
+    if (pathParts.length !== 4 || pathParts[0] !== "users" || pathParts[2] !== "gems" || pathParts[1] !== authUid) {
+      console.warn("confirmGemNftSent ownership mismatch:", { authUid, path: gemDoc.ref.path });
+      return res.status(403).json({ error: "not_owner" });
+    }
+    const gem = gemDoc.data();
+    if (gem.status !== "awaiting_nft_transfer") {
+      return res.status(409).json({ error: "invalid_state:" + (gem.status || "unknown") });
+    }
+    const expectedTokenId = gem.tokenId;
+    if (!expectedTokenId) {
+      console.error("confirmGemNftSent gem sin tokenId:", { code, path: gemDoc.ref.path });
+      return res.status(500).json({ error: "missing_token_id" });
+    }
+
+    // 3. Wallet del user (la registrada, no la del body — defense-in-depth).
+    const userSnap = await db.collection("users").doc(authUid).get();
+    const userWallet = (userSnap.exists ? (userSnap.data().walletAddress || "") : "").toLowerCase();
+    if (!/^0x[a-f0-9]{40}$/.test(userWallet)) {
+      return res.status(400).json({ error: "wallet_not_set" });
+    }
+
+    // 4. Verificación on-chain del transfer.
+    const provider = new ethers.JsonRpcProvider("https://polygon-bor-rpc.publicnode.com");
+    let receipt;
+    try {
+      receipt = await provider.getTransactionReceipt(txHash);
+    } catch (rpcErr) {
+      console.error("confirmGemNftSent RPC error:", rpcErr.message);
+      return res.status(503).json({ error: "rpc_unavailable" });
+    }
+    if (!receipt) return res.status(404).json({ error: "tx_not_found" });
+    if (receipt.status !== 1) return res.status(400).json({ error: "tx_reverted" });
+
+    const currentBlock = await provider.getBlockNumber();
+    const confirmations = currentBlock - receipt.blockNumber;
+    if (confirmations < 3) {
+      return res.status(425).json({ error: "tx_not_confirmed", confirmations });
+    }
+
+    // 5. Buscar el Transfer event que matchea (MTBGEMS_CONTRACT + tokenId + from + to).
+    const expectedTo = NFT_RECEIVER_WALLET.toLowerCase();
+    const contractLc = MTBGEMS_CONTRACT.toLowerCase();
+    let transferOk = false;
+    for (const log of receipt.logs) {
+      if ((log.address || "").toLowerCase() !== contractLc) continue;
+      if (!log.topics || log.topics[0] !== ERC721_TRANSFER_TOPIC) continue;
+      // topics[1] = from (32 bytes), topics[2] = to (32 bytes), topics[3] = tokenId (32 bytes)
+      const logFrom = "0x" + log.topics[1].slice(26).toLowerCase();
+      const logTo = "0x" + log.topics[2].slice(26).toLowerCase();
+      const logTokenId = BigInt(log.topics[3]).toString();
+      if (logFrom === userWallet && logTo === expectedTo && logTokenId === String(expectedTokenId)) {
+        transferOk = true;
+        break;
+      }
+    }
+    if (!transferOk) {
+      console.warn("confirmGemNftSent transfer mismatch:", { txHash, expectedTokenId, userWallet, expectedTo });
+      return res.status(400).json({ error: "transfer_mismatch" });
+    }
+
+    // 6. Update Firestore atómico: marca gem + gemClaim + nftTxHashes anti-replay.
+    const claimQuery = await db.collection("gemClaims")
+        .where("code", "==", code)
+        .where("status", "==", "awaiting_nft_transfer")
+        .orderBy("submittedAt", "desc")
+        .limit(1).get();
+    const claimDocRef = claimQuery.empty ? null : claimQuery.docs[0].ref;
+
+    await db.runTransaction(async (tx) => {
+      const freshGem = await tx.get(gemDoc.ref);
+      if (!freshGem.exists || freshGem.data().status !== "awaiting_nft_transfer") {
+        throw new Error("state_changed");
+      }
+      tx.set(gemDoc.ref, {
+        status: "nft_received_pending_payout",
+        nftTxHash: txHash,
+        nftReceivedAt: Date.now(),
+      }, { merge: true });
+      if (claimDocRef) {
+        tx.set(claimDocRef, {
+          status: "nft_received_pending_payout",
+          nftTxHash: txHash,
+          nftReceivedAt: Date.now(),
+        }, { merge: true });
+      }
+      tx.set(txDocRef, {
+        gemCode: code,
+        uid: authUid,
+        tokenId: String(expectedTokenId),
+        confirmedAt: Date.now(),
+      });
+    });
+
+    // 7. Email al admin con todos los datos para que apruebe + pague USDC manual.
     try {
       const appPassword = gmailAppPassword.value();
       if (appPassword) {
@@ -2939,34 +3166,52 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
           service: "gmail",
           auth: { user: NOTIFY_EMAIL, pass: appPassword },
         });
+        const gemTier = gem.gemTier || gem.tier;
+        const gemName = gemTier ? (GEM_NAMES_ES[gemTier - 1] || `Tier ${gemTier}`) : "Desconocida";
+        const gemPrize = gemTier ? (`$${GEM_PRICES[gemTier - 1].toLocaleString()}`) : "-";
         const fecha = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+        const claimSnap = claimDocRef ? await claimDocRef.get() : null;
+        const claimData = claimSnap && claimSnap.exists ? claimSnap.data() : {};
         await transporter.sendMail({
           from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
           to: NOTIFY_EMAIL,
-          subject: `🎉 Nuevo canje de gema — ${esc(gemName)} (${esc(gemPrize)})`,
+          subject: `🎁 NFT recibido — Listo para pagar ${esc(gemPrize)} (${esc(gemName)})`,
           html: `
-            <h2>Nuevo canje de gema recibido</h2>
+            <h2>NFT recibido — Pago pendiente</h2>
+            <p>El usuario envió el NFT y confirmó el txHash on-chain. Verificá y transferí el USDC.</p>
             <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Premio a pagar</td><td style="padding:6px 12px;font-weight:bold;color:#000;font-size:18px">${esc(gemPrize)}</td></tr>
               <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Gema</td><td style="padding:6px 12px">${esc(gemName)} — Tier ${esc(String(gemTier))}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Premio</td><td style="padding:6px 12px;font-weight:bold;color:#000">${esc(gemPrize)}</td></tr>
               <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Código</td><td style="padding:6px 12px;font-family:monospace">${esc(code)}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Nombre</td><td style="padding:6px 12px">${esc(name)}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Email</td><td style="padding:6px 12px">${esc(email)}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Teléfono</td><td style="padding:6px 12px">${esc(phone)}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Billetera</td><td style="padding:6px 12px;font-family:monospace;font-size:12px">${esc(wallet)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Token ID</td><td style="padding:6px 12px;font-family:monospace">#${esc(String(expectedTokenId))}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Wallet del user</td><td style="padding:6px 12px;font-family:monospace;font-size:12px">${esc(userWallet)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Nombre</td><td style="padding:6px 12px">${esc(claimData.name || "-")}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Email</td><td style="padding:6px 12px">${esc(claimData.email || "-")}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Teléfono</td><td style="padding:6px 12px">${esc(claimData.phone || "-")}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Tx del NFT</td><td style="padding:6px 12px;font-family:monospace;font-size:11px"><a href="https://polygonscan.com/tx/${esc(txHash)}">${esc(txHash)}</a></td></tr>
               <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Fecha</td><td style="padding:6px 12px">${esc(fecha)}</td></tr>
             </table>
-            <p style="margin-top:16px;font-size:12px;color:#888">Mining The Blocks · Firestore: gemClaims</p>
+            <p style="margin-top:20px;padding:12px 16px;background:#fff8e1;border-left:4px solid #f59e0b;font-size:13px">
+              <strong>Acción requerida:</strong> Transferí <strong>${esc(gemPrize)}</strong> USDC (red Polygon) a la wallet del user <code>${esc(userWallet)}</code>.
+              Después marcá el canje como completado vía <code>markGemRedeemed</code> con el txHash del pago como <code>paymentRef</code>.
+            </p>
+            <p style="margin-top:16px;font-size:12px;color:#888">Mining The Blocks · Firestore: gemClaims · El NFT ya está en pagosmtb (NFT_RECEIVER_WALLET).</p>
           `,
         });
       }
     } catch (mailErr) {
-      console.error("submitGemClaim email error:", mailErr.message);
+      console.error("confirmGemNftSent email error:", mailErr.message);
     }
 
-    return res.json({ success: true });
+    return res.json({
+      success: true,
+      message: "NFT confirmado. Te notificamos por mail cuando se complete el pago (hasta 24 hs hábiles).",
+    });
   } catch (e) {
-    console.error("submitGemClaim:", e.message);
+    console.error("confirmGemNftSent:", e.message);
+    if (e.message === "state_changed") {
+      return res.status(409).json({ error: "state_changed" });
+    }
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -2986,7 +3231,7 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
 //      adminUid + paymentRef + adminNote + redeemedAt.
 //   4. Si existe gemClaims/{xxx} asociado (web claim form), lo marca también.
 //   5. Audit log en adminActions con código + ownerUid + paymentRef.
-exports.markGemRedeemed = onCall(async (request) => {
+exports.markGemRedeemed = onCall({ secrets: [gmailAppPassword] }, async (request) => {
   await requireAdminFresh(request);
   const adminUid = request.auth.uid;
 
@@ -3055,10 +3300,21 @@ exports.markGemRedeemed = onCall(async (request) => {
   });
 
   // Buscar y actualizar gemClaim asociado (si el user usó la web claim form).
+  // También capturamos email + gem info para notificar al user.
+  let claimEmail = null;
+  let claimName = null;
+  let claimUserWallet = null;
+  let claimGemTier = null;
   try {
     const claimQuery = await db.collection("gemClaims").where("code", "==", code).limit(1).get();
     if (!claimQuery.empty) {
-      await claimQuery.docs[0].ref.set({
+      const claimSnap = claimQuery.docs[0];
+      const claimData = claimSnap.data() || {};
+      claimEmail = claimData.email || null;
+      claimName = claimData.name || null;
+      claimUserWallet = claimData.wallet || null;
+      claimGemTier = claimData.gemTier || null;
+      await claimSnap.ref.set({
         status: "redeemed",
         processedAt: Date.now(),
         processedBy: adminUid,
@@ -3067,6 +3323,42 @@ exports.markGemRedeemed = onCall(async (request) => {
     }
   } catch (e) {
     console.warn("markGemRedeemed gemClaim update warning:", e && e.message);
+  }
+
+  // Round 2 audit #4 HIGH (swap flow 2026-06-23): email de confirmación al
+  // user notificando que el pago fue completado. Mejora UX vs "lo cobré pero
+  // no te avisé"; antes el user tenía que checkear su wallet manualmente.
+  if (claimEmail) {
+    try {
+      const appPassword = gmailAppPassword.value();
+      if (appPassword) {
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: { user: NOTIFY_EMAIL, pass: appPassword },
+        });
+        const gemName = claimGemTier ? (GEM_NAMES_ES[claimGemTier - 1] || `Tier ${claimGemTier}`) : "tu gema";
+        const gemPrize = claimGemTier ? (`$${GEM_PRICES[claimGemTier - 1].toLocaleString()}`) : "";
+        const polygonscanLink = /^0x[a-fA-F0-9]{64}$/.test(paymentRef) ?
+          `https://polygonscan.com/tx/${paymentRef}` :
+          null;
+        await transporter.sendMail({
+          from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
+          to: claimEmail,
+          subject: `✅ Tu canje de ${esc(gemName)} fue completado — ${esc(gemPrize)} enviados`,
+          html: `
+            <h2>¡Listo! Tu premio fue enviado</h2>
+            <p>${esc(claimName ? `Hola ${claimName},` : "Hola,")}</p>
+            <p>Confirmamos el canje de tu gema <strong>${esc(gemName)}</strong> y enviamos <strong>${esc(gemPrize)} USDC</strong> a tu billetera Polygon:</p>
+            <p style="font-family:monospace;font-size:13px;background:#f5f5f5;padding:10px 14px;border-radius:6px;word-break:break-all">${esc(claimUserWallet || "")}</p>
+            ${polygonscanLink ? `<p style="margin-top:16px">Podés ver la transacción en <a href="${esc(polygonscanLink)}">Polygonscan</a>.</p>` : ""}
+            <p style="margin-top:20px;font-size:13px;color:#555">Si no ves los fondos en tu wallet en las próximas horas, asegurate de estar mirando la red <strong>Polygon (MATIC)</strong> y el token <strong>USDC</strong>. Si necesitás ayuda escribinos a <a href="mailto:${esc(NOTIFY_EMAIL)}">${esc(NOTIFY_EMAIL)}</a> y mencioná el código <code>${esc(code)}</code>.</p>
+            <p style="margin-top:24px;font-size:12px;color:#888">Gracias por jugar Mining The Blocks. 💎</p>
+          `,
+        });
+      }
+    } catch (mailErr) {
+      console.warn("markGemRedeemed user-notify email warning:", mailErr && mailErr.message);
+    }
   }
 
   // Audit log.

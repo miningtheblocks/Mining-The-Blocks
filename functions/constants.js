@@ -42,6 +42,11 @@ const MTBGEMS_CONTRACT = process.env.MTBGEMS_CONTRACT || '0x2933Ff14AdeC0a4D74aD
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const PAYMENT_WALLET = '0x61f7E9df2113Ac2E4a3D18f802AF2EE77cFAAD4f';
+
+// Wallet a la que el user envía el NFT como prueba de canje. Por simplicidad
+// inicial usamos la misma wallet que recibe los USDC de entry fee (pagosmtb).
+// En el futuro se puede separar a una wallet dedicada de "NFT-receiver".
+const NFT_RECEIVER_WALLET = PAYMENT_WALLET;
 const USDC_CONTRACTS = [
   '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', // USDC bridged (PoS)
   '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', // USDC native
@@ -66,6 +71,7 @@ module.exports = {
   MTBGEMS_CONTRACT,
   DAY_MS,
   PAYMENT_WALLET,
+  NFT_RECEIVER_WALLET,
   USDC_CONTRACTS,
   USDC_ABI,
   CREDIT_PRICE_USD,

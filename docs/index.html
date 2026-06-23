@@ -484,11 +484,56 @@
       <p class="msg-error" id="emailError"></p>
     </div>
 
+    <!-- Round 2 audit #4 HIGH (swap flow 2026-06-23): paso 2 — el user
+         envía el NFT a la wallet MTB y nos pasa el txHash. -->
+    <div class="card" id="cardNftTransfer">
+      <p class="card-title">
+        <span data-lang-inline="es">📤 Paso 2 — Enviá tu NFT</span>
+        <span data-lang-inline="en visible">📤 Step 2 — Send your NFT</span>
+      </p>
+      <p class="card-sub" style="margin-bottom:12px">
+        <span data-lang-inline="es">Para confirmar el canje, enviá tu NFT (Token <strong id="nftTokenId"></strong>) a la siguiente billetera de Mining The Blocks en la red <strong>Polygon (MATIC)</strong>:</span>
+        <span data-lang-inline="en visible">To confirm the redemption, send your NFT (Token <strong id="nftTokenId"></strong>) to the following Mining The Blocks wallet on the <strong>Polygon (MATIC)</strong> network:</span>
+      </p>
+
+      <div style="background:#f5f5f5;border:1px solid #ddd;border-radius:8px;padding:12px;margin:12px 0;display:flex;align-items:center;gap:8px">
+        <code id="nftReceiverWallet" style="flex:1;font-family:monospace;font-size:13px;word-break:break-all"></code>
+        <button class="btn" data-action="copyNftReceiverWallet" id="btnCopyNftWallet" style="padding:6px 12px;font-size:13px">
+          <span data-lang-inline="es">Copiar</span>
+          <span data-lang-inline="en visible">Copy</span>
+        </button>
+      </div>
+
+      <div style="background:#fff8e1;border-left:4px solid #f59e0b;padding:10px 14px;margin:12px 0;font-size:13px;line-height:1.5">
+        <span data-lang-inline="es">⚠️ <strong>Verificá la dirección dos veces.</strong> Errores son irreversibles. Enviá <strong>únicamente el NFT correcto</strong> en la red <strong>Polygon</strong>. No envíes otros tokens.</span>
+        <span data-lang-inline="en visible">⚠️ <strong>Double-check the address.</strong> Errors are irreversible. Send <strong>only the correct NFT</strong> on <strong>Polygon</strong>. Do not send other tokens.</span>
+      </div>
+
+      <p class="card-sub" style="margin-top:16px">
+        <span data-lang-inline="es"><strong>Después de enviar</strong>, copiá el <strong>txHash</strong> desde Polygonscan (o tu wallet) y pegalo abajo:</span>
+        <span data-lang-inline="en visible"><strong>After sending</strong>, copy the <strong>txHash</strong> from Polygonscan (or your wallet) and paste it below:</span>
+      </p>
+
+      <input type="text" id="nftTxHashInput" placeholder="0x..." maxlength="68" autocomplete="off" spellcheck="false" style="width:100%;font-family:monospace;font-size:13px;margin-top:8px;padding:10px 12px;border:1px solid #ccc;border-radius:6px">
+
+      <button class="btn" data-action="confirmNftTransfer" id="btnConfirmNft" style="width:100%;margin-top:12px">
+        <span data-lang-inline="es">Confirmar envío del NFT</span>
+        <span data-lang-inline="en visible">Confirm NFT sent</span>
+      </button>
+
+      <p class="msg-error" id="nftTxError"></p>
+
+      <p style="font-size:12px;color:#666;margin-top:14px;line-height:1.6">
+        <span data-lang-inline="es">ℹ️ Verificamos tu transacción on-chain (puede tardar unos minutos en confirmarse). Una vez confirmada, revisamos manualmente y te transferimos el premio en USDC a tu billetera en hasta <strong>24 horas hábiles</strong>. Te notificamos por mail al momento de realizar el pago.</span>
+        <span data-lang-inline="en visible">ℹ️ We verify your transaction on-chain (may take a few minutes to confirm). Once confirmed, we review manually and send the USDC prize to your wallet within <strong>24 business hours</strong>. We'll notify you by email when payment is sent.</span>
+      </p>
+    </div>
+
     <div class="card" id="cardDone">
       <p class="card-title">✅ <span data-lang-inline="es">¡Solicitud enviada!</span><span data-lang-inline="en visible">Request submitted!</span></p>
       <p class="card-sub">
-        <span data-lang-inline="es">Te contactamos por email con los próximos pasos. Puede demorar hasta 48 horas hábiles.</span>
-        <span data-lang-inline="en visible">We'll contact you by email with next steps. Allow up to 48 business hours.</span>
+        <span data-lang-inline="es">Recibimos tu solicitud. Verificamos manualmente y te transferimos el premio a tu billetera Polygon en hasta <strong>24 horas hábiles</strong>. Te notificamos por mail al momento del pago.</span>
+        <span data-lang-inline="en visible">We received your request. We review manually and send the prize to your Polygon wallet within <strong>24 business hours</strong>. We'll notify you by email when the payment is sent.</span>
       </p>
     </div>
   </section>

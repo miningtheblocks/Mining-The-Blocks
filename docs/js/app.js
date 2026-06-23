@@ -238,12 +238,106 @@ async function submitClaim() {
       return;
     }
     document.getElementById('cardEmail').classList.remove('visible');
-    document.getElementById('cardDone').classList.add('visible');
+    // Round 2 audit #4 HIGH (swap flow 2026-06-23): si el backend dice que
+    // requiere transfer del NFT, mostramos el paso 2 (enviar + pegar txHash).
+    // Si no, terminamos en cardDone como antes (flujo legacy / sin NFT).
+    if (data.requiresNftTransfer) {
+      window.pendingNftClaim = {
+        code: verifiedCode,
+        nftReceiverWallet: data.nftReceiverWallet,
+        tokenId: data.tokenId,
+        gemName: data.gemName,
+        gemPrize: data.gemPrize,
+      };
+      var receiverEl = document.getElementById('nftReceiverWallet');
+      if (receiverEl) receiverEl.textContent = data.nftReceiverWallet || '';
+      var tokenEl = document.getElementById('nftTokenId');
+      if (tokenEl) tokenEl.textContent = data.tokenId != null ? '#' + data.tokenId : '';
+      document.getElementById('cardNftTransfer').classList.add('visible');
+    } else {
+      document.getElementById('cardDone').classList.add('visible');
+    }
   } catch (e) {
     showError('emailError', currentLang === 'es' ? 'Sin conexión. Intentá más tarde.' : 'No connection. Try again later.');
   } finally {
     setLoading('btnClaim', false);
     setLang(currentLang);
+  }
+}
+
+// Round 2 audit #4 HIGH (swap flow 2026-06-23): paso 2 del flujo de canje
+// cuando el gem ya tiene NFT minteado. El user envía el NFT a
+// NFT_RECEIVER_WALLET en MetaMask, pega el txHash, y nosotros lo verificamos
+// on-chain antes de marcar el canje como pendiente de pago.
+async function confirmNftTransfer() {
+  var es = currentLang === 'es';
+  var hashInput = document.getElementById('nftTxHashInput');
+  var txHash = (hashInput.value || '').trim().toLowerCase();
+  showError('nftTxError', '');
+  if (!/^0x[a-f0-9]{64}$/.test(txHash)) {
+    showError('nftTxError', es
+      ? 'El txHash tiene que ser 0x + 64 caracteres hexadecimales.'
+      : 'The txHash must be 0x + 64 hex characters.');
+    return;
+  }
+  var pending = window.pendingNftClaim || {};
+  if (!pending.code) {
+    showError('nftTxError', es ? 'Sesión perdida. Recargá la página.' : 'Session lost. Reload.');
+    return;
+  }
+  var user = firebase.auth().currentUser;
+  if (!user) {
+    showError('nftTxError', es ? 'Tu sesión expiró. Iniciá sesión de nuevo.' : 'Your session expired. Sign in again.');
+    return;
+  }
+  setLoading('btnConfirmNft', true);
+  try {
+    var idToken = await user.getIdToken();
+    var res = await fetch(FUNCTIONS_BASE + '/confirmGemNftSent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + idToken,
+      },
+      body: JSON.stringify({ code: pending.code, txHash: txHash }),
+    });
+    var data = await res.json();
+    if (!res.ok || !data.success) {
+      var msg = data && data.error ? data.error : 'error';
+      if (msg === 'tx_already_used') msg = es ? 'Ese txHash ya fue usado para otro canje.' : 'That txHash was already used.';
+      else if (msg === 'tx_not_found') msg = es ? 'No encontramos esa transacción on-chain. Verificá que el hash sea correcto.' : 'Transaction not found on-chain.';
+      else if (msg === 'tx_reverted') msg = es ? 'La transacción revirtió. Mandá el NFT de nuevo.' : 'Transaction reverted.';
+      else if ((msg || '').indexOf('tx_not_confirmed') === 0) msg = es ? 'Esperá unos minutos a que la transacción se confirme (mínimo 3 bloques) y reintentá.' : 'Wait a few minutes for the tx to confirm and retry.';
+      else if (msg === 'transfer_mismatch') msg = es ? 'El NFT enviado no coincide con tu canje. Verificá que enviaste el token correcto a la wallet correcta.' : 'NFT mismatch.';
+      else if (msg === 'wallet_not_set') msg = es ? 'No tenés una billetera vinculada a tu cuenta MTB.' : 'No wallet linked.';
+      else if (msg === 'rpc_unavailable') msg = es ? 'No pudimos verificar la transacción (problema de red). Reintentá en un minuto.' : 'RPC unavailable.';
+      else msg = es ? 'No pudimos verificar el envío del NFT (' + msg + ').' : 'Could not verify NFT transfer (' + msg + ').';
+      showError('nftTxError', msg);
+      return;
+    }
+    document.getElementById('cardNftTransfer').classList.remove('visible');
+    document.getElementById('cardDone').classList.add('visible');
+  } catch (e) {
+    showError('nftTxError', es ? 'Sin conexión. Intentá más tarde.' : 'No connection. Try again later.');
+  } finally {
+    setLoading('btnConfirmNft', false);
+    setLang(currentLang);
+  }
+}
+
+function copyNftReceiverWallet() {
+  var el = document.getElementById('nftReceiverWallet');
+  if (!el) return;
+  var txt = el.textContent || '';
+  if (!txt) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).catch(function() {});
+  }
+  var btn = document.getElementById('btnCopyNftWallet');
+  if (btn) {
+    var old = btn.textContent;
+    btn.textContent = currentLang === 'es' ? '¡Copiado!' : 'Copied!';
+    setTimeout(function() { if (btn) btn.textContent = old; }, 1500);
   }
 }
 
@@ -283,6 +377,8 @@ function wireEventDelegation() {
       case 'verifyCode':  return verifyCode();
       case 'doLogin':     return doLogin();
       case 'submitClaim': return submitClaim();
+      case 'confirmNftTransfer': return confirmNftTransfer();
+      case 'copyNftReceiverWallet': return copyNftReceiverWallet();
       case 'acceptAge':   return acceptAge();
       default: /* unknown action, ignore */
     }
