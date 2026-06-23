@@ -2020,7 +2020,25 @@ async function runCryptoPaymentProcessing() {
             return;
           }
           const userRef = db.collection("users").doc(uid);
-          tx.set(userRef, { serverCredits: FieldValue.increment(1) }, { merge: true });
+          // Audit feedback 2026-06-23+: auto-save de la `from` wallet en el
+          // primer pago confirmado. Si user todavía NO tiene walletAddress
+          // (registro nuevo o no la vinculó manualmente), guardarla automá-
+          // ticamente desde el Transfer event on-chain. Ventajas:
+          //   1. Próximos pagos cobran $15.00 redondo (no $15.XX random).
+          //   2. Premios futuros se transfieren a esta wallet sin re-prompt.
+          //   3. Prueba de ownership: la wallet firmó el Transfer on-chain.
+          // El cooldown de setUserWallet (24h) NO aplica a la PRIMERA
+          // asignación — solo a cambios posteriores. Si user después quiere
+          // cambiar, sigue requiriendo el cooldown via setUserWallet.
+          const userSnap = await tx.get(userRef);
+          const existingWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
+          const userUpdate = { serverCredits: FieldValue.increment(1) };
+          if (!existingWallet && /^0x[a-fA-F0-9]{40}$/.test(eventFrom)) {
+            userUpdate.walletAddress = eventFrom;
+            userUpdate.walletChangedAt = Date.now();
+            userUpdate.walletAutoLinked = true;
+          }
+          tx.set(userRef, userUpdate, { merge: true });
           tx.set(paymentDoc.ref, {
             status: "completed",
             txHash: txHash,

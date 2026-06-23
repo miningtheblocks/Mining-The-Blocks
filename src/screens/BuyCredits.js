@@ -246,6 +246,18 @@ export default function BuyCredits({ onClose }) {
             <Text style={s.networkTxt}>🔷 {t('buyCredits.network')}</Text>
           </View>
 
+          {/* Audit feedback 2026-06-23+: aviso de auto-link de wallet en el
+              primer pago. Solo se muestra si el user todavía NO tiene
+              walletAddress linked — para que sepa que la wallet que use va
+              a quedar asociada automáticamente. */}
+          {!userData?.walletAddress && (
+            <View style={s.walletHintBox}>
+              <Text style={s.walletHintTxt}>
+                💡 {t('buyCredits.autoLinkHint', { defaultValue: 'La billetera desde la que pagues se asociará automáticamente a tu cuenta. Próximos pagos serán $15.00 exacto.' })}
+              </Text>
+            </View>
+          )}
+
           {/* Timer */}
           <View style={s.timerRow}>
             <Text style={s.timerLabel}>{t('buyCredits.expiresIn')}</Text>
@@ -292,6 +304,9 @@ const s = StyleSheet.create({
   warning:      { color: '#ff9944', fontSize: 11, marginTop: 6 },
   networkBadge: { backgroundColor: '#0d1a2e', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, alignSelf: 'flex-start', marginTop: 16 },
   networkTxt:   { color: '#4a9eff', fontSize: 12, fontWeight: '700' },
+  // Audit feedback 2026-06-23+: aviso auto-link de wallet (estética MTB).
+  walletHintBox: { backgroundColor: '#1a2614', borderColor: '#2e7d32', borderWidth: 1, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginTop: 14 },
+  walletHintTxt: { color: '#a3d977', fontSize: 12, lineHeight: 18 },
   timerRow:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 20, backgroundColor: '#12121a', borderRadius: 10, padding: 12 },
   timerLabel:   { color: '#888', fontSize: 13 },
   timerVal:     { color: '#fff', fontSize: 20, fontWeight: '900', fontFamily: 'monospace' },
