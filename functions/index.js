@@ -729,6 +729,45 @@ exports.getUserGems = onCall(async (request) => {
       .get();
 
   const gems = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  // Audit feedback 2026-06-23+: enriquecer cada gem con expiresAt derivado
+  // del episode doc (completedAt + GEM_REDEEM_WINDOW_MS). Si el episodio no
+  // cerró todavía, expiresAt queda null → no expira. Cache por
+  // (chainId, episodeNumber) para minimizar reads (10-20 episodios únicos
+  // típicos para 100 gemas).
+  const episodeKeys = new Set();
+  for (const g of gems) {
+    if (g.chainId && g.episodeNumber) {
+      episodeKeys.add(`${g.chainId}/${g.episodeNumber}`);
+    }
+  }
+  const episodeCache = new Map();
+  await Promise.all([...episodeKeys].map(async (key) => {
+    const sep = key.indexOf("/");
+    const chainId = key.slice(0, sep);
+    const epNum = key.slice(sep + 1);
+    try {
+      const epDoc = await db.collection("serverChains").doc(chainId)
+          .collection("episodes").doc(epNum).get();
+      if (epDoc.exists) {
+        const ca = epDoc.data() && epDoc.data().completedAt;
+        if (ca) episodeCache.set(key, ca);
+      }
+    } catch (_) {/* skip episode error, gem queda sin expire info */}
+  }));
+  const now = Date.now();
+  for (const g of gems) {
+    if (g.chainId && g.episodeNumber) {
+      const key = `${g.chainId}/${g.episodeNumber}`;
+      const completedAt = episodeCache.get(key);
+      if (completedAt) {
+        g.episodeCompletedAt = completedAt;
+        g.expiresAt = completedAt + GEM_REDEEM_WINDOW_MS;
+        g.expired = now > g.expiresAt;
+      }
+    }
+  }
+
   return { gems };
 });
 

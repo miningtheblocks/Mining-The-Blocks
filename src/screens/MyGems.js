@@ -23,6 +23,27 @@ function shortenAddress(addr) {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+// Audit feedback 2026-06-23+: countdown de expiración (90d desde fin del
+// episodio). El backend (getUserGems) enriquece cada gem con `expiresAt`
+// derivado del completedAt del episode. Si la gem no tiene expiresAt
+// significa que el episodio sigue activo → no expira todavía.
+//
+// Devuelve { state, label, color }:
+//   - 'active' (episodio en curso): null/null/null — no mostrar nada
+//   - 'days' (>=2 días) verde
+//   - 'soon' (1 día o menos) naranja
+//   - 'expired' (ya pasó) rojo
+function getExpiryInfo(expiresAt) {
+  if (!expiresAt) return null;
+  const remaining = expiresAt - Date.now();
+  if (remaining <= 0) return { state: 'expired', color: '#e57373' };
+  const days = Math.floor(remaining / (24 * 60 * 60 * 1000));
+  const hours = Math.floor(remaining / (60 * 60 * 1000));
+  if (days >= 2) return { state: 'days', days, color: '#5cb85c' };
+  if (days >= 1) return { state: 'soon', days, hours, color: '#f59e0b' };
+  return { state: 'soon', days: 0, hours, color: '#f59e0b' };
+}
+
 export default function MyGems({ asModal = false, visible = true, onClose }) {
   const { t, language } = useI18n();
   const { showAlert, AlertComponent } = useAppAlert();
@@ -118,6 +139,33 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
             </View>
             <Text style={styles.gemPrice}>${gd.price} USD</Text>
             <Text style={styles.gemDate}>{new Date(item.discoveredAt).toLocaleDateString()}</Text>
+            {(() => {
+              // Audit feedback 2026-06-23+: countdown de expiración. Solo se
+              // muestra si el episodio cerró (gem.expiresAt definido) y la
+              // gem aún no fue canjeada (status != 'redeemed').
+              if (item.status === 'redeemed') return null;
+              const exp = getExpiryInfo(item.expiresAt);
+              if (!exp) return null;
+              if (exp.state === 'expired') {
+                return (
+                  <Text style={[styles.gemExpiry, { color: exp.color }]}>
+                    ⚠ {t('myGems.expired', { defaultValue: 'Expirado' })}
+                  </Text>
+                );
+              }
+              if (exp.state === 'soon') {
+                return (
+                  <Text style={[styles.gemExpiry, { color: exp.color }]}>
+                    ⏰ {t('myGems.expiresHours', { hours: exp.hours, defaultValue: `Expira en ${exp.hours} hs` })}
+                  </Text>
+                );
+              }
+              return (
+                <Text style={[styles.gemExpiry, { color: exp.color }]}>
+                  ⏳ {t('myGems.expiresDays', { days: exp.days, defaultValue: `Expira en ${exp.days} días` })}
+                </Text>
+              );
+            })()}
           </View>
 
           {/* Status */}
@@ -151,6 +199,39 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
             <Text style={styles.detailMeta}>
               {t('myGems.foundAt')} EP {item.episodeNumber} · {t('myGems.layer')} {item.layerK} · #{item.cubeNumber}
             </Text>
+
+            {/* Audit feedback 2026-06-23+: ventana de canje exacta en el detalle. */}
+            {item.status !== 'redeemed' && item.expiresAt && (() => {
+              const exp = getExpiryInfo(item.expiresAt);
+              if (!exp) return null;
+              const expDate = new Date(item.expiresAt).toLocaleDateString();
+              return (
+                <View style={[styles.expiryBox, { borderColor: exp.color + '55', backgroundColor: exp.color + '10' }]}>
+                  <Text style={[styles.expiryBoxTitle, { color: exp.color }]}>
+                    {exp.state === 'expired'
+                      ? t('myGems.expiryDetailExpired', { defaultValue: 'Ventana de canje vencida' })
+                      : t('myGems.expiryDetailActive', { defaultValue: 'Ventana de canje' })}
+                  </Text>
+                  <Text style={styles.expiryBoxBody}>
+                    {exp.state === 'expired'
+                      ? t('myGems.expiryDetailBodyExpired', { date: expDate, defaultValue: `El plazo venció el ${expDate}. Ya no se puede canjear.` })
+                      : t('myGems.expiryDetailBodyActive', { date: expDate, defaultValue: `Tenés hasta el ${expDate} para reclamar (90 días desde el cierre del episodio).` })}
+                  </Text>
+                </View>
+              );
+            })()}
+            {/* Si la gema NO tiene expiresAt (episodio sigue activo), avisar
+                que la ventana se activa cuando termine. */}
+            {item.status !== 'redeemed' && !item.expiresAt && (
+              <View style={[styles.expiryBox, { borderColor: '#5cb85c55', backgroundColor: '#5cb85c10' }]}>
+                <Text style={[styles.expiryBoxTitle, { color: '#5cb85c' }]}>
+                  ✓ {t('myGems.expiryEpisodeActive', { defaultValue: 'Episodio en curso' })}
+                </Text>
+                <Text style={styles.expiryBoxBody}>
+                  {t('myGems.expiryEpisodeActiveBody', { defaultValue: 'El premio no expira mientras el episodio sigue activo. Después tendrás 90 días para canjearlo.' })}
+                </Text>
+              </View>
+            )}
 
             {/* Acciones */}
             {item.status === 'unclaimed' && (
@@ -287,6 +368,10 @@ const styles = StyleSheet.create({
   tierTxt: { fontSize: 10, fontWeight: '800' },
   gemPrice: { color: '#aaa', fontSize: 12, fontWeight: '700' },
   gemDate: { color: '#555', fontSize: 11, marginTop: 1 },
+  // Audit feedback 2026-06-23+: countdown de expiración en la card principal
+  // (línea debajo de la fecha de discovery). Color dinámico según urgencia
+  // (verde >2d / naranja <=1d / rojo expired).
+  gemExpiry: { fontSize: 11, marginTop: 3, fontWeight: '700' },
 
   statusBadge: {
     borderWidth: 1,
@@ -313,6 +398,16 @@ const styles = StyleSheet.create({
   copyHint: { color: '#555', fontSize: 11, marginTop: 3 },
 
   detailMeta: { color: '#666', fontSize: 12 },
+  // Audit feedback 2026-06-23+: cajita info de expiración en el panel
+  // expandible. Color dinámico inline según el estado (verde/naranja/rojo).
+  expiryBox: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  expiryBoxTitle: { fontSize: 12, fontWeight: '800', marginBottom: 4 },
+  expiryBoxBody: { color: '#bbb', fontSize: 11, lineHeight: 16 },
 
   actions: { marginTop: 10 },
   actionBtn: {
