@@ -4,7 +4,6 @@ import { findClosestFaceFixed, resetFaceDetection, setForcedFace } from './FaceD
 import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform } from 'react-native';
 import { useAppAlert } from './AppAlert';
 import { GLView } from 'expo-gl';
-import { Renderer } from 'expo-three';
 import * as THREE from 'three';
 import { ensureUser } from '../firebase/client';
 import { callMineCube } from '../firebase/functions';
@@ -20,6 +19,27 @@ import { GEMS, GEM_SHAPE } from '../utils/gems';
 import GemPixelArt from './GemPixelArt';
 import { createRewardIndicatorSprite, MinedCubesRewardStore, clearIndicatorCache } from './MinedCellIndicators';
 import audioManager from '../utils/audioManager';
+
+// Round 2 audit #5 HIGH-1: reemplazado `expo-three.Renderer` por
+// THREE.WebGLRenderer nativo. expo-three está deprecated y arrastraba 8
+// paquetes con CVEs (node-fetch@1.7.3 CVSS 8.8, fbjs, fbemitter, isomorphic-
+// fetch, uuid@8.3.2 ...). Three.js 0.166+ acepta un canvas-mock + el `gl`
+// context de expo-gl directamente; el render loop llama `gl.endFrameEXP()`
+// manualmente al final de cada frame, así que no perdemos nada del wrapper.
+function createGLRenderer(gl, opts = {}) {
+  const { antialias = false } = opts;
+  const width = gl.drawingBufferWidth || 0;
+  const height = gl.drawingBufferHeight || 0;
+  const canvas = {
+    width, height,
+    clientWidth: width, clientHeight: height,
+    style: {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    getContext: () => gl,
+  };
+  return new THREE.WebGLRenderer({ canvas, context: gl, antialias });
+}
 
 // CRIT (Round 2 Agente #4 CRIT-FE-06): override global de console.log REMOVIDO.
 // Pre-fix:
@@ -3754,9 +3774,9 @@ const handleZoomButton = useCallback((direction) => {
     try {
       glRef.current = gl;
       
-      const renderer = new Renderer({ gl, antialias: false }); // Desactivar antialiasing para mejor rendimiento
-      
-      // Pixel ratio fijo: expo-three ya trabaja en coordenadas del drawing buffer
+      const renderer = createGLRenderer(gl, { antialias: false }); // Desactivar antialiasing para mejor rendimiento
+
+      // Pixel ratio fijo: WebGLRenderer toma el drawing buffer ya escalado por expo-gl.
       renderer.setPixelRatio(1);
       
       // Usar el drawing buffer para el tamaño interno inicial del renderer (evita offsets)
