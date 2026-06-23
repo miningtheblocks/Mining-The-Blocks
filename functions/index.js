@@ -200,6 +200,38 @@ const ACTIVITY_FEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // recibe sus 5 picks (cap solo se aplica al referrer; el referido es 1×
 // per-user via referralBonusPaid). Documentado en TOS §6.2 (program rules).
 const REFERRER_BONUS_CAP = 50;
+
+// Audit feedback 2026-06-23+: ventana de canje 90 días desde el cierre del
+// episodio. Pre-fix: gemCodes válidos para SIEMPRE → liability eterna sobre
+// MTB + speculation a largo plazo de users esperando recompra a precio fijo.
+// Alineado con TOS §19 que ya menciona "90 days" como ventana mínima.
+// El expiresAt NO se almacena en el gem doc (evita batch updates) — se DERIVA
+// de episodeCompletedAt + GEM_REDEEM_WINDOW_MS al validar canje. Mientras el
+// episodio sigue activo (no cerrado), el premio NO expira.
+const GEM_REDEEM_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+
+// Helper compartido por los 3 entry points de canje (submitGemClaim,
+// confirmGemNftSent, markGemRedeemed). Lanza HttpsError("failed-precondition",
+// "expired:<ts>") si la ventana de canje pasó. Si no se puede determinar el
+// estado del episodio (RPC error, episode doc faltante), favor user — no
+// bloquea. Single source of truth: serverChains/{chainId}/episodes/{n}.completedAt.
+async function assertGemNotExpired(gem) {
+  if (!gem || !gem.chainId || !gem.episodeNumber) return;
+  try {
+    const epDoc = await db.collection("serverChains").doc(gem.chainId)
+        .collection("episodes").doc(String(gem.episodeNumber)).get();
+    if (!epDoc.exists) return;
+    const completedAt = (epDoc.data() && epDoc.data().completedAt) || 0;
+    if (!completedAt) return;
+    const expiresAt = completedAt + GEM_REDEEM_WINDOW_MS;
+    if (Date.now() > expiresAt) {
+      throw new HttpsError("failed-precondition", `expired:${expiresAt}`);
+    }
+  } catch (e) {
+    if (e instanceof HttpsError) throw e;
+    console.warn("assertGemNotExpired RPC warning:", e && e.message);
+  }
+}
 async function writeActivity(type, data) {
   try {
     await db.collection("activityFeed").add({
@@ -2952,6 +2984,18 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
       return res.status(403).json({ error: "not_owner" });
     }
 
+    // Audit feedback 2026-06-23+: rechazar canjes después de 90 días del
+    // cierre del episodio. La ventana se computa desde episodes/{n}.completedAt.
+    // Mientras el episodio sigue activo (no cerrado), NO hay expire.
+    try {
+      await assertGemNotExpired(gemDoc.data());
+    } catch (expErr) {
+      if (expErr instanceof HttpsError && expErr.message && expErr.message.startsWith("expired")) {
+        return res.status(410).json({ error: "expired" }); // 410 Gone
+      }
+      throw expErr;
+    }
+
     let gemTier;
     let gemTokenId = null;
     let requiresNftTransfer = false;
@@ -3121,6 +3165,15 @@ exports.confirmGemNftSent = onRequest({ secrets: [gmailAppPassword] }, async (re
     const gem = gemDoc.data();
     if (gem.status !== "awaiting_nft_transfer") {
       return res.status(409).json({ error: "invalid_state:" + (gem.status || "unknown") });
+    }
+    // Audit feedback 2026-06-23+: chequear ventana de canje 90d post-episodio.
+    try {
+      await assertGemNotExpired(gem);
+    } catch (expErr) {
+      if (expErr instanceof HttpsError && expErr.message && expErr.message.startsWith("expired")) {
+        return res.status(410).json({ error: "expired" });
+      }
+      throw expErr;
     }
     const expectedTokenId = gem.tokenId;
     if (!expectedTokenId) {
@@ -3305,6 +3358,11 @@ exports.markGemRedeemed = onCall({ secrets: [gmailAppPassword] }, async (request
   }
   const ownerUid = pathParts[1];
   const gemId = pathParts[3];
+
+  // Audit feedback 2026-06-23+: defensa en markGemRedeemed por si admin intenta
+  // marcar un canje que ya pasó la ventana de 90d. submitGemClaim ya rechaza
+  // antes, pero esta capa extra protege contra mark manual via callable.
+  await assertGemNotExpired(gemDoc.data());
 
   // Idempotency: TX que verifica status antes de marcar.
   // Ultrareview bug_003: además de redeemed/minted, bloqueamos también
