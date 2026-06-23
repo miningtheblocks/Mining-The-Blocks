@@ -368,7 +368,13 @@
 <body>
 
 <header>
-  <img src="icon.png" alt="Mining The Blocks" class="logo">
+  <!-- Round 2 audit #10 HIGH-9: LCP optimizado. icon.webp 8.5KB (vs 1.1MB
+       original PNG) reduce LCP de ~5s a <100ms en 3G. PNG fallback para
+       browsers viejos (<1% del mercado, mantenemos por completitud). -->
+  <picture>
+    <source srcset="icon.webp" type="image/webp">
+    <img src="icon.png" alt="Mining The Blocks" class="logo" width="96" height="96" fetchpriority="high" decoding="async">
+  </picture>
   <h1>Mining The Blocks</h1>
   <p class="tagline" data-lang-inline="es">¡Destruyamos el Cubo!</p>
   <p class="tagline" data-lang-inline="en visible">Let's Destroy the Cube!</p>

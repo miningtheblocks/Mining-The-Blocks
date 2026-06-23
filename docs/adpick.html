@@ -127,7 +127,10 @@
 <body>
 
 <header>
-  <img src="icon.png" alt="MTB" class="logo">
+  <picture>
+    <source srcset="icon.webp" type="image/webp">
+    <img src="icon.png" alt="MTB" class="logo" width="96" height="96" fetchpriority="high" decoding="async">
+  </picture>
   <div class="header-title">Mining The Blocks</div>
   <div class="header-sub" data-lang-inline="es">Obtener un pico ⛏</div>
   <div class="header-sub" data-lang-inline="en visible">Get a pick ⛏</div>
