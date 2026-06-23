@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, FlatList,
-  StyleSheet, ActivityIndicator, SafeAreaView,
+  StyleSheet, ActivityIndicator, SafeAreaView, Linking,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
@@ -13,13 +13,35 @@ const EVENT_ICONS = {
   mine: '⛏',
   episode_complete: '🏆',
   episode_start: '🔄',
+  episode_redeemed: '💸',
 };
 
 const EVENT_COLORS = {
   mine: '#4a9eff',
   episode_complete: '#ffd700',
   episode_start: '#5cb85c',
+  episode_redeemed: '#22c55e',
 };
+
+// Trunca una wallet 0x123456789abcdef... a 0x1234...cdef para UI.
+function shortWallet(w) {
+  if (!w || typeof w !== 'string') return '—';
+  if (w.length < 12) return w;
+  return `${w.slice(0, 6)}…${w.slice(-4)}`;
+}
+
+// Audit feedback 2026-06-23+: tx hashes públicos en Polygonscan post-canje.
+// El user puede tap para abrir el tx en Polygon explorer y verificar.
+function openPolygonscanTx(txHash) {
+  if (!txHash) return;
+  if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) return;
+  Linking.openURL(`https://polygonscan.com/tx/${txHash}`).catch(() => {});
+}
+function openPolygonscanAddr(addr) {
+  if (!addr) return;
+  if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) return;
+  Linking.openURL(`https://polygonscan.com/address/${addr}`).catch(() => {});
+}
 
 function formatDate(ts) {
   if (!ts) return '—';
@@ -92,6 +114,55 @@ function EventRow({ item, t }) {
             {t('chainHistory.winner', { name: item.displayName || t('chainHistory.player') })}
             {item.totalMined ? `  ${t('chainHistory.blocks', { n: item.totalMined })}` : ''}
           </Text>
+          <Text style={styles.rowDate}>{formatDate(item.ts)}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (item.type === 'episode_redeemed') {
+    // Audit feedback 2026-06-23+: card de transparencia post-canje. Solo se
+    // publica DESPUÉS de markGemRedeemed exitoso, así que toda esta info ya
+    // es pública en blockchain. Cualquier miembro de la chain puede tocar los
+    // hashes para verificar en Polygonscan.
+    const tierLabel = item.gemTier ? `Tier ${item.gemTier}` : '—';
+    const priceLabel = item.priceUSD ? `$${Number(item.priceUSD).toLocaleString()}` : '';
+    return (
+      <View style={[styles.row, styles.rowEpisode]}>
+        <View style={styles.leftCol}>
+          <SeqBadge seq={item.seq} color={color} />
+          <View style={[styles.iconBadge, { backgroundColor: color + '18', borderColor: color + '40' }]}>
+            <Text style={styles.iconText}>{icon}</Text>
+          </View>
+        </View>
+        <View style={styles.rowBody}>
+          <Text style={[styles.rowTitle, { color }]} numberOfLines={1}>
+            {t('chainHistory.episodeRedeemed', { n: item.episodeNumber ?? '—', defaultValue: `Episodio ${item.episodeNumber ?? '—'} canjeado` })}
+          </Text>
+          <Text style={styles.rowSub}>
+            {tierLabel}{priceLabel ? ` · ${priceLabel}` : ''}
+          </Text>
+          {item.winnerWallet && (
+            <TouchableOpacity onPress={() => openPolygonscanAddr(item.winnerWallet)} activeOpacity={0.7}>
+              <Text style={[styles.rowSub, styles.linkText]}>
+                👤 {shortWallet(item.winnerWallet)}
+              </Text>
+            </TouchableOpacity>
+          )}
+          {item.nftTxHash && (
+            <TouchableOpacity onPress={() => openPolygonscanTx(item.nftTxHash)} activeOpacity={0.7}>
+              <Text style={[styles.rowSub, styles.linkText]}>
+                🎁 {t('chainHistory.nftTransferLabel', { defaultValue: 'NFT transferido' })}: {shortWallet(item.nftTxHash)}
+              </Text>
+            </TouchableOpacity>
+          )}
+          {item.payoutTxHash && (
+            <TouchableOpacity onPress={() => openPolygonscanTx(item.payoutTxHash)} activeOpacity={0.7}>
+              <Text style={[styles.rowSub, styles.linkText]}>
+                💵 {t('chainHistory.payoutLabel', { defaultValue: 'Pago USDC' })}: {shortWallet(item.payoutTxHash)}
+              </Text>
+            </TouchableOpacity>
+          )}
           <Text style={styles.rowDate}>{formatDate(item.ts)}</Text>
         </View>
       </View>
@@ -367,6 +438,9 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 14, fontWeight: '800' },
   rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
   rowDate: { color: '#383838', fontSize: 11, marginTop: 3 },
+  // Audit feedback 2026-06-23+: links tappables a Polygonscan (tx hashes y
+  // wallets post-canje). Mismo color verde MTB para consistencia.
+  linkText: { color: '#5cb85c', textDecorationLine: 'underline' },
 
   rewardBadge: {
     backgroundColor: '#0c1805',

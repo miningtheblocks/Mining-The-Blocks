@@ -3425,6 +3425,52 @@ exports.markGemRedeemed = onCall({ secrets: [gmailAppPassword] }, async (request
     console.warn("markGemRedeemed audit log warning:", e && e.message);
   }
 
+  // Audit feedback 2026-06-23+: publicar evento history "episode_redeemed"
+  // SOLO post-canje, para transparencia. Antes del canje completo no se
+  // expone info que pudiera ser usada por terceros (winner wallet, tx hashes,
+  // gemCode) — todo eso ya es info pública on-chain pero el feed lo presenta
+  // UI-friendly para que los users del chain puedan corroborar.
+  //
+  // Campos del evento: solo data PÚBLICA. NO email, NO phone, NO full name.
+  // Wallet + tx hashes son públicos en blockchain.
+  try {
+    const fresh = await gemDoc.ref.get();
+    const gemData = fresh.exists ? (fresh.data() || {}) : {};
+    const chainId = gemData.chainId;
+    if (chainId) {
+      const chainRef = db.collection("serverChains").doc(chainId);
+      const counterRef = chainRef.collection("meta").doc("counter");
+      const winnerWallet = gemData.walletAddress || claimUserWallet || null;
+      await db.runTransaction(async (tx) => {
+        const cs = await tx.get(counterRef);
+        const seq = ((cs.exists && cs.data().seq) || 0) + 1;
+        const histRef = chainRef.collection("history").doc();
+        tx.set(histRef, {
+          type: "episode_redeemed",
+          seq,
+          ts: Date.now(),
+          uid: ownerUid,
+          episodeNumber: gemData.episodeNumber || null,
+          serverId: gemData.serverId || null,
+          chainId,
+          // Datos públicos para transparencia post-canje:
+          gemCode: code,
+          gemTier: gemData.gemTier || null,
+          priceUSD: gemData.priceUSD || 0,
+          winnerWallet: winnerWallet,
+          nftTxHash: gemData.nftTxHash || null,
+          payoutTxHash: /^0x[a-fA-F0-9]{64}$/.test(paymentRef) ? paymentRef : null,
+          paymentRefLabel: !/^0x[a-fA-F0-9]{64}$/.test(paymentRef) ? paymentRef.slice(0, 80) : null,
+          redeemedAt: Date.now(),
+        });
+        tx.set(counterRef, { seq }, { merge: true });
+      });
+    }
+  } catch (e) {
+    // No bloquear el flow del admin si falla la publicación del evento.
+    console.warn("markGemRedeemed history publish warning:", e && e.message);
+  }
+
   return { ok: true, ownerUid, gemId };
 });
 
