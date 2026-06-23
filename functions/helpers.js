@@ -243,11 +243,11 @@ function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function setCorsHeaders(res) {
-  res.set("Access-Control-Allow-Origin", "*");
-  res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type");
-}
+// Audit feedback 2026-06-23+: setCorsHeaders (wildcard *) REMOVIDO.
+// Era código muerto — ningún caller en functions/ lo importaba (verificado
+// con grep). Reducimos superficie ante un error futuro de copy-paste que
+// pueda reintroducirlo. Si en el futuro necesitás CORS abierto (servicios
+// públicos sin auth de origin), declararlo explícitamente con justificación.
 
 // Allowlist de origins permitidos para endpoints HTTP restringidos.
 // Se refleja el origin que matchee (en vez de hardcodear uno) para soportar
@@ -284,6 +284,5 @@ module.exports = {
   toMillis,
   buildStatus,
   esc,
-  setCorsHeaders,
   setRestrictedCorsHeaders,
 };
