@@ -69,9 +69,22 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
     if (!u) { setLoading(false); return; }
     setLoading(true);
     try {
+      try { await u.getIdToken(); } catch {}
       const { gems: list } = await callGetUserGems();
       setGems(list || []);
     } catch (e) {
+      const code = String(e?.code || e?.message || '').toLowerCase();
+      if (code.includes('unauth') && auth.currentUser) {
+        try {
+          await auth.currentUser.getIdToken(true);
+          const { gems: list } = await callGetUserGems();
+          setGems(list || []);
+          return;
+        } catch (e2) {
+          showAlert('Error', e2?.message || t('myGems.errorLoad'));
+          return;
+        }
+      }
       showAlert('Error', e?.message || t('myGems.errorLoad'));
     } finally {
       setLoading(false);

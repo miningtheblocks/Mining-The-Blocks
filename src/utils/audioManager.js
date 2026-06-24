@@ -107,7 +107,7 @@ class AudioManager {
       await setAudioModeAsync({
         allowsRecording: false,
         playsInSilentMode: true,
-        shouldPlayInBackground: true,
+        shouldPlayInBackground: false,
         interruptionMode: 'duckOthers',
         interruptionModeAndroid: 'duckOthers',
       });

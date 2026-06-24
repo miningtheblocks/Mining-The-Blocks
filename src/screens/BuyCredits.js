@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking, TextInput } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppAlert } from '../components/AppAlert';
@@ -17,6 +17,10 @@ const PAYMENT_CACHE_KEY = '@mtb/activePayment';
 // SEC-B2: PAYMENT_WALLET viene del backend (createCryptoPayment response).
 // NO hardcodear en cliente — un APK modificado podría reemplazar la constante
 // y redirigir todos los pagos al wallet del atacante.
+
+// MEDIO-C21: validar wallet (anti unicode/look-alike). Se usa para el wallet
+// recibido del backend Y para la wallet que el user tipea en el form.
+const ETH_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
 
 function formatTimer(ms) {
   if (ms <= 0) return '00:00';
@@ -38,6 +42,10 @@ export default function BuyCredits({ onClose }) {
   // Default OFF: respetamos consent del user. Si lo tilda + paga, el processor
   // guarda la `from` del Transfer event como walletAddress.
   const [saveWalletOpt, setSaveWalletOpt] = useState(false);
+  // 2026-06-24: wallet del user obligatoria en el formulario. Pre-llenada con
+  // la guardada si existe. El backend cobra $15.00 exacto cuando se le pasa
+  // senderWalletAddress, así que ya no hay $15.XX random.
+  const [walletInput, setWalletInput] = useState('');
   const timerRef = useRef(null);
   const unsubRef = useRef(null);
   const userUnsubRef = useRef(null);
@@ -66,22 +74,33 @@ export default function BuyCredits({ onClose }) {
     const u = auth.currentUser;
     if (!u) return;
     userUnsubRef.current = onSnapshot(doc(db, 'users', u.uid), (snap) => {
-      setUserData(snap.exists() ? snap.data() : null);
+      const data = snap.exists() ? snap.data() : null;
+      setUserData(data);
+      // Pre-fill del input con la wallet guardada del user (si la tiene) sólo
+      // si el input aún está vacío para no pisar lo que el user esté tipeando.
+      if (data?.walletAddress) {
+        setWalletInput((prev) => prev || data.walletAddress);
+      }
     }, () => {});
     return () => userUnsubRef.current && userUnsubRef.current();
   }, []);
 
+  const trimmedWallet = (walletInput || '').trim();
+  const walletValid = ETH_ADDR_RE.test(trimmedWallet);
+
   const generatePayment = async () => {
+    if (!walletValid) {
+      showAlert('Error', t('buyCredits.walletInvalid'));
+      return;
+    }
     setLoading(true);
     try {
-      // Audit feedback 2026-06-23+:
-      //   - senderWallet: si el user ya tiene wallet linked → $15.00 redondo.
-      //     Si no, $15.XX cents random (legacy).
-      //   - saveWallet: opt-in del user (checkbox arriba del botón). Solo se
-      //     habilita si user NO tiene wallet linked todavía.
-      const senderWallet = userData?.walletAddress || null;
-      const wantSaveWallet = !senderWallet && saveWalletOpt;
-      const result = await callCreateCryptoPayment(senderWallet, { saveWallet: wantSaveWallet });
+      // 2026-06-24: la wallet del user ahora es obligatoria. El backend cobra
+      // $15.00 exacto cuando se le pasa senderWalletAddress válida (sin
+      // centavos random del legacy $15.XX). El checkbox saveWalletOpt sólo
+      // controla si se guarda la wallet en su cuenta para próximos pagos.
+      const senderWallet = trimmedWallet;
+      const result = await callCreateCryptoPayment(senderWallet, { saveWallet: !!saveWalletOpt });
       setPayment(result);
       setStatus('waiting');
       // ALTO-49: persistir para recovery si el user cierra la app.
@@ -151,10 +170,7 @@ export default function BuyCredits({ onClose }) {
     }
   };
 
-  // MEDIO-C21: validar wallet del backend antes de mostrar/usar. Si el backend
-  // devolviera un wallet con caracteres unicode RTL/look-alike (`0х...` cirílica),
-  // el usuario podría copiar visualmente correcto pero enviar a otro destino.
-  const ETH_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+  // safeWallet — validación del wallet recibido del backend (anti unicode/look-alike).
   const safeWallet = payment && ETH_ADDR_RE.test(String(payment.wallet || '')) ? payment.wallet : null;
 
   if (status === 'completed') {
@@ -185,7 +201,6 @@ export default function BuyCredits({ onClose }) {
       {/* Header info */}
       <View style={s.infoBox}>
         <Text style={s.infoTitle}>USDC · Polygon</Text>
-        <Text style={s.infoSub}>{t('buyCredits.subtitle')}</Text>
       </View>
 
       {!payment ? (
@@ -194,31 +209,61 @@ export default function BuyCredits({ onClose }) {
           <Text style={s.price}>$15 <Text style={s.priceCurrency}>USDC</Text></Text>
           <Text style={s.priceNote}>{t('buyCredits.priceNote')}</Text>
 
-          {/* Audit feedback 2026-06-23+: checkbox opt-in para guardar la
-              wallet en la cuenta del user. Solo aparece si el user NO tiene
-              wallet linked todavía (sino el opt-in no aplica). */}
-          {!userData?.walletAddress && (
-            <TouchableOpacity
-              onPress={() => setSaveWalletOpt((v) => !v)}
-              activeOpacity={0.75}
-              style={[s.checkboxRow, saveWalletOpt && s.checkboxRowActive]}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: saveWalletOpt }}
-            >
-              <View style={[s.checkboxBox, saveWalletOpt && s.checkboxBoxActive]}>
-                {saveWalletOpt && <Text style={s.checkboxCheck}>✓</Text>}
-              </View>
-              <Text style={s.checkboxLabel}>
-                {t('buyCredits.saveWalletCheckbox', { defaultValue: 'Guardar esta billetera en mi cuenta (próximos pagos serán $15.00 exacto)' })}
-              </Text>
-            </TouchableOpacity>
-          )}
+          {/* Wallet del user — OBLIGATORIA. El backend cobra $15.00 exacto
+              cuando la recibe (sin $15.XX random). */}
+          <View style={s.walletInputWrap}>
+            <Text style={s.walletInputLabel}>{t('buyCredits.walletInputLabel')}</Text>
+            <TextInput
+              value={walletInput}
+              onChangeText={setWalletInput}
+              placeholder={t('buyCredits.walletInputPlaceholder')}
+              placeholderTextColor="#555"
+              autoCapitalize="none"
+              autoCorrect={false}
+              spellCheck={false}
+              style={[
+                s.walletInputField,
+                walletInput.length > 0 && !walletValid && s.walletInputFieldInvalid,
+                walletValid && s.walletInputFieldValid,
+              ]}
+              accessibilityLabel={t('buyCredits.walletInputLabel')}
+            />
+            {walletInput.length > 0 && !walletValid && (
+              <Text style={s.walletInputError}>{t('buyCredits.walletInvalid')}</Text>
+            )}
+          </View>
 
-          <TouchableOpacity style={s.btn} onPress={generatePayment} disabled={loading} activeOpacity={0.85}>
+          {/* Checkbox: guardar billetera en la cuenta para próximos pagos.
+              Se muestra siempre. Si la billetera ingresada ya coincide con la
+              que tiene guardada, marcar no cambia nada (idempotente backend). */}
+          <TouchableOpacity
+            onPress={() => setSaveWalletOpt((v) => !v)}
+            activeOpacity={0.75}
+            style={[s.checkboxRow, saveWalletOpt && s.checkboxRowActive]}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: saveWalletOpt }}
+          >
+            <View style={[s.checkboxBox, saveWalletOpt && s.checkboxBoxActive]}>
+              {saveWalletOpt && <Text style={s.checkboxCheck}>✓</Text>}
+            </View>
+            <Text style={s.checkboxLabel}>
+              {t('buyCredits.saveWalletCheckbox')}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[s.btn, !walletValid && s.btnDisabled]}
+            onPress={generatePayment}
+            disabled={loading || !walletValid}
+            activeOpacity={0.85}
+          >
             {loading
               ? <ActivityIndicator color="#fff" />
-              : <Text style={s.btnTxt}>{t('buyCredits.generate')}</Text>}
+              : <Text style={[s.btnTxt, !walletValid && s.btnTxtDisabled]}>{t('buyCredits.generate')}</Text>}
           </TouchableOpacity>
+          {!walletValid && walletInput.length === 0 && (
+            <Text style={s.walletHint}>{t('buyCredits.walletRequired')}</Text>
+          )}
           <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL).catch(() => {})} style={s.termsBtn}>
             <Text style={s.termsTxt}>{t('buyCredits.termsNote')}</Text>
           </TouchableOpacity>
@@ -308,7 +353,16 @@ const s = StyleSheet.create({
   priceNote:    { color: '#666', fontSize: 13, textAlign: 'center' },
   btn:          { backgroundColor: '#1a3a1a', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12, alignItems: 'center', minWidth: 200 },
   btnSecondary: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#333', marginTop: 8 },
+  btnDisabled:  { backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2a2a2a' },
   btnTxt:       { color: '#5cb85c', fontWeight: '800', fontSize: 15 },
+  btnTxtDisabled: { color: '#555' },
+  walletInputWrap:  { width: '100%', maxWidth: 360, marginTop: 4 },
+  walletInputLabel: { color: '#888', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 },
+  walletInputField: { backgroundColor: '#12121a', borderWidth: 1, borderColor: '#2a2a2a', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, color: '#fff', fontFamily: 'monospace', fontSize: 13 },
+  walletInputFieldInvalid: { borderColor: '#7a2222' },
+  walletInputFieldValid: { borderColor: '#2e7d32' },
+  walletInputError: { color: '#ff6666', fontSize: 11, marginTop: 4 },
+  walletHint:   { color: '#777', fontSize: 11, marginTop: 4, textAlign: 'center', maxWidth: 280 },
   paymentBox:   { flex: 1 },
   fieldLabel:   { color: '#888', fontSize: 12, fontWeight: '700', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 },
   copyRow:      { flexDirection: 'row', alignItems: 'center', backgroundColor: '#12121a', borderRadius: 10, borderWidth: 1, borderColor: '#222', padding: 12, gap: 10 },

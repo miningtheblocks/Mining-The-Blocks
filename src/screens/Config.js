@@ -5,6 +5,7 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { useI18n, languages } from '../utils/i18n';
 // BAJO-CFG-07: import `navigate` removido — no se usa en este archivo.
 import audioManager from '../utils/audioManager';
+import perfTier from '../utils/perfTier';
 export default function Config({ asModal = false, onClose }) {
   const { t, language, setLanguage } = useI18n();
 
@@ -19,6 +20,8 @@ export default function Config({ asModal = false, onClose }) {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [musicVolumeFactor, setMusicVolumeFactor] = useState(1.0);
   const [sfxVolumeFactor, setSfxVolumeFactor] = useState(1.0);
+  const [lowPerfMode, setLowPerfMode] = useState(false);
+  const [perfTierDetected, setPerfTierDetected] = useState('mid');
   const musicBarRef = useRef(null);
   const sfxBarRef = useRef(null);
   const settingsRef = useRef({});
@@ -69,6 +72,23 @@ export default function Config({ asModal = false, onClose }) {
   };
 
   useEffect(() => { load(); }, []);
+
+  // Cargar tier de performance: el cubo ya corrió perfTier.init() y detectFromGL
+  // al primer onContextCreate, así que acá sólo leemos el estado en memoria.
+  useEffect(() => {
+    (async () => {
+      try {
+        await perfTier.init();
+        setLowPerfMode(perfTier.getOverride() === 'low');
+        setPerfTierDetected(perfTier.getDetectedTier());
+      } catch {}
+    })();
+  }, []);
+
+  const toggleLowPerf = async (value) => {
+    setLowPerfMode(value);
+    try { await perfTier.setOverride(value ? 'low' : 'auto'); } catch {}
+  };
 
   // BAJO-CFG-03: limpiar sliderSaveTimer en unmount para no escribir a Firestore
   // después de que el modal de Config se cerró (puede dispararse con uid del
@@ -267,6 +287,33 @@ export default function Config({ asModal = false, onClose }) {
           </View>
         </View>
 
+        {/* Performance */}
+        <Text style={styles.sectionLabel}>⚙️ {language === 'es' ? 'Rendimiento' : 'Performance'}</Text>
+        <View style={styles.cardRow}>
+          <View style={{ flex: 1, paddingRight: 10 }}>
+            <Text style={styles.cardTitleRow}>
+              {language === 'es' ? 'Modo bajo rendimiento' : 'Low performance mode'}
+            </Text>
+            <Text style={styles.perfHint}>
+              {language === 'es'
+                ? `Detectado: ${perfTierDetected.toUpperCase()}. Activá si la app se traba o consume batería.`
+                : `Detected: ${perfTierDetected.toUpperCase()}. Enable if the app lags or drains battery.`}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.toggleBtn, lowPerfMode && styles.toggleBtnOn]}
+            onPress={() => toggleLowPerf(!lowPerfMode)}
+            activeOpacity={0.85}
+            accessibilityLabel={language === 'es' ? 'Modo bajo rendimiento' : 'Low performance mode'}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: lowPerfMode }}
+          >
+            <Text style={[styles.toggleTxt, lowPerfMode && styles.toggleTxtOn]}>
+              {lowPerfMode ? t('common.on') : t('common.off')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
         <View style={{ height: 16 }} />
       </ScrollView>
     </View>
@@ -317,6 +364,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   cardTitleRow: { fontSize: 15, fontWeight: '700', color: '#ccc', flex: 1 },
+  perfHint: { fontSize: 11, color: '#777', marginTop: 4, lineHeight: 14 },
 
   toggleBtn: {
     // Round 2 #10 MED-10-44: touch target ≥ 44pt (WCAG 2.5.5 / Android UX).
