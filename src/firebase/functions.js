@@ -153,14 +153,20 @@ export async function callRevokeMySessions() {
 }
 
 // Creates a pending crypto payment (USDC/Polygon).
-// Audit feedback 2026-06-23+: si el caller pasa `senderWalletAddress`
-// (la wallet desde la que el user va a pagar), el backend devuelve $15.00
-// redondo y matchea por `from` address en el processor. Sin esa wallet
-// declarada, fallback a cents random ($15.XX) para identificación por amount.
+// Audit feedback 2026-06-23+:
+//   - `senderWalletAddress` (opcional): si el caller la declara, el backend
+//     devuelve $15.00 redondo y matchea por `from` address en el processor.
+//     Sin esto, fallback a cents random ($15.XX) por amount.
+//   - `saveWallet` (opcional, default false): opt-in para que el processor
+//     guarde la `from` wallet como walletAddress del user al confirmar el
+//     pago. Si false (o no se pasa), la wallet NO se guarda — útil para
+//     pagos desde wallets temporales / compartidas.
 // Returns { paymentId, amount, wallet, expiresAt }
-export async function callCreateCryptoPayment(senderWalletAddress) {
+export async function callCreateCryptoPayment(senderWalletAddress, opts) {
   const fn = httpsCallable(functions, 'createCryptoPayment');
-  const payload = senderWalletAddress ? { senderWalletAddress } : {};
+  const payload = {};
+  if (senderWalletAddress) payload.senderWalletAddress = senderWalletAddress;
+  if (opts && opts.saveWallet) payload.saveWallet = true;
   const res = await fn(payload);
   return res.data;
 }

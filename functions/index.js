@@ -1775,6 +1775,14 @@ exports.createCryptoPayment = onCall(async (request) => {
     senderWalletAddress = senderWalletInput.toLowerCase();
   }
 
+  // Audit feedback 2026-06-23+: el user puede tildar "Guardar billetera en
+  // mi cuenta" en el form de payment. Si lo tildó (saveWallet=true), el
+  // processor va a guardar la `from` wallet del Transfer event como
+  // walletAddress del user al confirmar el pago. Opt-in explícito — NO
+  // hacemos auto-save por default (respeta privacy del user que paga desde
+  // wallets temporales / shared).
+  const saveWalletInput = !!(request.data && request.data.saveWallet);
+
   const nowMs = Date.now();
 
   // Si ya tiene un pago pendiente vigente, devolverlo
@@ -1821,6 +1829,7 @@ exports.createCryptoPayment = onCall(async (request) => {
           createdAt: Date.now(),
           expiresAt,
           senderWalletAddress,
+          saveWallet: saveWalletInput,
         });
       });
       return { paymentId: docId, amount: amountDisplay, wallet: PAYMENT_WALLET, expiresAt };
@@ -1865,6 +1874,7 @@ exports.createCryptoPayment = onCall(async (request) => {
           expiresAt,
           // Round 2 audit #2 HIGH-1: null porque el cliente no la declaró.
           senderWalletAddress: null,
+          saveWallet: saveWalletInput,
         });
       });
       return { paymentId: docId, amount: amountDisplay, wallet: PAYMENT_WALLET, expiresAt };
@@ -2020,20 +2030,20 @@ async function runCryptoPaymentProcessing() {
             return;
           }
           const userRef = db.collection("users").doc(uid);
-          // Audit feedback 2026-06-23+: auto-save de la `from` wallet en el
-          // primer pago confirmado. Si user todavía NO tiene walletAddress
-          // (registro nuevo o no la vinculó manualmente), guardarla automá-
-          // ticamente desde el Transfer event on-chain. Ventajas:
-          //   1. Próximos pagos cobran $15.00 redondo (no $15.XX random).
-          //   2. Premios futuros se transfieren a esta wallet sin re-prompt.
-          //   3. Prueba de ownership: la wallet firmó el Transfer on-chain.
-          // El cooldown de setUserWallet (24h) NO aplica a la PRIMERA
-          // asignación — solo a cambios posteriores. Si user después quiere
-          // cambiar, sigue requiriendo el cooldown via setUserWallet.
+          // Audit feedback 2026-06-23+: link de wallet OPT-IN. Solo guardar
+          // automáticamente la `from` wallet si:
+          //   1. El user tildó "Guardar billetera" en el form de pago
+          //      (paymentDoc.saveWallet === true)
+          //   2. NO tiene walletAddress linked todavía (no sobrescribimos)
+          //   3. La `from` del Transfer es una address válida
+          // El cooldown de 24h de setUserWallet NO aplica a la PRIMERA
+          // asignación. Si después el user quiere cambiar la wallet, sigue
+          // requiriendo cooldown via setUserWallet manualmente.
           const userSnap = await tx.get(userRef);
           const existingWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
           const userUpdate = { serverCredits: FieldValue.increment(1) };
-          if (!existingWallet && /^0x[a-fA-F0-9]{40}$/.test(eventFrom)) {
+          const saveWalletFlag = !!(paymentDoc.data() && paymentDoc.data().saveWallet);
+          if (saveWalletFlag && !existingWallet && /^0x[a-fA-F0-9]{40}$/.test(eventFrom)) {
             userUpdate.walletAddress = eventFrom;
             userUpdate.walletChangedAt = Date.now();
             userUpdate.walletAutoLinked = true;

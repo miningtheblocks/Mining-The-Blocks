@@ -34,6 +34,10 @@ export default function BuyCredits({ onClose }) {
   const [status, setStatus] = useState(null); // 'waiting' | 'completed' | 'expired'
   const [timeLeft, setTimeLeft] = useState(0);
   const [userData, setUserData] = useState(null);
+  // Audit feedback 2026-06-23+: opt-in para auto-link de wallet en el pago.
+  // Default OFF: respetamos consent del user. Si lo tilda + paga, el processor
+  // guarda la `from` del Transfer event como walletAddress.
+  const [saveWalletOpt, setSaveWalletOpt] = useState(false);
   const timerRef = useRef(null);
   const unsubRef = useRef(null);
   const userUnsubRef = useRef(null);
@@ -70,12 +74,14 @@ export default function BuyCredits({ onClose }) {
   const generatePayment = async () => {
     setLoading(true);
     try {
-      // Audit feedback 2026-06-23+: pasamos walletAddress del user (si la
-      // tiene linked) → backend cobra $15.00 redondo en vez de $15.XX random.
-      // Si user no tiene wallet linked, omitimos → backend hace fallback a
-      // cents random para identificación por monto (comportamiento legacy).
+      // Audit feedback 2026-06-23+:
+      //   - senderWallet: si el user ya tiene wallet linked → $15.00 redondo.
+      //     Si no, $15.XX cents random (legacy).
+      //   - saveWallet: opt-in del user (checkbox arriba del botón). Solo se
+      //     habilita si user NO tiene wallet linked todavía.
       const senderWallet = userData?.walletAddress || null;
-      const result = await callCreateCryptoPayment(senderWallet);
+      const wantSaveWallet = !senderWallet && saveWalletOpt;
+      const result = await callCreateCryptoPayment(senderWallet, { saveWallet: wantSaveWallet });
       setPayment(result);
       setStatus('waiting');
       // ALTO-49: persistir para recovery si el user cierra la app.
@@ -187,6 +193,27 @@ export default function BuyCredits({ onClose }) {
         <View style={s.centerBox}>
           <Text style={s.price}>$15 <Text style={s.priceCurrency}>USDC</Text></Text>
           <Text style={s.priceNote}>{t('buyCredits.priceNote')}</Text>
+
+          {/* Audit feedback 2026-06-23+: checkbox opt-in para guardar la
+              wallet en la cuenta del user. Solo aparece si el user NO tiene
+              wallet linked todavía (sino el opt-in no aplica). */}
+          {!userData?.walletAddress && (
+            <TouchableOpacity
+              onPress={() => setSaveWalletOpt((v) => !v)}
+              activeOpacity={0.75}
+              style={[s.checkboxRow, saveWalletOpt && s.checkboxRowActive]}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: saveWalletOpt }}
+            >
+              <View style={[s.checkboxBox, saveWalletOpt && s.checkboxBoxActive]}>
+                {saveWalletOpt && <Text style={s.checkboxCheck}>✓</Text>}
+              </View>
+              <Text style={s.checkboxLabel}>
+                {t('buyCredits.saveWalletCheckbox', { defaultValue: 'Guardar esta billetera en mi cuenta (próximos pagos serán $15.00 exacto)' })}
+              </Text>
+            </TouchableOpacity>
+          )}
+
           <TouchableOpacity style={s.btn} onPress={generatePayment} disabled={loading} activeOpacity={0.85}>
             {loading
               ? <ActivityIndicator color="#fff" />
@@ -246,18 +273,6 @@ export default function BuyCredits({ onClose }) {
             <Text style={s.networkTxt}>🔷 {t('buyCredits.network')}</Text>
           </View>
 
-          {/* Audit feedback 2026-06-23+: aviso de auto-link de wallet en el
-              primer pago. Solo se muestra si el user todavía NO tiene
-              walletAddress linked — para que sepa que la wallet que use va
-              a quedar asociada automáticamente. */}
-          {!userData?.walletAddress && (
-            <View style={s.walletHintBox}>
-              <Text style={s.walletHintTxt}>
-                💡 {t('buyCredits.autoLinkHint', { defaultValue: 'La billetera desde la que pagues se asociará automáticamente a tu cuenta. Próximos pagos serán $15.00 exacto.' })}
-              </Text>
-            </View>
-          )}
-
           {/* Timer */}
           <View style={s.timerRow}>
             <Text style={s.timerLabel}>{t('buyCredits.expiresIn')}</Text>
@@ -304,9 +319,54 @@ const s = StyleSheet.create({
   warning:      { color: '#ff9944', fontSize: 11, marginTop: 6 },
   networkBadge: { backgroundColor: '#0d1a2e', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, alignSelf: 'flex-start', marginTop: 16 },
   networkTxt:   { color: '#4a9eff', fontSize: 12, fontWeight: '700' },
-  // Audit feedback 2026-06-23+: aviso auto-link de wallet (estética MTB).
-  walletHintBox: { backgroundColor: '#1a2614', borderColor: '#2e7d32', borderWidth: 1, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginTop: 14 },
-  walletHintTxt: { color: '#a3d977', fontSize: 12, lineHeight: 18 },
+  // Audit feedback 2026-06-23+: checkbox opt-in "guardar billetera". Estética
+  // MTB (dark + verde primary cuando activo).
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginTop: 12,
+    marginBottom: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    backgroundColor: '#0e0e0e',
+    width: '100%',
+    maxWidth: 360,
+  },
+  checkboxRowActive: {
+    borderColor: '#2e7d32',
+    backgroundColor: '#1a3a1a22',
+  },
+  checkboxBox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#555',
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  checkboxBoxActive: {
+    borderColor: '#5cb85c',
+    backgroundColor: '#1a3a1a',
+  },
+  checkboxCheck: {
+    color: '#5cb85c',
+    fontSize: 14,
+    fontWeight: '900',
+    lineHeight: 16,
+  },
+  checkboxLabel: {
+    flex: 1,
+    color: '#bbb',
+    fontSize: 12,
+    lineHeight: 17,
+  },
   timerRow:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 20, backgroundColor: '#12121a', borderRadius: 10, padding: 12 },
   timerLabel:   { color: '#888', fontSize: 13 },
   timerVal:     { color: '#fff', fontSize: 20, fontWeight: '900', fontFamily: 'monospace' },
