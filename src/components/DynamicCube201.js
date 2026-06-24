@@ -1610,6 +1610,8 @@ const handleZoomButton = useCallback((direction) => {
   
   // Estados para sistema de minado
   const [miningModal, setMiningModal] = useState(null); // { cubeNumber, position, screenPos }
+  // Sincronizar miningModalRef con el state para que el panResponder (cuyo
+  // useMemo deps es []) pueda leerlo y bloquear pan mientras está abierto.
   // Round 2 Agente #5: state `miningAnimations` removido. setMiningAnimations
   // nunca se llamaba → siempre new Map() vacío. Referencias residuales en el
   // cleanup del useEffect (línea ~2219) y en el render loop (línea ~3193)
@@ -1617,6 +1619,7 @@ const handleZoomButton = useCallback((direction) => {
   const [minedCubes, setMinedCubes] = useState(new Set()); // Cubitos ya minados
   const [rewardModal, setRewardModal] = useState(null); // { title, message, reward }
   const [episodeCompleteModal, setEpisodeCompleteModal] = useState(null); // { episodeNumber, totalMined }
+  useEffect(() => { miningModalRef.current = miningModal; }, [miningModal]);
   
   // Round 2 Agente #5: removido `const [miningAnimations, setMiningAnimations]`
   // (estado dead — setter nunca se llamaba). Ver comment de arriba.
@@ -1722,6 +1725,11 @@ const handleZoomButton = useCallback((direction) => {
   const miningWatchdogRef = useRef(null);
   // Cancelación de animaciones de fragmentos al desmontar
   const fragmentsCancelRef = useRef(false);
+  // miningModalRef + miningInProgressRef: para bloquear el PanResponder mientras
+  // el modal está abierto o la explosión está animando. Sin esto el touch en
+  // "Sí (minar)" se pasa al fondo y mueve el pan del cubo.
+  const miningModalRef = useRef(null);
+  const miningInProgressRef = useRef(false);
   // Nombre de usuario cacheado para historial de cadena
   const userDisplayNameRef = useRef('Jugador');
 
@@ -1860,11 +1868,13 @@ const handleZoomButton = useCallback((direction) => {
   // 2026-06-24: ahora propaga el patch a TODAS las caras donde aparece el cubo
   // (1 si interior, 2 si está en arista, 3 si esquina). Sin esto, minar un
   // cubo de arista deja la cara vecina sin marca de minado.
+  // Retorna true si se aplicó (o ya estaba aplicado), false si la escena
+  // todavía no estaba lista — el caller puede reintentar.
   const applyMinedCell = useCallback((faceIndex, gridX, gridY, rewardPicks = 0) => {
     try {
-      if (typeof faceIndex !== 'number') return;
+      if (typeof faceIndex !== 'number') return false;
       const key = `${currentLayer}:${faceIndex}:${gridX}:${gridY}`;
-      if (minedAppliedRef.current.has(key)) return;
+      if (minedAppliedRef.current.has(key)) return true;
       const K = currentLayer;
       // Calcular coord 3D del cubo a partir de (faceIndex, gridX, gridY) — el
       // inverso de coordToGrid. Necesario para enumerar las otras caras donde
@@ -1891,10 +1901,12 @@ const handleZoomButton = useCallback((direction) => {
           anyPatched = true;
         }
       }
-      if (!anyPatched) return; // escena no lista aún
+      if (!anyPatched) return false; // escena no lista aún — el caller debe reintentar
       minedAppliedRef.current.add(key);
+      return true;
     } catch (e) {
       console.warn('applyMinedCell error', e);
+      return false;
     }
   }, [currentLayer]);
 
@@ -1960,6 +1972,50 @@ const handleZoomButton = useCallback((direction) => {
       try { unsub && unsub(); } catch {}
     };
   }, [db, serverId, currentLayer, applyMinedCell]);
+
+  // Retry visual de minados: cuando minedCubes cambia (o cuando la escena
+  // termina de armarse y dispara este efecto), reintentar aplicar todos los
+  // cubos en el set que no estén en minedAppliedRef. Esto cubre el race
+  // donde el snapshot de Firestore llega antes de que faceGroupsRef esté
+  // listo — sin esto el backend tenía "minado" pero el cubo visualmente
+  // seguía blanco y el usuario veía "X ya minado" sin parche.
+  useEffect(() => {
+    if (!faceGroupsRef.current || faceGroupsRef.current.length === 0) return;
+    if (!minedCubes || minedCubes.size === 0) return;
+    let retried = 0;
+    for (const apiId of minedCubes) {
+      try {
+        const map = cubeNumberToFaceGrid(apiId);
+        if (!map) continue;
+        const key = `${currentLayer}:${map.faceIndex}:${map.gridX}:${map.gridY}`;
+        if (minedAppliedRef.current.has(key)) continue;
+        const rewardPicks = minedRewardsStore.has(currentLayer, map.faceIndex, map.gridX, map.gridY)
+          ? minedRewardsStore.get(currentLayer, map.faceIndex, map.gridX, map.gridY)
+          : 0;
+        const ok = applyMinedCell(map.faceIndex, map.gridX, map.gridY, rewardPicks);
+        if (ok) retried++;
+      } catch {}
+    }
+    // Retry one more time tras buildLayer si todavía falta (faceGroupsRef
+    // puede haberse populado a medio efecto). Schedule un tick más.
+    if (retried < minedCubes.size - minedAppliedRef.current.size) {
+      const timer = setTimeout(() => {
+        for (const apiId of minedCubes) {
+          try {
+            const map = cubeNumberToFaceGrid(apiId);
+            if (!map) continue;
+            const key = `${currentLayer}:${map.faceIndex}:${map.gridX}:${map.gridY}`;
+            if (minedAppliedRef.current.has(key)) continue;
+            const rewardPicks = minedRewardsStore.has(currentLayer, map.faceIndex, map.gridX, map.gridY)
+              ? minedRewardsStore.get(currentLayer, map.faceIndex, map.gridX, map.gridY)
+              : 0;
+            applyMinedCell(map.faceIndex, map.gridX, map.gridY, rewardPicks);
+          } catch {}
+        }
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [minedCubes, currentLayer, applyMinedCell]);
 
   // Suscripción a estadísticas de la capa actual (una sola suscripción para layerMinedCount Y globalMinedCurrentLayer)
   // + suscripción a todas las capas para totalMinedAllLayers
@@ -2638,10 +2694,12 @@ const handleZoomButton = useCallback((direction) => {
       }, 250); // Esperar 250ms para que termine la animación
       
       // NO EJECUTAR MÁS CÓDIGO DESPUÉS DE ESTE PUNTO
+      miningInProgressRef.current = false; // liberar pan al terminar explosión
       return;
-      
+
     } catch (error) {
       console.error('Error durante el minado:', error);
+      miningInProgressRef.current = false;
     }
   }, [sceneRef, rendererRef]);
   
@@ -2649,13 +2707,25 @@ const handleZoomButton = useCallback((direction) => {
   const cancelMining = useCallback(() => {
     setMiningModal(null);
     setSelectedCube(null);
+    miningInProgressRef.current = false;
   }, []);
   
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (evt) => evt.nativeEvent.touches.length <= 2,
+        onStartShouldSetPanResponder: () => {
+          // Bloquear pan si hay modal de minado abierto o animación de
+          // explosión/grietas en curso — la cámara debe quedar fija hasta
+          // que termine todo el ciclo de minado.
+          if (miningModalRef.current || miningInProgressRef.current) return false;
+          if (cracksPromiseRef.current || cracksRef.current) return false;
+          return true;
+        },
+        onMoveShouldSetPanResponder: (evt) => {
+          if (miningModalRef.current || miningInProgressRef.current) return false;
+          if (cracksPromiseRef.current || cracksRef.current) return false;
+          return evt.nativeEvent.touches.length <= 2;
+        },
         onPanResponderGrant: (evt) => {
           isGesturingRef.current = true;
           markActive(); // PERF-001: forzar render a 60 FPS durante gesture
@@ -4720,6 +4790,7 @@ const handleZoomButton = useCallback((direction) => {
                   miningProgressTimerRef.current = null;
                 }
                 setMiningModal((prev) => prev ? { ...prev, status: 'mining' } : prev);
+                miningInProgressRef.current = true; // bloquear pan hasta que termine explosión
                 // Iniciar watchdog para evitar que el modal quede congelado
                 if (miningWatchdogRef.current) {
                   clearTimeout(miningWatchdogRef.current);
@@ -5019,6 +5090,9 @@ const handleZoomButton = useCallback((direction) => {
                   // CRIT-09: limpiar cracks si quedaron pegados (showCracks
                   // ya corrió pero startMining nunca se ejecutó por el fail).
                   try { cleanupCracksNow(sceneRef.current); } catch {}
+                  // Liberar el flag de pan-blocked si el path de minado falló
+                  // antes de llegar a startMining (que es quien lo libera).
+                  miningInProgressRef.current = false;
                 } finally {
                   // LEAK-004: limpiar SIEMPRE progressTimer y watchdog. Antes el
                   // watchdog quedaba programado en el path exitoso → setTimeout
