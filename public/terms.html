@@ -608,6 +608,7 @@
   var currentLang = 'en';
   function setLang(lang) {
     currentLang = lang;
+    try { localStorage.setItem('mtb_lang', lang); } catch (e) { /* private mode */ }
     document.querySelectorAll('[data-lang]').forEach(function(el) {
       el.classList.toggle('visible', el.getAttribute('data-lang') === lang || el.getAttribute('data-lang') === lang + ' visible');
     });
@@ -616,7 +617,13 @@
     });
     document.documentElement.lang = lang;
   }
-  document.addEventListener('DOMContentLoaded', function() { setLang('en'); });
+  document.addEventListener('DOMContentLoaded', function() {
+    var savedLang = null;
+    try { savedLang = localStorage.getItem('mtb_lang'); } catch (e) { /* private mode */ }
+    var browserLang = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
+    var initialLang = savedLang || (browserLang.startsWith('es') ? 'es' : 'en');
+    setLang(initialLang);
+  });
 </script>
 </body>
 </html>

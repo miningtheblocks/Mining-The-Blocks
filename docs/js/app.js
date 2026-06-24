@@ -80,6 +80,7 @@ var ERRORS = {
 
 function setLang(lang) {
   currentLang = lang;
+  try { localStorage.setItem('mtb_lang', lang); } catch (e) { /* private mode */ }
   document.querySelectorAll('.lang-btn').forEach(function(b) {
     b.classList.toggle('active', b.textContent.trim().toLowerCase() === lang);
   });
@@ -392,7 +393,11 @@ function wireEventDelegation() {
 
 document.addEventListener('DOMContentLoaded', function() {
   wireEventDelegation();
-  setLang('en');
+  var savedLang = null;
+  try { savedLang = localStorage.getItem('mtb_lang'); } catch (e) { /* private mode */ }
+  var browserLang = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
+  var initialLang = savedLang || (browserLang.startsWith('es') ? 'es' : 'en');
+  setLang(initialLang);
   detectReferral();
   if (localStorage.getItem('mtb_age_ok') === '1') {
     document.getElementById('ageGate').style.display = 'none';
