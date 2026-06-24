@@ -2358,22 +2358,92 @@ exports.cryptoPaymentProcessorScheduled = onSchedule("every 5 minutes", async ()
 //        --role=roles/datastore.importExportAdmin`)
 //   3. Bucket lifecycle: borrar exports >30 días para no acumular costos.
 // Si el bucket no existe o el rol no está, la function loguea el error y no falla la app.
-exports.firestoreBackupScheduled = onSchedule("every day 03:00", async () => {
+// HIGH-01-11 + HIGH-11-06 (audit Round 2, fix 2026-06-23+): validar que la
+// Long-Running Operation efectivamente termine + email alert si falla.
+// Pre-fix: solo se logueaba "started", la function retornaba success aunque
+// el export fallara silencioso o quedara pending forever. Backups
+// inservibles → DR irrecuperable. Ahora:
+//   1. exportDocuments retorna { name } de la LRO
+//   2. Polling cada 30s hasta done:true (timeout 5min — exports típicos
+//      tardan <2min en Firestore-medium scale)
+//   3. Si done && error → email al admin con detalles
+//   4. Si done && success → log con outputUriPrefix + size hint
+//   5. Si timeout → email al admin (operación quedó pending, no fallida)
+exports.firestoreBackupScheduled = onSchedule({
+  schedule: "every day 03:00",
+  secrets: [gmailAppPassword],
+}, async () => {
+  const projectId = process.env.GCLOUD_PROJECT || "miningtheblocks-669f6";
+  const bucket = `gs://${projectId}-backups`;
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const outputUriPrefix = `${bucket}/${dateStr}`;
+
+  const sendAlert = async (subject, body) => {
+    try {
+      const appPassword = gmailAppPassword.value();
+      if (!appPassword) return;
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: { user: NOTIFY_EMAIL, pass: appPassword },
+      });
+      await transporter.sendMail({
+        from: `"MTB Backup Monitor" <${NOTIFY_EMAIL}>`,
+        to: NOTIFY_EMAIL,
+        subject,
+        text: body,
+      });
+    } catch (mailErr) {
+      console.error("firestoreBackupScheduled alert email failed:", mailErr.message);
+    }
+  };
+
+  let operationName = null;
   try {
     const { v1 } = require("@google-cloud/firestore");
     const client = new v1.FirestoreAdminClient();
-    const projectId = process.env.GCLOUD_PROJECT || "miningtheblocks-669f6";
-    const bucket = `gs://${projectId}-backups`;
-    const dateStr = new Date().toISOString().slice(0, 10);
+
     const [operation] = await client.exportDocuments({
       name: client.databasePath(projectId, "(default)"),
-      outputUriPrefix: `${bucket}/${dateStr}`,
-      collectionIds: [], // todas las colecciones
+      outputUriPrefix,
+      collectionIds: [], // todas las colecciones (incluye subcolecciones automáticamente)
     });
-    console.log(`firestoreBackupScheduled: started export to ${bucket}/${dateStr}, operation=${operation.name}`);
+    operationName = operation.name;
+    console.log(`firestoreBackupScheduled: started export to ${outputUriPrefix}, operation=${operationName}`);
+
+    // Polling — operation es un LRO que termina cuando metadata.endTime !== null.
+    // El SDK ofrece .promise() que resuelve cuando done=true. Wrappemos con
+    // timeout defensivo para no quedar atascados.
+    const TIMEOUT_MS = 5 * 60 * 1000; // 5 min
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("backup_timeout_5min")), TIMEOUT_MS);
+    });
+    const [response] = await Promise.race([operation.promise(), timeoutPromise]);
+
+    // response es el ExportDocumentsResponse — outputUriPrefix == el que pedimos.
+    console.log(`firestoreBackupScheduled: ✅ completed export to ${response.outputUriPrefix || outputUriPrefix}`);
   } catch (e) {
-    console.error(`firestoreBackupScheduled error: ${e.message}`);
-    // No re-throw: backup fallido no debería tirar reportes infinitos.
+    const errMsg = e && e.message ? e.message : String(e);
+    console.error(`firestoreBackupScheduled error: ${errMsg}`);
+    // Alert al admin para que sepa que el backup falló (sin email se enteraría
+    // solo cuando intente restore en un DR real — demasiado tarde).
+    const subject = `🚨 [MTB] Firestore backup FALLÓ — ${dateStr}`;
+    const body = [
+      `El backup programado de Firestore para ${dateStr} falló.`,
+      ``,
+      `Project: ${projectId}`,
+      `Output URI: ${outputUriPrefix}`,
+      `Operation: ${operationName || "(no se llegó a crear)"}`,
+      `Error: ${errMsg}`,
+      ``,
+      `Acciones:`,
+      `1. Verificar manualmente con: gcloud firestore operations list --project=${projectId}`,
+      `2. Si la operation existe pero falló, ver detalles: gcloud firestore operations describe <operation_name>`,
+      `3. Si no se creó operation, revisar IAM: serviceAccount necesita roles/datastore.importExportAdmin`,
+      `4. Lanzar backup manual: gcloud firestore export ${outputUriPrefix}-manual`,
+      `5. Ver RUNBOOK.md sección "Disaster Recovery" para procedure completo de restore.`,
+    ].join("\n");
+    await sendAlert(subject, body);
+    // No re-throw: el scheduler se ejecutará mañana de nuevo.
   }
 });
 

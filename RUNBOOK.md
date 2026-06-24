@@ -368,6 +368,169 @@ Metadata JSON:
 
 ---
 
+## 🔧 Procedure detallado — Restore de Firestore desde backup
+
+(Audit Round 2 HIGH-11-08 / fix 2026-06-23+: procedure completo, no solo el comando inline del DR matrix #11.)
+
+### Pre-incident (verificación periódica del backup)
+
+#### Cada lunes (chequeo semanal manual, ~5min):
+
+```bash
+# 1. Listar exports del último mes
+gsutil ls gs://miningtheblocks-669f6-backups/ | tail -30
+
+# 2. Verificar que hay backups recientes (deberías ver YYYY-MM-DD/ por cada día)
+gsutil ls -l gs://miningtheblocks-669f6-backups/$(date +%Y-%m-%d)/ 2>&1 | head -5
+
+# 3. Verificar metadata (debe haber `EXPORTED_DOCUMENT_COUNT` > 0)
+gsutil cat gs://miningtheblocks-669f6-backups/$(date +%Y-%m-%d)/<EXPORT_PREFIX>/output-metadata 2>&1 | head -3
+```
+
+Si NO ves backup del día actual → revisar logs:
+```bash
+gcloud functions logs read firestoreBackupScheduled --limit 5
+```
+
+#### Cada 3 meses (test de restore real):
+
+⚠️ **NUNCA hacer restore en project de producción para testing.** Siempre en project separado.
+
+```bash
+# 1. Crear project de test (1 vez, persiste)
+gcloud projects create mtb-restore-test --name="MTB Restore Test"
+
+# 2. Setear Firestore en native mode en el project de test (1 vez, GUI Console)
+# https://console.cloud.google.com/firestore?project=mtb-restore-test
+
+# 3. Dar permisos al SA de mtb-restore-test sobre el bucket de backups del prod
+gsutil iam ch \
+  serviceAccount:mtb-restore-test@appspot.gserviceaccount.com:objectViewer \
+  gs://miningtheblocks-669f6-backups
+
+# 4. Import el último backup en el project de test
+gcloud firestore import \
+  gs://miningtheblocks-669f6-backups/$(date +%Y-%m-%d)/<EXPORT_PREFIX> \
+  --project=mtb-restore-test
+
+# 5. Verificar counts en Firestore Console mtb-restore-test
+#    Comparar contra prod: users, servers, history, gemClaims, etc.
+
+# 6. Si counts cuadran → backup OK. Si no → contactar dev urgente.
+```
+
+Test cada 3 meses + documentar resultado en este RUNBOOK (sección "Tareas recurrentes").
+
+---
+
+### Durante incident (restore real)
+
+⚠️ Asumiendo que ya se identificó el incident y se PAUSARON las escrituras al Firestore productivo (sino el restore se pisa con writes nuevos).
+
+#### Paso 1 — Stop writes
+
+```bash
+# Pausar TODOS los Cloud Functions schedulers que escriben a Firestore
+gcloud scheduler jobs pause cryptoPaymentProcessorScheduled --location=us-central1
+gcloud scheduler jobs pause mintProcessorScheduled --location=us-central1
+gcloud scheduler jobs pause maticBalanceCheckScheduled --location=us-central1
+gcloud scheduler jobs pause firestoreBackupScheduled --location=us-central1
+gcloud scheduler jobs pause adminActionsAnomalyWeekly --location=us-central1
+gcloud scheduler jobs pause errorLogSummaryWeekly --location=us-central1
+
+# Opcional: bloquear traffic de la app deployando Cloud Functions con auth restringido
+# (esto evita que callable functions escriban durante el restore)
+```
+
+#### Paso 2 — Snapshot del estado actual (forensics)
+
+ANTES de restaurar, **siempre** sacar un export del estado actual (corrupto). Te sirve para investigar qué pasó.
+
+```bash
+gcloud firestore export gs://miningtheblocks-669f6-backups/PRE-RESTORE-$(date +%Y%m%d-%H%M%S)
+```
+
+#### Paso 3 — Identificar el backup a restaurar
+
+```bash
+# Listar backups (los más recientes primero)
+gsutil ls gs://miningtheblocks-669f6-backups/ | sort -r | head -10
+
+# Para cada candidato, ver el conteo de docs exportados
+gsutil cat gs://miningtheblocks-669f6-backups/<DATE>/<PREFIX>/output-metadata
+```
+
+Elegí el backup más reciente PRE-incident (verificá la fecha del incident y elegí el backup anterior).
+
+#### Paso 4 — Restore
+
+```bash
+gcloud firestore import \
+  gs://miningtheblocks-669f6-backups/<DATE>/<PREFIX> \
+  --project=miningtheblocks-669f6
+
+# Este comando es de larga duración (minutos a horas según data size).
+# Imprime un operation_id que podés monitorear con:
+gcloud firestore operations list --filter='type:IMPORT'
+gcloud firestore operations describe <operation_id>
+```
+
+#### Paso 5 — Verificación post-restore
+
+```bash
+# En Firestore Console (https://console.firebase.google.com/project/miningtheblocks-669f6/firestore)
+# Verificar counts esperados:
+# - users: debería matchear approximate count del backup
+# - servers: idem
+# - serverChains: idem
+# - gemClaims: idem
+# - users/{uid}/gems: collectionGroup query
+
+# Verificación rápida con bash:
+gcloud firestore operations list --filter='type:IMPORT' --format='value(metadata.progressDocuments.completedWork,metadata.progressDocuments.estimatedWork)'
+```
+
+#### Paso 6 — Resume operaciones
+
+```bash
+# Re-habilitar schedulers
+gcloud scheduler jobs resume cryptoPaymentProcessorScheduled --location=us-central1
+gcloud scheduler jobs resume mintProcessorScheduled --location=us-central1
+gcloud scheduler jobs resume maticBalanceCheckScheduled --location=us-central1
+gcloud scheduler jobs resume firestoreBackupScheduled --location=us-central1
+gcloud scheduler jobs resume adminActionsAnomalyWeekly --location=us-central1
+gcloud scheduler jobs resume errorLogSummaryWeekly --location=us-central1
+```
+
+#### Paso 7 — Anunciar maintenance window terminado
+
+- Update status page (si configurado)
+- Email/push notification a users si el outage fue >30min
+- Post-mortem en GitHub (documentar qué pasó, por qué, qué se cambió)
+
+---
+
+### Disaster scenarios (qué hacer si el backup también falla)
+
+| Escenario | Probabilidad | Plan B |
+|---|---|---|
+| **Backup del último día corrupto** | Baja (~1 cada 1000 ejecuciones) | Restaurar el del día anterior. Notificar users que perderán 24h de actividad. |
+| **TODOS los backups corruptos** | Muy baja (bug sistemático en exporter) | Reconstruir desde fuentes alternativas: blockchain (NFTs minteados son verificable on-chain), email logs (claim_submitted notifs tienen los datos del user), Stripe/wallet history (pagos USDC). NO hay recovery total — comunicar transparentemente. |
+| **Backup bucket eliminado** | Casi imposible (requiere comprometer GCP project) | DR escenario #2 (GCP pwn) aplica. Sin backups = pérdida total. |
+| **Restore stuck en operation pending** | Baja | Cancelar la operation: `gcloud firestore operations cancel <id>`. Re-intentar. Si persiste, contactar soporte de GCP. |
+
+### Auto-monitoring (post fix 2026-06-23+)
+
+`firestoreBackupScheduled` ahora:
+1. Espera la Long-Running Operation a `done:true` (timeout 5min)
+2. Si falla → manda email a `miningtheblocks@gmail.com` con detalles
+3. Si timeout → email igual (operation quedó pending)
+4. Logs OK → solo info en Cloud Functions logs
+
+**Revisar inbox cada lunes** para confirmar que NO hubo alerts de backup.
+
+---
+
 ## Setup operacional pendiente (NO código — pasos manuales para vos)
 
 ### Service Account dedicado para scripts admin
