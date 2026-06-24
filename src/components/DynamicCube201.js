@@ -2942,10 +2942,17 @@ const handleZoomButton = useCallback((direction) => {
             const dxPix = touch.locationX - prevPos.x;
             const dyPix = touch.locationY - prevPos.y;
 
-            // CANCELAR LONG PRESS SI HAY MOVIMIENTO (umbrales mÃ¡s laxos)
+            // CANCELAR LONG PRESS SI HAY MOVIMIENTO ACUMULADO desde el inicio
+            // del touch (no delta instantáneo del frame). Bug pre-fix: con
+            // deltas chicos (5px/frame) la condición moved>12 nunca se cumplía
+            // en un solo frame, el long press se quedaba "vivo" y bloqueaba
+            // todo el pan via longPressInitiatedRef.current.
             if ((longPressTimer.current || modalTimerRef.current) && longPressStartPos.current) {
-              const moved = Math.hypot(dxPix, dyPix);
-              if (moved > 12) {
+              const startPos = longPressStartPos.current;
+              const totalDx = touch.locationX - startPos.x;
+              const totalDy = touch.locationY - startPos.y;
+              const totalMoved = Math.hypot(totalDx, totalDy);
+              if (totalMoved > 8) {
                 clearTimeout(longPressTimer.current);
                 longPressTimer.current = null;
                 setLongPressActive(false);
@@ -2953,7 +2960,7 @@ const handleZoomButton = useCallback((direction) => {
                 if (modalTimerRef.current) { clearTimeout(modalTimerRef.current); modalTimerRef.current = null; }
                 setSelectedCube(null);
               }
-              if (moved > 28) {
+              if (totalMoved > 20) {
                 clearTimeout(longPressTimer.current);
                 longPressTimer.current = null;
                 longPressStartPos.current = null;
@@ -2969,6 +2976,12 @@ const handleZoomButton = useCallback((direction) => {
             const deadzone = 2; // px — bajo umbral para detectar movimientos chicos sin perderlos
             if (Math.abs(dxPix) + Math.abs(dyPix) < deadzone) return;
             
+            // DEFENSIVO: si no hay timers activos pero el ref sigue en true
+            // (por algún path que limpió timers sin resetear el ref), liberar
+            // ahora para no bloquear el pan eternamente.
+            if (longPressInitiatedRef.current && !longPressTimer.current && !modalTimerRef.current && !longPressActive) {
+              longPressInitiatedRef.current = false;
+            }
             // BLOQUEAR MOVIMIENTO si se inició detección de long press O si está activo
             if (longPressActive || longPressInitiatedRef.current) {
               return; // No permitir pan durante todo el proceso de long press

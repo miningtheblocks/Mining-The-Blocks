@@ -2,7 +2,7 @@
   "expo": {
     "name": "mining the blocks",
     "slug": "miningtheblocks",
-    "version": "1.3.2",
+    "version": "1.3.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -23,7 +23,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.bissi.miningtheblocks",
-      "versionCode": 10
+      "versionCode": 11
     },
     "runtimeVersion": {
       "policy": "appVersion"
