@@ -21,12 +21,13 @@ const TIER_MID = 'mid';
 const TIER_LOW = 'low';
 
 // textureCacheMax + lookaheadRows: el cache se sube para que entren las
-// texturas pre-cargadas del ring alrededor del viewport (~5 hileras). Sin
-// esto el cache thrashea y el lookahead pierde efectividad.
+// texturas pre-cargadas del ring alrededor del viewport. El lookahead es
+// asíncrono incremental — procesa 1-2 texturas por frame en idle, en lugar
+// de TODAS al cambiar el viewport (eso saturaba el JS thread en Mali-G52).
 const PRESETS = {
-  high: { activeFps: 60, idleFps: 30, deepIdleFps: 15, animFactor: 1.0, textureCacheMax: 500, lookaheadRows: 5 },
-  mid:  { activeFps: 45, idleFps: 20, deepIdleFps: 12, animFactor: 0.85, textureCacheMax: 400, lookaheadRows: 5 },
-  low:  { activeFps: 30, idleFps: 15, deepIdleFps: 10, animFactor: 0.7, textureCacheMax: 350, lookaheadRows: 5 },
+  high: { activeFps: 60, idleFps: 30, deepIdleFps: 15, animFactor: 1.0, textureCacheMax: 500, lookaheadRows: 4 },
+  mid:  { activeFps: 45, idleFps: 20, deepIdleFps: 12, animFactor: 0.85, textureCacheMax: 400, lookaheadRows: 3 },
+  low:  { activeFps: 30, idleFps: 15, deepIdleFps: 10, animFactor: 0.7, textureCacheMax: 300, lookaheadRows: 3 },
 };
 
 // Estado en memoria — se hidrata al primer detect/load.

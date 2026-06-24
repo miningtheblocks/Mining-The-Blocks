@@ -1473,6 +1473,10 @@ export default function DynamicCube201() {
   const renderPausedRef = useRef(false);
   const contextLostHandledRef = useRef(false);
   const buildingLayerRef = useRef(false);
+  // Cola incremental de rawN para pre-cargar texturas en background. Se llena
+  // cuando el viewport cambia y se vacía en cada frame del render loop con
+  // un budget de tiempo, sólo cuando NO hay gesto activo.
+  const lookaheadQueueRef = useRef({ list: [], seen: new Set() });
   // PERF-001: timestamp de la última interacción (touch/pan/pinch/animaciones).
   // El render loop usa esto para bajar el FPS cuando el user está inactivo.
   const lastActivityRef = useRef(Date.now());
@@ -3756,29 +3760,37 @@ const handleZoomButton = useCallback((direction) => {
               }
               faceGroup.userData.cachedVisibleNumbers = faceNumbers;
 
-              // 2026-06-24: LOOKAHEAD — pre-cargar texturas de cubitos fuera
-              // del viewport visible para que al panear no aparezcan con lag.
-              // Solo cacheamos texturas (sin crear meshes ni overhead visual).
-              // Se ejecuta sólo cuando el viewport CAMBIÓ (este branch), no
-              // en cada frame. Las texturas quedan listas en el LRU cache;
-              // cuando el cubo entre al viewport, createNumberTexture es hit.
+              // 2026-06-24 v1.3.2: LOOKAHEAD ASÍNCRONO — en lugar de generar
+              // las ~300 texturas extras AHORA (lo que saturaba el JS thread
+              // en Mali-G52 al panear), sólo ENCOLAMOS los rawN del ring.
+              // La cola se procesa después del render, 3ms/frame, ÚNICAMENTE
+              // cuando no hay gesto activo (isGesturingRef false). Así el
+              // movimiento queda fluido y los costados se pre-cargan en
+              // background mientras el dedo está quieto.
               try {
-                const _lookRows = perfTier.getPreset().lookaheadRows || 5;
+                const _lookRows = perfTier.getPreset().lookaheadRows || 3;
                 const preMinX = Math.max(0, minX - _lookRows);
                 const preMaxX = Math.min(GRID_SIZE - 1, maxX + _lookRows);
                 const preMinY = Math.max(0, minY - _lookRows);
                 const preMaxY = Math.min(GRID_SIZE - 1, maxY + _lookRows);
+                const q = lookaheadQueueRef.current;
                 for (let gy = preMinY; gy <= preMaxY; gy += step) {
                   for (let gx = preMinX; gx <= preMaxX; gx += step) {
-                    // skip los visibles (ya tienen mesh + textura)
                     if (gx >= minX && gx <= maxX && gy >= minY && gy <= maxY) continue;
                     const inst = indexByGrid[gy * GRID_SIZE + gx];
                     if (inst < 0) continue;
                     const rawN = cubeNumbers[inst];
                     if (typeof rawN !== 'number' || !isFinite(rawN)) continue;
-                    // Sólo cachear — descartamos el return; no creamos mesh
-                    createNumberTexture(rawN, { transparentBackground: false, digitColor: [0,0,0,255] });
+                    if (q.seen.has(rawN)) continue;
+                    q.list.push(rawN);
+                    q.seen.add(rawN);
                   }
+                }
+                // Cap de la cola — si crece sin control (user moviendo mucho)
+                // descartamos los más viejos (FIFO). 1500 entries es ~6× ring.
+                while (q.list.length > 1500) {
+                  const dropped = q.list.shift();
+                  q.seen.delete(dropped);
                 }
               } catch {}
               } // fin else (viewport cambió)
@@ -3927,6 +3939,24 @@ const handleZoomButton = useCallback((direction) => {
           if (glRef.current) {
             glRef.current.endFrameEXP();
           }
+
+          // Procesar la cola de lookahead — solo si el user NO está tocando.
+          // Timeboxed a 3ms para no afectar el frame budget. Si la cola es
+          // grande se completará a lo largo de varios frames idle.
+          if (!isGesturingRef.current) {
+            const _q = lookaheadQueueRef.current;
+            if (_q.list.length > 0) {
+              const _t0 = performance.now();
+              const _BUDGET = 3;
+              while (_q.list.length > 0 && performance.now() - _t0 < _BUDGET) {
+                const rawN = _q.list.shift();
+                _q.seen.delete(rawN);
+                try {
+                  createNumberTexture(rawN, { transparentBackground: false, digitColor: [0,0,0,255] });
+                } catch {}
+              }
+            }
+          }
         } catch (renderError) {
           // FIX-P1: re-schedule incluso ante excepción transitoria (context lost,
           // textura corrupta, etc). Antes hacía return → cubo se quedaba congelado.
@@ -4066,6 +4096,12 @@ const handleZoomButton = useCallback((direction) => {
         // instancias). En mid/high se construye sync como antes.
         const yieldBetweenFaces = perfTier.getTier() === perfTier.TIER_LOW;
         buildingLayerRef.current = true;
+        // Limpiar cola de lookahead — los rawN encolados de la capa anterior
+        // ya no son relevantes (numbers cambiaron en buildLayer).
+        try {
+          lookaheadQueueRef.current.list.length = 0;
+          lookaheadQueueRef.current.seen.clear();
+        } catch {}
         // Safety net: si algo falla a mitad del build, el flag queda colgado
         // y el render loop nunca se reanuda. Timer máximo 30s para garantizar
         // recuperación.
