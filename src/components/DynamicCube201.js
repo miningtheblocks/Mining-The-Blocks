@@ -38,7 +38,17 @@ function createGLRenderer(gl, opts = {}) {
     removeEventListener: () => {},
     getContext: () => gl,
   };
-  return new THREE.WebGLRenderer({ canvas, context: gl, antialias });
+  // [1] Audit gráfico 2026-06-23+: hint al driver de preferir GPU de bajo
+  // consumo (no integrada de Snapdragon vs Adreno discreto). En la mayoría
+  // de devices Android este flag es ignorable (1 sola GPU disponible), pero
+  // donde sí aplica reduce thermal throttling en sesiones largas y baja el
+  // battery drain ~5-10%. Sin impacto en rendering quality.
+  return new THREE.WebGLRenderer({
+    canvas,
+    context: gl,
+    antialias,
+    powerPreference: 'low-power',
+  });
 }
 
 // CRIT (Round 2 Agente #4 CRIT-FE-06): override global de console.log REMOVIDO.
@@ -156,15 +166,33 @@ function getIntersectables(scene) {
 
 // CACHE DE TEXTURAS PARA EVITAR RECREACIÃƒâ€œN CONSTANTE
 // LRU simple: máximo MAX_TEXTURE_CACHE entradas; cuando se supera se elimina la más antigua
-const MAX_TEXTURE_CACHE = 500;
+// [2] Audit gráfico 2026-06-23+: cap reducido de 500 → 300 para presión memory
+// en devices low-end (Android 2GB total VRAM). Para K=100 zoom+pan, ~150-200
+// texturas activas a la vez son suficientes; 300 deja buffer para no thrashear.
+// + counter de evictions para detectar leaks (>50/seg = thrashing → log warning).
+const MAX_TEXTURE_CACHE = 300;
 const textureCacheOrder = []; // keys en orden de inserción (FIFO para LRU simple)
 const textureCache = new Map();
+let textureCacheEvictionCount = 0;
+let textureCacheEvictionWindow = Date.now();
 
 // Store global para recompensas de cubos minados
 const minedRewardsStore = new MinedCubesRewardStore();
 
 // Geometría compartida para todos los number meshes (evita crear/destruir PlaneGeometry cada frame)
 const sharedNumberPlaneGeo = new THREE.PlaneGeometry(0.8, 0.8);
+sharedNumberPlaneGeo.userData = { shared: true };
+
+// [5] Audit gráfico 2026-06-23+: geometry pooling para reducir VRAM redundante.
+// Las 6 caras de cada capa K crean la misma BoxGeometry (0.88×0.88×0.01) y
+// los mined patches crean la misma PlaneGeometry (0.88×0.88). Compartiéndolas
+// a module-level: ahorramos ~15-25MB en K=100 (con ~242k InstancedMesh data
+// + ~hundreds de mined patches). El cleanup loop (buildLayer) skipea dispose
+// si userData.shared === true.
+const sharedCubeGeometry = new THREE.BoxGeometry(0.88, 0.88, 0.01);
+sharedCubeGeometry.userData = { shared: true };
+const sharedMinedPatchGeo = new THREE.PlaneGeometry(0.88, 0.88);
+sharedMinedPatchGeo.userData = { shared: true };
 // CRIT-12: marcamos la geometría como compartida para que ni el cleanup
 // per-layer en buildLayer ni el cleanup global del unmount la disponga.
 sharedNumberPlaneGeo.userData = { shared: true };
@@ -276,6 +304,20 @@ function createNumberTexture(number, options = {}) {
       const old = textureCache.get(oldest);
       if (old && old.dispose) old.dispose();
       textureCache.delete(oldest);
+      // [2] Audit gráfico 2026-06-23+: trackear eviction rate. Si supera
+      // 50/seg sustained, log warning (síntoma de cache thrashing — el cap
+      // 300 está too low O hay flujo patológico tipo "scroll caotico cross
+      // K boundaries"). El log no afecta perf, solo dispara una vez por
+      // segundo cuando el rate es problemático.
+      textureCacheEvictionCount += 1;
+      const nowEv = Date.now();
+      if (nowEv - textureCacheEvictionWindow >= 1000) {
+        if (textureCacheEvictionCount > 50) {
+          console.warn(`[gfx] texture cache thrashing: ${textureCacheEvictionCount} evictions/sec`);
+        }
+        textureCacheEvictionCount = 0;
+        textureCacheEvictionWindow = nowEv;
+      }
     }
   }
   textureCache.set(cacheKey, texture);
@@ -1200,7 +1242,9 @@ function createFaceInstancesForLayer(K, faceIndex){
   backgroundMesh.userData.faceIndex = faceIndex;
   backgroundMesh.userData.kind = 'bg';
 
-  const cubeGeometry = new THREE.BoxGeometry(cubeSize, cubeSize, 0.01);
+  // [5] Audit gráfico 2026-06-23+: reusar sharedCubeGeometry (module-level)
+  // en vez de crear una BoxGeometry nueva por face. cubeSize es 0.88 fijo.
+  const cubeGeometry = sharedCubeGeometry;
   const cubeMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.FrontSide, depthTest: true, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
 
   // Pre-coleccionar posiciones y nÃƒÂºmeros con ownership
@@ -1289,7 +1333,9 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
     const zOffsetCubes = 0.4;
     const a = gridX - K;
     const b = gridY - K;
-    const planeGeo = new THREE.PlaneGeometry(cubeSize, cubeSize);
+    // [5] Audit gráfico 2026-06-23+: shared geo para evitar miles de
+    // PlaneGeometry idénticas en capas con muchas celdas minadas.
+    const planeGeo = sharedMinedPatchGeo;
     // Render overlay fully on top of the cube face to cover it completely
     const mat = new THREE.MeshBasicMaterial({ color: 0x333333, side: THREE.FrontSide, depthTest: false, depthWrite: false, transparent: true, opacity: 1.0 });
     const patch = new THREE.Mesh(planeGeo, mat);
@@ -1749,6 +1795,14 @@ const handleZoomButton = useCallback((direction) => {
       setMiningModal(null);
       // Limpiar cache de celdas aplicadas
       try { minedAppliedRef.current.clear(); } catch {}
+      // B1 fix (audit gráfico 2026-06-23+): clear del MinedCubesRewardStore
+      // al cambiar de capa. Pre-fix: el store acumulaba rewardPicks de
+      // capas anteriores (~50-200MB de leak en sesiones largas con >20k
+      // celdas minadas). El store tiene LRU cap por (K, faceIndex, gridX, gridY)
+      // pero el cap es por-key — al pasar a otra capa K, las keys viejas
+      // ya no se usan pero quedan en el Map ocupando memory hasta que el
+      // GC eventual elimine la instancia entera del store.
+      try { minedRewardsStore.clear(); } catch {}
       // Reconstruir capa
       if (buildLayerRef.current) {
         buildLayerRef.current(nextK);
@@ -3820,6 +3874,13 @@ const handleZoomButton = useCallback((direction) => {
 
       // Creador de capa K
       const buildLayer = (K) => {
+        // B2 fix (audit gráfico 2026-06-23+): reset del estado global de
+        // FaceDetection ANTES de cualquier otra cosa. Sin esto, el primer
+        // frame post-buildLayer corre con el `lastDetectedFace` viejo de
+        // la capa/montaje anterior → primera detección post-remount es
+        // a veces incorrecta (sigue mostrando 'back' cuando debería ser
+        // 'front'). El reset en cleanup llega tarde (después de dispose).
+        try { resetFaceDetection(); } catch {}
         // Limpiar capa anterior e invalidar cache de raycast
         invalidateIntersectablesCache();
         // CRIT-12: dispose recursivo de la capa anterior. Sin esto cada

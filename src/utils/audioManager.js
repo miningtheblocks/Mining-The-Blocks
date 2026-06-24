@@ -128,10 +128,33 @@ class AudioManager {
         mining_ok: require('../../assets/sonidos/mining_ok.m4a'),
       };
 
+      // B3 fix (audit gráfico 2026-06-23+): warmup explícito del decoder.
+      // expo-audio no carga el archivo hasta el primer play(), causando
+      // ~200-300ms latency en el primer mining_ok del juego. Forzamos un
+      // play() + pause() inmediato para que el buffer esté ready en RAM
+      // cuando el user toque por primera vez. Además: dispose del player
+      // anterior si loadSounds() se llama 2 veces (anti-leak entre re-inits).
       try {
+        if (this.miningOkPreloaded) {
+          try { this.miningOkPreloaded.remove(); } catch {}
+          this.miningOkPreloaded = null;
+        }
         const vol = Math.max(0, Math.min(1.0, this.sfxVolumeFactor));
         const player = createAudioPlayer(this.sounds.mining_ok);
-        player.volume = vol;
+        player.volume = 0; // silencio para el warmup (no audible)
+        try {
+          player.play();
+          // Pequeño delay para que el decoder cargue el buffer; después
+          // pause + seek + restore volume.
+          setTimeout(() => {
+            try { player.pause(); } catch {}
+            try { player.seekTo(0); } catch {}
+            try { player.volume = vol; } catch {}
+          }, 50);
+        } catch (warmupErr) {
+          // Si el warmup falla (uncommon), seteamos volume normal y seguimos.
+          try { player.volume = vol; } catch {}
+        }
         this.miningOkPreloaded = player;
       } catch (e) {
         console.warn('No se pudo precargar mining_ok:', e?.message || e);
