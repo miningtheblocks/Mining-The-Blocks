@@ -841,7 +841,7 @@ const styles = StyleSheet.create({
     borderColor: '#222',
   },
   cardFinished: { borderColor: '#2a2a1a', backgroundColor: '#0f0f08' },
-  serverName: { color: '#fff', fontWeight: '800', fontSize: 16 },
+  serverName: { color: '#fff', fontWeight: '800', fontSize: 16, flexShrink: 1 },
   serverMeta: { color: '#777', fontSize: 12, marginTop: 4 },
   cardActions: {
     flexDirection: 'row',
@@ -895,9 +895,10 @@ const styles = StyleSheet.create({
   joinTxt: { color: '#fff', fontWeight: '700' },
   unlockTxt: { color: '#888', fontWeight: '700', fontSize: 13 },
 
-  // Name rows
-  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  finishedNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  // Name rows — flexWrap permite que el badge baje a otra línea si no entra.
+  // Sin esto, en pantallas chicas el badge se solapa con los botones de la derecha.
+  nameRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 4 },
+  finishedNameRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 4 },
 
   // Episode badge
   episodeBadge: {

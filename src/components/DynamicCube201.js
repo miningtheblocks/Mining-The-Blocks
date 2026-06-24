@@ -2084,10 +2084,12 @@ const handleZoomButton = useCallback((direction) => {
     // animFactor del preset (1.0 high / 0.85 mid / 0.7 low) — en devices low
     // las duraciones se acortan ~30% para que se pierdan menos frames y la
     // anim se sienta más fluida sin cambiar el movimiento.
+    // 2026-06-24: doblado las duraciones base — el user pidió que el alejarse,
+    // rotar y acercarse sea más pausado/cinematográfico.
     const _animFactor = perfTier.getPreset().animFactor || 1.0;
-    const DUR_1 = needsZoomOut ? Math.round(250 * _animFactor) : 0;
-    const DUR_2 = Math.round(380 * _animFactor);
-    const DUR_3 = Math.round(300 * _animFactor);
+    const DUR_1 = needsZoomOut ? Math.round(500 * _animFactor) : 0;
+    const DUR_2 = Math.round(760 * _animFactor);
+    const DUR_3 = Math.round(600 * _animFactor);
     const TOTAL_DUR = DUR_1 + DUR_2 + DUR_3;
     // PERF: throttle de setCamState a ~30 Hz (en lugar de cada RAF a 60 Hz)
     // para reducir reconciliaciones de React durante la animación. camStateRef
@@ -2960,7 +2962,7 @@ const handleZoomButton = useCallback((direction) => {
 
             // 1 dedo: decidir entre pan (grilla) o rotaciÃ³n (cubo) segÃºn distancia actual (suelta lo antes posible)
             lastTouchPosRef.current = { x: touch.locationX, y: touch.locationY };
-            const deadzone = 5; // px (ajustado para descartar micro-jitter en devices low-end)
+            const deadzone = 2; // px — bajo umbral para detectar movimientos chicos sin perderlos
             if (Math.abs(dxPix) + Math.abs(dyPix) < deadzone) return;
             
             // BLOQUEAR MOVIMIENTO si se inició detección de long press O si está activo
@@ -3001,7 +3003,7 @@ const handleZoomButton = useCallback((direction) => {
               const sz = glSizeRef.current || { width: screenWidth, height: screenHeight };
               const unitsPerPixelY = 2 * dist * Math.tan(fovRad / 2) / (sz.height || screenHeight);
               const unitsPerPixelX = unitsPerPixelY * ((sz.width || screenWidth) / (sz.height || screenHeight));
-              const panK = 0.6; // factor de sensibilidad de pan con 1 dedo en grilla (ajustado para devices low-end donde el touch llega agrupado)
+              const panK = 0.8; // factor de sensibilidad de pan con 1 dedo en grilla — balance entre micro-movimientos visibles y no exagerado
               
               // Calcular lÃƒÂ­mites de pan para evitar que el cubo se vaya fuera de pantalla
               const limits = calculateGridPanLimits(
@@ -3016,8 +3018,14 @@ const handleZoomButton = useCallback((direction) => {
                 const nowPan = Date.now();
                 const dtPan = Math.max(8, nowPan - lastPanMoveTimeRef.current);
                 lastPanMoveTimeRef.current = nowPan;
+                // Pan natural estilo Google Maps:
+                //   dedo derecha → contenido derecha → cámara izquierda (gp.x baja)
+                //   dedo abajo   → contenido abajo   → cámara arriba   (gp.y sube)
+                // Con upVector +Y, gp.y > 0 sube la cámara → contenido baja. Así
+                // que el signo correcto para "dedo abajo → contenido abajo" es
+                // +dyPix (no -dyPix).
                 const wdx = -dxPix * unitsPerPixelX * panK;
-                const wdy = -dyPix * unitsPerPixelY * panK;
+                const wdy = dyPix * unitsPerPixelY * panK;
                 // Suavizar velocidad con un promedio exponencial para evitar spikes
                 panVelocityRef.current = {
                   x: panVelocityRef.current.x * 0.4 + (wdx / dtPan) * 0.6,
@@ -3124,8 +3132,11 @@ const handleZoomButton = useCallback((direction) => {
               const _sz = glSizeRef.current || { width: screenWidth, height: screenHeight };
               const _limits = calculateGridPanLimits(_dist, _cam?.fov || 60, _sz.width || screenWidth, _sz.height || screenHeight, FACE_GRID_SIZE);
               let _lastT = Date.now();
-              const DECAY = 0.88; // por frame a 60fps (~1.2s hasta detenerse)
-              const MIN_SPEED = 0.00008;
+              // Decay más suave → deslizamientos rápidos siguen viajando más
+              // tiempo antes de frenar. 0.94 por frame a 60fps ≈ 2.7s hasta
+              // detenerse (antes 0.88 ≈ 1.2s).
+              const DECAY = 0.94;
+              const MIN_SPEED = 0.00005;
               const inertiaStep = () => {
                 markActive(); // FIX-P1: mantener FPS alto mientras la inercia anima la cámara
                 const _now = Date.now();
@@ -3324,7 +3335,12 @@ const handleZoomButton = useCallback((direction) => {
           }
           cameraModeRef.current = 'grid';
           setCameraMode('grid');
-          // Al entrar a grilla: NO recentrar pan automÃƒÂ¡ticamente para evitar "volver al inicio" mientras el usuario navega
+          // 2026-06-24: resetear gridPosition al ENTRAR a grilla. Sin esto,
+          // el offset acumulado en sesiones previas se mantiene y al volver a
+          // entrar a grilla la cámara arranca corrida — el pan se siente
+          // "invertido" hasta que el user salga y vuelva a entrar.
+          gridPositionRef.current = { x: 0, y: 0 };
+          panVelocityRef.current = { x: 0, y: 0 };
           // CRÍTICO: Capturar la cara que estaba mirando ANTES del zoom para mantenerla en modo grilla
           if (!requestedFaceRef.current) {
             // Usar la última cara detectada como la cara "solicitada" durante el modo grilla
@@ -3739,6 +3755,32 @@ const handleZoomButton = useCallback((direction) => {
                 }
               }
               faceGroup.userData.cachedVisibleNumbers = faceNumbers;
+
+              // 2026-06-24: LOOKAHEAD — pre-cargar texturas de cubitos fuera
+              // del viewport visible para que al panear no aparezcan con lag.
+              // Solo cacheamos texturas (sin crear meshes ni overhead visual).
+              // Se ejecuta sólo cuando el viewport CAMBIÓ (este branch), no
+              // en cada frame. Las texturas quedan listas en el LRU cache;
+              // cuando el cubo entre al viewport, createNumberTexture es hit.
+              try {
+                const _lookRows = perfTier.getPreset().lookaheadRows || 5;
+                const preMinX = Math.max(0, minX - _lookRows);
+                const preMaxX = Math.min(GRID_SIZE - 1, maxX + _lookRows);
+                const preMinY = Math.max(0, minY - _lookRows);
+                const preMaxY = Math.min(GRID_SIZE - 1, maxY + _lookRows);
+                for (let gy = preMinY; gy <= preMaxY; gy += step) {
+                  for (let gx = preMinX; gx <= preMaxX; gx += step) {
+                    // skip los visibles (ya tienen mesh + textura)
+                    if (gx >= minX && gx <= maxX && gy >= minY && gy <= maxY) continue;
+                    const inst = indexByGrid[gy * GRID_SIZE + gx];
+                    if (inst < 0) continue;
+                    const rawN = cubeNumbers[inst];
+                    if (typeof rawN !== 'number' || !isFinite(rawN)) continue;
+                    // Sólo cachear — descartamos el return; no creamos mesh
+                    createNumberTexture(rawN, { transparentBackground: false, digitColor: [0,0,0,255] });
+                  }
+                }
+              } catch {}
               } // fin else (viewport cambió)
 
             } else {

@@ -213,6 +213,7 @@ export default function BuyCredits({ onClose }) {
               cuando la recibe (sin $15.XX random). */}
           <View style={s.walletInputWrap}>
             <Text style={s.walletInputLabel}>{t('buyCredits.walletInputLabel')}</Text>
+            <Text style={s.walletWarning}>{t('buyCredits.walletWarning')}</Text>
             <TextInput
               value={walletInput}
               onChangeText={setWalletInput}
@@ -363,6 +364,7 @@ const s = StyleSheet.create({
   walletInputFieldValid: { borderColor: '#2e7d32' },
   walletInputError: { color: '#ff6666', fontSize: 11, marginTop: 4 },
   walletHint:   { color: '#777', fontSize: 11, marginTop: 4, textAlign: 'center', maxWidth: 280 },
+  walletWarning:{ color: '#ff9944', fontSize: 12, marginBottom: 8, lineHeight: 16 },
   paymentBox:   { flex: 1 },
   fieldLabel:   { color: '#888', fontSize: 12, fontWeight: '700', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 },
   copyRow:      { flexDirection: 'row', alignItems: 'center', backgroundColor: '#12121a', borderRadius: 10, borderWidth: 1, borderColor: '#222', padding: 12, gap: 10 },
