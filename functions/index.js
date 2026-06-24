@@ -507,6 +507,11 @@ exports.createServer = onCall(async (request) => {
 // Unirse a un server existente (consume 1 crédito)
 exports.joinServer = onCall(async (request) => {
   requireRegistered(request);
+  // HIGH-06 (audit Round 2 / fix 2026-06-23+): checkRevoked en joinServer.
+  // Pre-fix: token revocado podía consumir el serverCredit del user durante
+  // los ~60min de JWT TTL post-revoke. Si user revoca por sospecha de robo
+  // de token, los créditos quedaban vulnerables. Acción incremental: assertFreshToken.
+  await assertFreshToken(request);
   const uid = request.auth.uid;
 
   const serverId = String((request.data && request.data.serverId) || '');
@@ -1678,6 +1683,14 @@ const WALLET_CHANGE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 exports.setUserWallet = onCall(async (request) => {
   requireRegistered(request);
+  // HIGH-06 (audit Round 2 / fix 2026-06-23+): checkRevoked en setUserWallet.
+  // Pre-fix: sin assertFreshToken, un token comprometido sigue válido ~60min
+  // post-revoke (JWT TTL). En esa ventana, atacante puede cambiar la wallet
+  // del user → todos los premios futuros van a la wallet del atacante hasta
+  // que la víctima rote el wallet manualmente (con cooldown 24h después).
+  // Crítico porque setUserWallet es el endpoint que controla dónde se recibe
+  // dinero on-chain ($15 a $100k por canje).
+  await assertFreshToken(request);
   const uid = request.auth.uid;
   const okRate = await _rateLimitFirestore(`suw_${uid}`, 5, 60 * 1000);
   if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");

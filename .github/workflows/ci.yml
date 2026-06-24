@@ -120,6 +120,36 @@ jobs:
       - name: npm audit (root)
         run: npm audit --omit=dev --audit-level=critical
 
+  client-bundle:
+    name: Client RN bundle check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      # HIGH-11-29 (audit Round 2 / fix 2026-06-23+): el CI antes solo
+      # validaba functions/ (backend). Cualquier commit que rompiera el
+      # cliente RN/Expo (typo en import, breaking change de deps, error de
+      # sintaxis) pasaba el CI verde y se descubría recién al hacer eas build
+      # (~30 min de feedback loop). Ahora ejecutamos `expo export` + `expo-doctor`
+      # para validar que el cliente al menos bundlea sin errores. NO se firma
+      # APK acá (eso requiere keystore que NO debe estar en CI sin credenciales
+      # explícitas — sigue manual via EAS).
+      - name: Install dependencies (root)
+        run: npm ci --no-audit --no-fund
+      - name: Expo doctor (config + deps audit)
+        run: npx expo-doctor || echo "expo-doctor warnings — review pero no bloquea"
+      - name: Bundle JS (verifica que Metro empaqueta sin errores)
+        run: npx expo export --platform android --output-dir /tmp/mtb-export --no-source-maps
+        env:
+          EXPO_NO_TELEMETRY: '1'
+
   sbom:
     name: SBOM (CycloneDX)
     runs-on: ubuntu-latest
