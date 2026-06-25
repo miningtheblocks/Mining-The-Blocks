@@ -3579,7 +3579,12 @@ const handleZoomButton = useCallback((direction) => {
               setActiveFaceIndex(faceToKeep);
             }
           }
-        } else if (!shouldUseCameraModeForCalc && !panActive && cameraModeRef.current === 'grid') {
+        } else if (!shouldUseCameraModeForCalc && !panActive && !suppressedAutoGrid && cameraModeRef.current === 'grid') {
+          // v1.3.15: agregado `!suppressedAutoGrid` para no salir de grid
+          // durante la animación de goToFaceCenter. Antes el zoom-out (fase 1,
+          // distance=650) salía de grid y limpiaba requestedFaceRef → al volver
+          // a entrar a grid en zoom-in (fase 3) la cámara aterrizaba en la cara
+          // DETECTADA (front) en lugar de la solicitada por el botón.
           cameraModeRef.current = 'cube';
           setCameraMode('cube');
           // Limpiar cara solicitada y detectada al salir de modo grilla
@@ -4665,7 +4670,8 @@ const handleZoomButton = useCallback((direction) => {
         <Text style={styles.stats}>{t('cube.hudLayerMined')}: {layerMinedCount}</Text>
         <Text style={styles.stats}>{t('cube.hudTotalMined')}: {totalMinedAllLayers}</Text>
         <Text style={styles.stats}>{t('cube.hudNextLayer')}: {Math.max(0, shellSize(currentLayer) - Number(layerMinedCount || 0))}</Text>
-        <Text style={styles.stats}>{t('cube.hudPlayersOnline')}: {serverMemberCount}</Text>
+        <Text style={styles.stats}>{t('cube.hudPlayers')}: {serverMemberCount}</Text>
+        <Text style={styles.stats}>{t('cube.hudMinedByYou')}: {minedCubes.size}</Text>
         {hudToast && (
           <Text style={[styles.stats, { color: '#0a84ff', fontWeight: 'bold' }]}>
             {hudToast}
