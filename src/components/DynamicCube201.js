@@ -1979,43 +1979,52 @@ const handleZoomButton = useCallback((direction) => {
     };
   }, [db, serverId, currentLayer, applyMinedCell]);
 
-  // Retry visual: SOLO al cambiar de capa o al inicializar — reintenta aplicar
-  // todos los cubos en el set que no estén en minedAppliedRef. Cubre el race
-  // del cold start donde el listener Firestore llega antes que faceGroupsRef
-  // esté populado. NO depende de minedCubes para no interferir con el flujo
-  // de minado manual (donde setMinedCubes se llama antes de la explosión).
+  // Retry visual: reintenta aplicar parches de todos los cubos del set
+  // que no estén en minedAppliedRef. Cubre dos casos:
+  //   1) cold start: listener Firestore llega antes que faceGroupsRef esté
+  //      poblado → applyMinedCell retorna false y el listener solo reintenta
+  //      una vez (800ms). En LOW tier con buildLayer async lento, no alcanza.
+  //   2) realtime: cuando llega un mined nuevo (de otro user u otra sesión)
+  //      mientras la capa está construyéndose.
+  //
+  // SKIP de `pendingAnimCellsRef`: el flujo manual de minado agrega la key
+  // ANTES del setMinedCubes optimista y la borra después de startMining.
+  // Eso evita que este efecto pinte el parche gris ANTES de la explosión.
   useEffect(() => {
     const tryApply = () => {
       if (!faceGroupsRef.current || faceGroupsRef.current.length === 0) return false;
       if (!minedCubes || minedCubes.size === 0) return true;
+      let allApplied = true;
       for (const apiId of minedCubes) {
         try {
           const map = cubeNumberToFaceGrid(apiId);
           if (!map) continue;
           const key = `${currentLayer}:${map.faceIndex}:${map.gridX}:${map.gridY}`;
           if (minedAppliedRef.current.has(key)) continue;
+          // Skip claves en vuelo de minado manual — startMining hará el patch
+          if (pendingAnimCellsRef.current.has(key)) continue;
           const rewardPicks = minedRewardsStore.has(currentLayer, map.faceIndex, map.gridX, map.gridY)
             ? minedRewardsStore.get(currentLayer, map.faceIndex, map.gridX, map.gridY)
             : 0;
-          applyMinedCell(map.faceIndex, map.gridX, map.gridY, rewardPicks);
+          const ok = applyMinedCell(map.faceIndex, map.gridX, map.gridY, rewardPicks);
+          if (!ok) allApplied = false;
         } catch {}
       }
-      return true;
+      return allApplied;
     };
-    // Intentar varias veces para cubrir el caso donde la escena se está
-    // armando y todavía no responde. Cada 500ms hasta 6 intentos (3s).
+    // 10 intentos × 500ms = 5s. Suficiente para LOW tier con buildLayer async.
+    // Si después de eso aún no se aplicaron todos, hay un problema más serio.
     let attempts = 0;
     const timer = setInterval(() => {
       attempts++;
       const ok = tryApply();
-      if (ok || attempts >= 6) {
+      if (ok || attempts >= 10) {
         clearInterval(timer);
       }
     }, 500);
-    // Primer intento inmediato
     tryApply();
     return () => clearInterval(timer);
-  }, [currentLayer, applyMinedCell]);
+  }, [currentLayer, minedCubes, applyMinedCell]);
 
   // Suscripción a estadísticas de la capa actual (una sola suscripción para layerMinedCount Y globalMinedCurrentLayer)
   // + suscripción a todas las capas para totalMinedAllLayers
@@ -2606,14 +2615,23 @@ const handleZoomButton = useCallback((direction) => {
           // store reward sólo en la cara owner (canónica) para mantener
           // consistencia con el resto del sistema.
           minedRewardsStore.set(K, modalData.faceIndex, modalData.gridX, modalData.gridY, reward);
+          let anyPatched = false;
           for (const fi of facesShowing) {
             const { gridX: gxF, gridY: gyF } = coordToGrid(K, fi, ix, iy, iz);
-            addDarkPatch(fi, gxF, gyF, faceGroupsRef, K, reward);
-            if (typeof setMinedCubeColor === 'function') {
-              setMinedCubeColor(fi, gxF, gyF, faceGroupsRef);
+            const patched = addDarkPatch(fi, gxF, gyF, faceGroupsRef, K, reward);
+            if (patched) {
+              anyPatched = true;
+              if (typeof setMinedCubeColor === 'function') {
+                setMinedCubeColor(fi, gxF, gyF, faceGroupsRef);
+              }
             }
           }
-          minedAppliedRef.current.add(cellKey);
+          // Solo marcar como aplicado si al menos una cara recibió el patch.
+          // Si todas fallaron (faceGroupsRef no listo), dejar la key suelta
+          // para que el useEffect retry vuelva a intentar.
+          if (anyPatched) {
+            minedAppliedRef.current.add(cellKey);
+          }
         }
       } catch (patchError) {
         console.error('Error in patch operations:', patchError.message);
@@ -2893,6 +2911,14 @@ const handleZoomButton = useCallback((direction) => {
           }
         },
         onPanResponderMove: (evt, gestureState) => {
+          // GUARDIA: si el modal de minado está abierto, ignorar TODO movimiento.
+          // Sin esto, el modal aparece mid-gesture, el bloque defensivo libera
+          // longPressInitiatedRef, el siguiente move ejecuta pan y panVelocityRef
+          // se llena → al soltar arranca inercia y la cámara se va.
+          if (miningModalRef.current) {
+            panVelocityRef.current = { x: 0, y: 0 };
+            return;
+          }
           markActive(); // PERF-001
           const t = evt.nativeEvent.touches;
           // Update touches count continuously
@@ -3157,6 +3183,12 @@ const handleZoomButton = useCallback((direction) => {
           }
         },
         onPanResponderRelease: (evt) => {
+          // GUARDIA: si el modal está abierto, soltar el dedo NO debe disparar
+          // inercia. Limpiar velocidad antes de seguir con la lógica de release.
+          const modalOpenAtRelease = !!miningModalRef.current;
+          if (modalOpenAtRelease) {
+            panVelocityRef.current = { x: 0, y: 0 };
+          }
           // FIX-P1: mantener FPS alto durante la inercia (no bajar a 30/15 mientras la cámara se desliza)
           markActive();
           // Siempre cancelar timers de long press y modal diferido al soltar
@@ -3204,7 +3236,7 @@ const handleZoomButton = useCallback((direction) => {
             } catch { return false; }
           })();
 
-          if (_inertiaInGrid) {
+          if (_inertiaInGrid && !modalOpenAtRelease) {
             if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
             let vx = panVelocityRef.current.x;
             let vy = panVelocityRef.current.y;
