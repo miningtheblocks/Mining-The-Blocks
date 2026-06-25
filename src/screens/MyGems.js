@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   ActivityIndicator, Share, ScrollView,
@@ -91,7 +91,14 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
   //   3. Listener `onAuthStateChanged` que dispara `loadGems` si el user
   //      cambia mientras el modal está abierto.
   //   4. console.warn detallado en cada fallo para diagnosticar via logcat.
+  // v1.3.16: mutex para deduplicar calls concurrentes. El useEffect [visible]
+  // y el listener onAuthStateChanged podían disparar loadGems al mismo tiempo
+  // → dos calls al backend, una fallaba con unauth (token siendo refrescado)
+  // y mostraba el alert aunque la otra hubiera tenido éxito.
+  const loadingRef = useRef(false);
   const loadGems = useCallback(async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     try {
       try { await auth.authStateReady(); } catch (e) {
@@ -143,6 +150,7 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
       }
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
   }, []);
 
@@ -152,12 +160,16 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
   }, [visible]);
 
   // v1.3.14: reintentar si el user de auth cambia mientras el modal está
-  // abierto (login tardío, refresh de sesión, etc.). Sin esto la primera
-  // carga fallaba y el usuario tenía que cerrar/abrir el modal a mano.
+  // abierto (login tardío, refresh de sesión, etc.).
+  // v1.3.16: el listener disparaba `loadGems` también en el mount inicial con
+  // el user actual → call duplicado con el useEffect [visible]. Ahora solo
+  // dispara si el uid CAMBIA respecto al inicial.
   useEffect(() => {
     if (!(asModal ? visible : true)) return;
+    const initialUid = auth.currentUser?.uid || null;
     const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) loadGems();
+      const newUid = user?.uid || null;
+      if (newUid && newUid !== initialUid) loadGems();
     });
     return () => unsub();
   }, [visible, loadGems]);

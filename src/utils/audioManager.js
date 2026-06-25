@@ -281,6 +281,40 @@ class AudioManager {
     }
   }
 
+  // v1.3.17: detener TODOS los SFX activos. Llamado al ir a background
+  // (bloqueo de pantalla, home, etc.) para que el sonido pare inmediatamente
+  // en lugar de seguir reproduciéndose 1-2 segundos. Limpia activeSounds,
+  // miningSound y reseta el preloaded de mining_ok.
+  async stopAllSfx() {
+    try {
+      // miningSound (continuo)
+      const ms = this.miningSound;
+      const msSub = this.miningSoundSub;
+      this.miningSound = null;
+      this.miningSoundSub = null;
+      this.miningCancelled = true;
+      if (msSub) { try { msSub.remove(); } catch {} }
+      if (ms) {
+        try { ms.pause(); } catch {}
+        try { ms.remove(); } catch {}
+      }
+      // activeSounds (rotura, explosion, win, lose, etc.)
+      const sfx = this.activeSounds.splice(0);
+      for (const entry of sfx) {
+        try { entry.sub && entry.sub.remove(); } catch {}
+        try { entry.player && entry.player.pause(); } catch {}
+        try { entry.player && entry.player.remove(); } catch {}
+      }
+      // mining_ok preloaded — solo pause+seek a 0 (no remove, lo seguimos usando).
+      if (this.miningOkPreloaded) {
+        try { this.miningOkPreloaded.pause(); } catch {}
+        try { this.miningOkPreloaded.seekTo(0); } catch {}
+      }
+    } catch (e) {
+      console.warn('stopAllSfx error', e?.message || e);
+    }
+  }
+
   async pauseBackgroundMusic() {
     try {
       if (this.crescendoInterval) {

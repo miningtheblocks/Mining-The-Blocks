@@ -1796,6 +1796,10 @@ const handleZoomButton = useCallback((direction) => {
       if (nextAppState === 'background' || nextAppState === 'inactive') {
         renderPausedRef.current = true;
         audioManager.pauseBackgroundMusic();
+        // v1.3.17: cortar TAMBIÉN los SFX activos (mining, rotura, explosion,
+        // etc.) — antes solo pausábamos la música ambiental y los SFX seguían
+        // sonando 1-2s después de bloquear el celular.
+        try { audioManager.stopAllSfx(); } catch {}
       } else if (nextAppState === 'active') {
         renderPausedRef.current = false;
         audioManager.resumeBackgroundMusic();
@@ -3542,15 +3546,18 @@ const handleZoomButton = useCallback((direction) => {
         // Extender ventana de gesto activo para mantener modo grilla estable durante el pan
         // Reducir la ventana de pegajosidad de pan en grilla para que suelte mÃ¡s rÃƒÂ¡pido
         const panActive = nowTs - (lastGridPanTsRef.current || 0) < 800;
-        // v1.3.11: respetar suppressAutoGridRef en la transicion auto. Sin esto
-        // el zoom out de goToFaceCenter (fase 1, distance=650) sacaba de grid
-        // y limpiaba requestedFaceRef -> al volver a entrar (fase 3 zoom in)
-        // la camara aterrizaba en la cara DETECTADA en vez de la solicitada por
-        // el boton. Resultado: apretar "back" tras "left" terminaba en "front".
+        // v1.3.16: `suppressedAutoGrid` ahora SOLO protege contra LIMPIAR
+        // requestedFaceRef durante la animación de goToFaceCenter — no fuerza
+        // grid mode. En v1.3.11–v1.3.15 forzábamos grid mode toda la animación,
+        // lo que mantenía la cámara perpendicular a la cara solicitada (en
+        // distance=650) y SE PERDÍA LA ANIMACIÓN DE ROTACIÓN visual — saltaba
+        // directo a la cara nueva. Con este cambio, durante zoom-out vuelve a
+        // cube mode (animación visible), y al final reentra a grid con la
+        // cara correcta porque NO la limpiamos en el medio.
         const suppressedAutoGrid = nowTs < (suppressAutoGridRef.current || 0);
         // CRÃƒÂTICO: Eliminar requestedFaceRef.current para evitar loop infinito
-        const shouldUseCameraMode = shouldUseCameraModeForCalc || panActive || suppressedAutoGrid;
-        const stickyGrid = (cameraModeRef.current === 'grid') && (shouldUseCameraModeForCalc || suppressedAutoGrid);
+        const shouldUseCameraMode = shouldUseCameraModeForCalc || panActive;
+        const stickyGrid = (cameraModeRef.current === 'grid') && shouldUseCameraModeForCalc;
         const effectiveUseCameraMode = shouldUseCameraMode || stickyGrid;
 
         if (effectiveUseCameraMode && cameraModeRef.current === 'cube') {
