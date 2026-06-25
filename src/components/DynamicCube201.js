@@ -2012,13 +2012,15 @@ const handleZoomButton = useCallback((direction) => {
       }
       return allApplied;
     };
-    // 10 intentos × 500ms = 5s. Suficiente para LOW tier con buildLayer async.
-    // Si después de eso aún no se aplicaron todos, hay un problema más serio.
+    // v1.3.8: 30 intentos × 500ms = 15s. Aumentado desde 10 (5s) porque en
+    // devices Redmi con LOW tier el buildLayer async + K=100 puede tardar más
+    // de 5s. Si después de 15s aún no se aplicaron, el problema está en otro
+    // lado (faceGroupsRef nunca poblado, etc).
     let attempts = 0;
     const timer = setInterval(() => {
       attempts++;
       const ok = tryApply();
-      if (ok || attempts >= 10) {
+      if (ok || attempts >= 30) {
         clearInterval(timer);
       }
     }, 500);
@@ -3032,6 +3034,14 @@ const handleZoomButton = useCallback((direction) => {
             const prevPos = lastTouchPosRef.current || { x: touch.locationX, y: touch.locationY };
             const dxPix = touch.locationX - prevPos.x;
             const dyPix = touch.locationY - prevPos.y;
+            // v1.3.8: guardia anti-saltarín. Si el target del touch cambia mid-
+            // gesture (otra View intercepta), las coordenadas `locationX` pueden
+            // dar un delta gigante que dispara pan rapidísimo o rotación brusca.
+            // Descartar el frame y resincronizar el último touch.
+            if (Math.abs(dxPix) > 120 || Math.abs(dyPix) > 120) {
+              lastTouchPosRef.current = { x: touch.locationX, y: touch.locationY };
+              return;
+            }
 
             // CANCELAR LONG PRESS SI HAY MOVIMIENTO ACUMULADO desde el inicio
             // del touch (no delta instantáneo del frame). Bug pre-fix: con
@@ -3210,6 +3220,13 @@ const handleZoomButton = useCallback((direction) => {
           }
           longPressStartPos.current = null;
           prePickedCubeRef.current = null; // descartar cache del raycast si soltó sin abrir modal
+          // v1.3.8: resetear el último touch al soltar el dedo. Sin esto, si el
+          // siguiente gesto cambia de target (otra View intercepta el touch),
+          // el primer Move calcula un delta enorme contra coordenadas viejas y
+          // dispara un pan rapidísimo. Grant suele resetearlo, pero hay paths
+          // donde el target del touch cambia entre Grant y el primer Move.
+          lastTouchPosRef.current = null;
+          lastTwoFingerMidRef.current = null;
           // Cortar el sonido mining al soltar (no-op si no estaba sonando)
           try { audioManager.stopMiningSound(); } catch {}
           setLongPressActive(false);
@@ -3287,6 +3304,11 @@ const handleZoomButton = useCallback((direction) => {
             preHoldTimerRef.current = null;
           }
           prePickedCubeRef.current = null;
+          // v1.3.8: ver comentario en onPanResponderRelease — mismo motivo.
+          lastTouchPosRef.current = null;
+          lastTwoFingerMidRef.current = null;
+          longPressInitiatedRef.current = false;
+          panVelocityRef.current = { x: 0, y: 0 };
           try { audioManager.stopMiningSound(); } catch {}
           setLongPressActive(false);
           setSelectedCube(null);
@@ -3931,12 +3953,14 @@ const handleZoomButton = useCallback((direction) => {
         
         if (shouldDoCulling) {
           // Visibilidad de parches/sprites de cubos minados.
-          // v1.3.7: los PARCHES grises representan el estado "cubo minado" —
-          // tienen que ser visibles SIEMPRE que la cara mire a la cámara,
-          // sin importar el zoom ni cuál sea la cara "activa". Antes los
-          // ocultábamos cuando la cara no era activa o `shouldShowNumbers`
-          // era false → parches no aparecían en modo cubo (varias caras) ni
-          // tras reiniciar la app hasta acercar mucho el zoom.
+          // v1.3.8: los PARCHES grises se controlan SOLO con viewport culling
+          // (proyección a NDC). El back-face culling lo hace Three.js
+          // automáticamente porque el material tiene `side: FrontSide` y la
+          // PlaneGeometry queda rotada con la cara del cubo. Antes
+          // dependíamos de `facingCamera` con threshold dot>0.5 que sólo era
+          // verdadero para UNA cara a la vez — en modo cubo (3 caras visibles)
+          // las otras 2 quedaban sin patches y al reabrir la app se veía como
+          // si los parches nunca se hubieran aplicado.
           // Los NÚMEROS grises e INDICADORES de recompensa sí mantienen la
           // condición original (solo en cara activa con zoom adecuado) para
           // no saturar la pantalla en modo cubo.
@@ -3946,24 +3970,18 @@ const handleZoomButton = useCallback((direction) => {
           const isFacingCamera = faceGroup.userData.facingCamera || false;
           const shouldShowAux = shouldShowNumbers && isFacingCamera && isActiveFace;
 
-          // PARCHES grises: visibles si la cara mira a la cámara — viewport
-          // culling preciso por celda para no pintar fuera de pantalla.
+          // PARCHES grises: solo viewport culling por celda. Three.js hace el
+          // back-face culling automáticamente con FrontSide.
           if (faceGroup.userData.minedPatches) {
-            if (!isFacingCamera) {
-              faceGroup.userData.minedPatches.forEach(patch => {
-                if (patch && typeof patch.visible !== 'undefined') patch.visible = false;
-              });
-            } else {
-              faceGroup.userData.minedPatches.forEach((patch) => {
-                if (patch && typeof patch.visible !== 'undefined') {
-                  patch.getWorldPosition(_sv3);
-                  _sv4.copy(_sv3).project(camera);
-                  patch.visible = _sv4.z >= -1 && _sv4.z <= 1 &&
-                                  _sv4.x >= -1.1 && _sv4.x <= 1.1 &&
-                                  _sv4.y >= -1.1 && _sv4.y <= 1.1;
-                }
-              });
-            }
+            faceGroup.userData.minedPatches.forEach((patch) => {
+              if (patch && typeof patch.visible !== 'undefined') {
+                patch.getWorldPosition(_sv3);
+                _sv4.copy(_sv3).project(camera);
+                patch.visible = _sv4.z >= -1 && _sv4.z <= 1 &&
+                                _sv4.x >= -1.1 && _sv4.x <= 1.1 &&
+                                _sv4.y >= -1.1 && _sv4.y <= 1.1;
+              }
+            });
           }
 
           // NÚMEROS grises e INDICADORES: solo en cara activa con zoom dentro
