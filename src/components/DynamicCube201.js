@@ -166,19 +166,28 @@ function getIntersectables(scene) {
 }
 
 // CACHE DE TEXTURAS PARA EVITAR RECREACIÃƒâ€œN CONSTANTE
-// LRU simple: máximo `getMaxTextureCache()` entradas (lee del perfTier preset).
+// LRU O(1) usando Map (mantiene orden de inserción en JS moderno).
 // HIGH: 400, MID: 250, LOW: 150 — en devices flojos menos VRAM pero más
 // regeneraciones; en devices buenos menos thrashing.
+// v1.3.12: refactor — antes usábamos textureCacheOrder array con indexOf O(N)
+// en cada hit. En pan rápido con 2000+ números visibles a 60Hz, era un costo
+// real. Ahora delete+set en hit (O(1)) renueva la posición; keys().next()
+// da la más vieja para evict.
+let _cachedMaxTextureCache = null;
 const getMaxTextureCache = () => {
+  if (_cachedMaxTextureCache != null) return _cachedMaxTextureCache;
   try {
     const p = perfTier.getPreset();
-    return (p && p.textureCacheMax) || 250;
-  } catch { return 250; }
+    _cachedMaxTextureCache = (p && p.textureCacheMax) || 250;
+  } catch { _cachedMaxTextureCache = 250; }
+  return _cachedMaxTextureCache;
 };
-const textureCacheOrder = []; // keys en orden de inserción (FIFO para LRU simple)
 const textureCache = new Map();
 let textureCacheEvictionCount = 0;
-let textureCacheEvictionWindow = Date.now();
+// v1.3.13: performance.now() en lugar de Date.now() — Android puede dar
+// Date.now() con granularidad de ~16ms, que es justo el tamaño de la ventana
+// de eviction. performance.now() da microsegundos confiables.
+let textureCacheEvictionWindow = performance.now();
 
 // Store global para recompensas de cubos minados
 const minedRewardsStore = new MinedCubesRewardStore();
@@ -268,15 +277,12 @@ function createNumberTexture(number, options = {}) {
   const safeNumber = String(Math.floor(Math.abs(number))); // Asegurar string vÃƒÂ¡lido
   const cacheKey = `${safeNumber}_${!!options.transparentBackground}_${JSON.stringify(options.digitColor || [0,0,0,255])}`;
   if (textureCache.has(cacheKey)) {
-    // MEDIO-27: LRU real — mover al final del orden cuando hay hit.
-    // Antes el array era FIFO simple y las texturas más usadas podían ser
-    // evictadas tan pronto como las nuevas. Ahora "usar" = renovar.
-    const idx = textureCacheOrder.indexOf(cacheKey);
-    if (idx >= 0 && idx !== textureCacheOrder.length - 1) {
-      textureCacheOrder.splice(idx, 1);
-      textureCacheOrder.push(cacheKey);
-    }
-    return textureCache.get(cacheKey);
+    // v1.3.12: LRU O(1) — delete + set mueve la entry al final del orden
+    // de iteración del Map. Antes hacíamos indexOf O(N) + splice en cada hit.
+    const tex = textureCache.get(cacheKey);
+    textureCache.delete(cacheKey);
+    textureCache.set(cacheKey, tex);
+    return tex;
   }
   // size 48 (antes 64): cada textura ocupa 44% menos VRAM (~9KB vs 16KB).
   // No bajamos a 32 porque la fuente es 5×7 con charWidth=6 — un número de
@@ -307,18 +313,16 @@ function createNumberTexture(number, options = {}) {
   
   // Guardar en cache con evicción LRU
   if (textureCache.size >= getMaxTextureCache()) {
-    const oldest = textureCacheOrder.shift();
-    if (oldest) {
+    // v1.3.12: O(1) eviction — la primera key del Map es la más vieja.
+    const oldest = textureCache.keys().next().value;
+    if (oldest != null) {
       const old = textureCache.get(oldest);
       if (old && old.dispose) old.dispose();
       textureCache.delete(oldest);
       // [2] Audit gráfico 2026-06-23+: trackear eviction rate. Si supera
-      // 50/seg sustained, log warning (síntoma de cache thrashing — el cap
-      // 300 está too low O hay flujo patológico tipo "scroll caotico cross
-      // K boundaries"). El log no afecta perf, solo dispara una vez por
-      // segundo cuando el rate es problemático.
+      // 50/seg sustained, log warning (síntoma de cache thrashing).
       textureCacheEvictionCount += 1;
-      const nowEv = Date.now();
+      const nowEv = performance.now();
       if (nowEv - textureCacheEvictionWindow >= 1000) {
         if (textureCacheEvictionCount > 50) {
           console.warn(`[gfx] texture cache thrashing: ${textureCacheEvictionCount} evictions/sec`);
@@ -329,7 +333,6 @@ function createNumberTexture(number, options = {}) {
     }
   }
   textureCache.set(cacheKey, texture);
-  textureCacheOrder.push(cacheKey);
   return texture;
 }
 
@@ -378,17 +381,19 @@ function setMinedCubeColor(faceIndex, gridX, gridY, faceGroupsRef) {
     let instanced = null;
     let indexByGrid = null;
     const simpleRoot = faceGroupEntry.userData?.simpleMesh || faceGroupEntry.simpleMesh;
-    if (simpleRoot && simpleRoot.traverse) {
+    // v1.3.12: ref directa a cubesMesh (almacenada en createFaceInstancesForLayer).
+    // Fallback a traversal/children[1] solo si la ref no existe (compat con
+    // faceGroups viejos durante una transición de capa).
+    let cubesMesh = simpleRoot?.userData?.cubesMesh || null;
+    if (!cubesMesh && simpleRoot && simpleRoot.traverse) {
       simpleRoot.traverse((o) => {
-        if (o.isInstancedMesh) instanced = o;
+        if (o.isInstancedMesh && !cubesMesh) cubesMesh = o;
       });
     }
-    // Intentar leer indexByGrid del mesh de cubos (hijo [1])
-    try {
-      const cubesMesh = faceGroupEntry.userData?.simpleMesh?.children?.[1] || faceGroupEntry.children?.[1]?.children?.[1];
-      if (cubesMesh?.userData?.indexByGrid) indexByGrid = cubesMesh.userData.indexByGrid;
-      if (!instanced && cubesMesh?.isInstancedMesh) instanced = cubesMesh;
-    } catch {}
+    if (cubesMesh) {
+      if (cubesMesh.userData?.indexByGrid) indexByGrid = cubesMesh.userData.indexByGrid;
+      if (cubesMesh.isInstancedMesh) instanced = cubesMesh;
+    }
     if (!instanced) return;
     let idx = -1;
     if (indexByGrid) {
@@ -1032,12 +1037,24 @@ function showXAnimation(scene, worldPosition, THREE, color = [220, 40, 40]) {
 
     let t = 0;
     const duration = 0.5;
+    let done = false;
+    // v1.3.12: watchdog. Si scene.remove tira excepción o el RAF nunca se
+    // dispara (app en background), el sprite queda huérfano. Después de
+    // duration+1s forzamos cleanup.
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      try { scene.remove(sprite); } catch {}
+      try { sprite.material.dispose(); } catch {}
+      try { if (sprite.material.map) sprite.material.map.dispose(); } catch {}
+    };
+    const watchdog = setTimeout(cleanup, (duration + 1) * 1000);
     const step = () => {
+      if (done) return;
       t += 0.016;
       if (t >= duration) {
-        scene.remove(sprite);
-        sprite.material.dispose();
-        if (sprite.material.map) sprite.material.map.dispose();
+        clearTimeout(watchdog);
+        cleanup();
         return;
       }
       const progress = t / duration;
@@ -1101,12 +1118,22 @@ function showGemAnimation(scene, worldPosition, THREE, gemDef) {
 
     let t = 0;
     const duration = 0.8;
+    let done = false;
+    // v1.3.12: watchdog idéntico al de showXAnimation.
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      try { scene.remove(sprite); } catch {}
+      try { sprite.material.dispose(); } catch {}
+      try { if (sprite.material.map) sprite.material.map.dispose(); } catch {}
+    };
+    const watchdog = setTimeout(cleanup, (duration + 1) * 1000);
     const step = () => {
+      if (done) return;
       t += 0.016;
       if (t >= duration) {
-        scene.remove(sprite);
-        sprite.material.dispose();
-        if (sprite.material.map) sprite.material.map.dispose();
+        clearTimeout(watchdog);
+        cleanup();
         return;
       }
       const progress = t / duration;
@@ -1348,6 +1375,10 @@ function createFaceInstancesForLayer(K, faceIndex){
   const faceRoot = new THREE.Group();
   faceRoot.add(backgroundMesh);
   faceRoot.add(cubesMesh);
+  // v1.3.12: referencia directa al cubesMesh para evitar acceso vía
+  // children[1] mágico en setMinedCubeColor / addDarkPatch / etc.
+  faceRoot.userData.cubesMesh = cubesMesh;
+  faceRoot.userData.backgroundMesh = backgroundMesh;
   return { simpleMesh: faceRoot, borderMesh: new THREE.Group(), createDetailedMesh: () => [], faceIndex };
 }
 
@@ -1380,7 +1411,10 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
     // Crear sprite del nÃƒÂºmero en gris y guardarlo para control de visibilidad en el render loop
     try {
       // localizar el InstancedMesh para obtener el nÃƒÂºmero de esta celda
-      const cubesMesh = faceGroupEntry.userData?.simpleMesh?.children?.[1] || faceGroupEntry.children?.[1]?.children?.[1] || null;
+      const cubesMesh = faceGroupEntry.userData?.simpleMesh?.userData?.cubesMesh
+                     || faceGroupEntry.userData?.simpleMesh?.children?.[1]
+                     || faceGroupEntry.children?.[1]?.children?.[1]
+                     || null;
       if (cubesMesh && cubesMesh.userData) {
         const GRID_SIZE = cubesMesh.userData.GRID_SIZE || (2 * K + 1);
         const indexByGrid = cubesMesh.userData.indexByGrid;
@@ -1637,6 +1671,8 @@ const handleZoomButton = useCallback((direction) => {
   const [globalMinedCurrentLayer, setGlobalMinedCurrentLayer] = useState(0);
   const [layerMinedCount, setLayerMinedCount] = useState(0); // mined en capa actual
   const [totalMinedAllLayers, setTotalMinedAllLayers] = useState(0); // suma de mined en todas las capas
+  // v1.3.13: cantidad de jugadores que se unieron al server (memberCount)
+  const [serverMemberCount, setServerMemberCount] = useState(0);
   // Menú hamburguesa
   const [menuOpen, setMenuOpen] = useState(false);
   // Modal "Cómo se juega?"
@@ -1676,7 +1712,7 @@ const handleZoomButton = useCallback((direction) => {
   const gestureZoomingRef = useRef(false);
   // Flag: hay un gesto activo — suspende reconstrucción de número meshes
   const isGesturingRef = useRef(false);
-  const minedByLayerRef = useRef(new Map()); // K -> Set of 'ix,iy,iz'
+  // v1.3.12: minedByLayerRef removido — era dead code, nunca leído ni asignado.
   const minedAppliedRef = useRef(new Set()); // keys: `${faceIndex}:${gridX}:${gridY}` para evitar duplicados
   // Celdas con animaciÃƒÂ³n local en curso para no aplicar parche por realtime antes de tiempo
   const pendingAnimCellsRef = useRef(new Set()); // keys: `${K}:${faceIndex}:${gridX}:${gridY}`
@@ -2063,25 +2099,50 @@ const handleZoomButton = useCallback((direction) => {
         const n = Number(mined) || 0;
         setLayerMinedCount(n);
         setGlobalMinedCurrentLayer(n);
+      }, (err) => {
+        // v1.3.13: error handler explícito. Mismo motivo que el listener de
+        // mined — sin esto un permission-denied o problema de red queda silencioso.
+        console.warn('subscribe current layer stats onSnapshot error', err);
       });
     } catch (e) {
       console.warn('subscribe current layer stats error', e);
     }
     try {
+      // v1.3.13: limit(101) explícito. La colección layers tiene como máximo
+      // 101 docs (K=0..100), pero ponerlo explícito es defensa: si en el
+      // futuro las rules tienen cap por limit, o aparecen docs basura, no
+      // descarga toda la colección.
       const colRef = collection(db, 'servers', serverId, 'layers');
-      unsubAllLayers = onSnapshot(colRef, (snapshot) => {
+      const allLayersQuery = query(colRef, limit(101));
+      unsubAllLayers = onSnapshot(allLayersQuery, (snapshot) => {
         let sum = 0;
         snapshot.forEach((docSnap) => {
           sum += Number(docSnap.data()?.stats?.mined || 0);
         });
         setTotalMinedAllLayers(sum);
+      }, (err) => {
+        console.warn('subscribe all layers stats onSnapshot error', err);
       });
     } catch (e) {
       console.warn('subscribe all layers stats error', e);
     }
+    // v1.3.13: listener al doc del server para memberCount (Players Online).
+    let unsubServer = null;
+    try {
+      const serverRef = doc(db, 'servers', serverId);
+      unsubServer = onSnapshot(serverRef, (snap) => {
+        const n = snap.exists() ? Number(snap.data()?.memberCount || 0) : 0;
+        setServerMemberCount(n);
+      }, (err) => {
+        console.warn('subscribe server memberCount error', err);
+      });
+    } catch (e) {
+      console.warn('subscribe server memberCount setup error', e);
+    }
     return () => {
       try { unsubCurrentLayer && unsubCurrentLayer(); } catch {}
       try { unsubAllLayers && unsubAllLayers(); } catch {}
+      try { unsubServer && unsubServer(); } catch {}
     };
   }, [db, serverId, currentLayer]);
 
@@ -3570,18 +3631,25 @@ const handleZoomButton = useCallback((direction) => {
           // Vectores right/up en funciÃƒÂ³n de la cara para desplazar sobre la superficie (grid pan)
           const rightVector = _sv8.set(0, 0, 0);
           const upVector = _sv9.set(0, 0, 0);
+          // v1.3.13: signos según la normal para que el pan se sienta natural
+          // en TODAS las caras. Antes top/bottom (y left/right, front/back)
+          // compartían rightVector/upVector → en una de cada par el pan se
+          // invertía visualmente porque la cámara mira al lado opuesto.
           if (Math.abs(activeFace.normal.y) > 0.9) {
-            // top/bottom
-            rightVector.set(1, 0, 0);  // derecha = X
-            upVector.set(0, 0, 1);     // arriba = Z
+            // top (+Y) mira hacia -Y: en pantalla, "arriba" es -Z.
+            // bottom (-Y) mira hacia +Y: en pantalla, "arriba" es +Z.
+            rightVector.set(1, 0, 0);
+            upVector.set(0, 0, -Math.sign(activeFace.normal.y));
           } else if (Math.abs(activeFace.normal.x) > 0.9) {
-            // left/right - FIX: intercambiar para que X sea horizontal, Y sea vertical
-            rightVector.set(0, 0, 1);  // FIX: derecha = Z (perpendicular a la cara X)
-            upVector.set(0, 1, 0);     // FIX: arriba = Y
+            // right (+X) mira hacia -X: en pantalla, "derecha" es -Z.
+            // left (-X) mira hacia +X: en pantalla, "derecha" es +Z.
+            rightVector.set(0, 0, -Math.sign(activeFace.normal.x));
+            upVector.set(0, 1, 0);
           } else {
-            // front/back
-            rightVector.set(1, 0, 0);  // derecha = X
-            upVector.set(0, 1, 0);     // arriba = Y
+            // front (+Z) mira hacia -Z: en pantalla, "derecha" es +X.
+            // back (-Z) mira hacia +Z: en pantalla, "derecha" es -X.
+            rightVector.set(Math.sign(activeFace.normal.z), 0, 0);
+            upVector.set(0, 1, 0);
           }
           // Usar gridPositionRef para evitar valores obsoletos
           const gp = gridPositionRef.current || { x: 0, y: 0 };
@@ -4588,17 +4656,16 @@ const handleZoomButton = useCallback((direction) => {
           <TouchableOpacity style={styles.picksWrap} onPress={() => { try { openModal('peaks'); } catch(e) {} }} activeOpacity={0.8}>
             <Text style={styles.picksTxt}>⛏ x {typeof picks === 'number' ? picks : '...'}</Text>
           </TouchableOpacity>
-          <View style={styles.moneyWrap}>
-            <Text style={styles.moneyTxt}>${(Number(cash) || 0).toFixed(2)}</Text>
-          </View>
+          {/* v1.3.13: $0.00 removido del HUD del cubo. Las gemas/cash tienen su
+              lugar propio en /gems; en el cubo distraía sin aportar. */}
         </View>
-        {/* HUD minimal: Distance, Layer, Mined */}
+        {/* HUD v1.3.13: distance / Layer / Mined Layer / Mined Total / Next Layer / Players Online */}
         <Text style={styles.stats}>{t('cube.hudDistance')}: {realDistance.toFixed(1)}</Text>
         <Text style={styles.stats}>{t('cube.hudLayer')}: {currentLayer}</Text>
-        <Text style={styles.stats}>{t('cube.hudMined')}: {minedCubes.size}</Text>
-        <Text style={styles.stats}>{t('cube.hudRemaining')}: {Math.max(0, shellSize(currentLayer) - Number(layerMinedCount || 0))}</Text>
         <Text style={styles.stats}>{t('cube.hudLayerMined')}: {layerMinedCount}</Text>
         <Text style={styles.stats}>{t('cube.hudTotalMined')}: {totalMinedAllLayers}</Text>
+        <Text style={styles.stats}>{t('cube.hudNextLayer')}: {Math.max(0, shellSize(currentLayer) - Number(layerMinedCount || 0))}</Text>
+        <Text style={styles.stats}>{t('cube.hudPlayersOnline')}: {serverMemberCount}</Text>
         {hudToast && (
           <Text style={[styles.stats, { color: '#0a84ff', fontWeight: 'bold' }]}>
             {hudToast}
@@ -5547,14 +5614,17 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end'
   },
   faceButton: {
-    flexShrink: 1,
+    // v1.3.13: width fijo. Antes era minWidth+flexShrink → los botones top/bottom
+    // se expandían más que el resto porque sus rangos numéricos son más altos
+    // (más dígitos = más ancho de texto). Forzar mismo width los alinea.
+    width: 88,
+    flexShrink: 0,
     backgroundColor: '#333333',
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 6,
     borderWidth: 1,
     borderColor: '#333333',
-    minWidth: 78,
     alignItems: 'center',
   },
   activeFaceButton: {
