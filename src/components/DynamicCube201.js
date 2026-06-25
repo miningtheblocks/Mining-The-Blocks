@@ -1928,16 +1928,7 @@ const handleZoomButton = useCallback((direction) => {
         orderBy('minedAt', 'desc'),
         limit(2500)
       );
-      let firstSnapshotShown = false;
       unsub = onSnapshot(q, (snap) => {
-        // v1.3.10: diagnóstico temporal — mostrar en HUD cuántos docs trajo
-        // el primer snapshot. Si "Mineds DB: 0" significa que el listener
-        // no recibe datos (auth/rules/network). Si "Mineds DB: N" pero los
-        // parches no aparecen, el bug está en applyMinedCell/render.
-        if (!firstSnapshotShown) {
-          firstSnapshotShown = true;
-          try { showHudToast(`Mineds DB: ${snap.size} | K=${currentLayer}`, 4000); } catch {}
-        }
         const idsToAdd = [];
         snap.docChanges().forEach((ch) => {
           if (ch.type !== 'added') return; // en primera carga llegan todos como added
@@ -1996,12 +1987,13 @@ const handleZoomButton = useCallback((direction) => {
       }, (err) => {
         // v1.3.10: error handler — antes Firestore podía rechazar la query
         // (auth no listo, rules deny, network) sin que el usuario lo viera.
-        try { showHudToast(`ERR Firestore: ${err?.code || err?.message || 'unknown'}`, 6000); } catch {}
+        // El toast de diagnóstico se quitó en v1.3.11 una vez confirmado que el
+        // cap de rules estaba desalineado; el handler queda como protección
+        // por si reaparece otro permission-denied (sería visible en logcat).
         console.warn('mined onSnapshot error', err);
       });
     } catch (e) {
       console.warn('mined realtime subscribe error', e);
-      try { showHudToast(`ERR subscribe: ${e?.message || 'unknown'}`, 6000); } catch {}
     }
     return () => {
       try { unsub && unsub(); } catch {}
@@ -3489,9 +3481,15 @@ const handleZoomButton = useCallback((direction) => {
         // Extender ventana de gesto activo para mantener modo grilla estable durante el pan
         // Reducir la ventana de pegajosidad de pan en grilla para que suelte mÃ¡s rÃƒÂ¡pido
         const panActive = nowTs - (lastGridPanTsRef.current || 0) < 800;
+        // v1.3.11: respetar suppressAutoGridRef en la transicion auto. Sin esto
+        // el zoom out de goToFaceCenter (fase 1, distance=650) sacaba de grid
+        // y limpiaba requestedFaceRef -> al volver a entrar (fase 3 zoom in)
+        // la camara aterrizaba en la cara DETECTADA en vez de la solicitada por
+        // el boton. Resultado: apretar "back" tras "left" terminaba en "front".
+        const suppressedAutoGrid = nowTs < (suppressAutoGridRef.current || 0);
         // CRÃƒÂTICO: Eliminar requestedFaceRef.current para evitar loop infinito
-        const shouldUseCameraMode = shouldUseCameraModeForCalc || panActive;
-        const stickyGrid = (cameraModeRef.current === 'grid') && shouldUseCameraModeForCalc;
+        const shouldUseCameraMode = shouldUseCameraModeForCalc || panActive || suppressedAutoGrid;
+        const stickyGrid = (cameraModeRef.current === 'grid') && (shouldUseCameraModeForCalc || suppressedAutoGrid);
         const effectiveUseCameraMode = shouldUseCameraMode || stickyGrid;
 
         if (effectiveUseCameraMode && cameraModeRef.current === 'cube') {

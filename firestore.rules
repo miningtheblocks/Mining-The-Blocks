@@ -110,12 +110,16 @@ service cloud.firestore {
 
       // Mined cubes: any authenticated user can read
       // Writes only via Cloud Functions (admin bypasses rules)
-      // Round 2 #2/#12 HIGH: cap query.limit a 500 (servidor con 6 capas
-      // tiene hasta ~50k cubos minados; sin cap el cliente puede traer
-      // toda la colección en bucle).
+      // Round 2 #2/#12 HIGH: cap query.limit (anti-DoS — sin cap el cliente
+      // puede traer toda la colección en bucle).
+      // 2026-06-25: subido de 500 → 2500 para alinear con PERF-004 del frontend
+      // (DynamicCube201.js listener pide limit(2500) para cubrir mineamientos
+      // recientes en capas K=100 que tienen ~242k cubos). Con 500 las queries
+      // del listener fallaban con permission-denied → los parches no
+      // persistían al reabrir la app. 2500 sigue siendo razonable como anti-DoS.
       match /mined/{cubeId} {
         allow read: if request.auth != null
-          && (request.query == null || request.query.limit <= 500);
+          && (request.query == null || request.query.limit <= 2500);
         allow write: if false;
       }
 
