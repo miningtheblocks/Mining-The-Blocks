@@ -7,6 +7,7 @@ import { GEMS } from '../utils/gems';
 import { callGetUserGems, callClaimGemNFT } from '../firebase/functions';
 import { auth, db } from '../firebase/client';
 import { doc, onSnapshot } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { useI18n } from '../utils/i18n';
 import GemPixelArt from '../components/GemPixelArt';
 import { useAppAlert } from '../components/AppAlert';
@@ -53,48 +54,113 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
   const [claiming, setClaiming] = useState(null); // gemId en proceso
   const [selected, setSelected] = useState(null); // gemId para detalle
 
-  // Escuchar wallet del usuario en tiempo real
+  // Escuchar wallet del usuario en tiempo real.
+  // v1.3.14: reactivar suscripción cuando el user de auth cambia. Antes solo
+  // se suscribía si `auth.currentUser` ya existía en el mount → si el modal
+  // se abría antes de que auth hidratara, nunca aparecía la wallet.
   useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) return;
-    const ref = doc(db, 'users', u.uid);
-    const unsub = onSnapshot(ref, (snap) => {
-      setWallet(snap.exists() ? (snap.data().walletAddress || null) : null);
+    let unsubDoc = null;
+    const subscribeFor = (uid) => {
+      try { if (unsubDoc) unsubDoc(); } catch {}
+      unsubDoc = null;
+      if (!uid) { setWallet(null); return; }
+      const ref = doc(db, 'users', uid);
+      unsubDoc = onSnapshot(ref, (snap) => {
+        setWallet(snap.exists() ? (snap.data().walletAddress || null) : null);
+      }, (err) => {
+        console.warn('MyGems.walletListener error', err?.code, err?.message);
+      });
+    };
+    subscribeFor(auth.currentUser?.uid || null);
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      subscribeFor(user?.uid || null);
     });
-    return () => unsub();
+    return () => {
+      try { if (unsubDoc) unsubDoc(); } catch {}
+      try { unsubAuth && unsubAuth(); } catch {}
+    };
   }, []);
 
+  // v1.3.14: refactor para resolver "unauthenticated" intermitente.
+  //   1. Esperar `auth.authStateReady()` antes de la primera llamada — el
+  //      modal puede abrirse antes que el SDK termine de hidratar el user
+  //      desde el storage, y `currentUser` es null aunque haya sesión válida.
+  //   2. Tres intentos con backoff (0ms, 500ms, 2s) si el server devuelve
+  //      `unauth`. Antes solo había UNO con `getIdToken(true)`; si la fuga
+  //      es por token refresh todavía en curso, el reintento tarda 1-2s.
+  //   3. Listener `onAuthStateChanged` que dispara `loadGems` si el user
+  //      cambia mientras el modal está abierto.
+  //   4. console.warn detallado en cada fallo para diagnosticar via logcat.
   const loadGems = useCallback(async () => {
-    const u = auth.currentUser;
-    if (!u) { setLoading(false); return; }
     setLoading(true);
     try {
-      try { await u.getIdToken(); } catch {}
-      const { gems: list } = await callGetUserGems();
-      setGems(list || []);
-    } catch (e) {
-      const code = String(e?.code || e?.message || '').toLowerCase();
-      if (code.includes('unauth') && auth.currentUser) {
-        try {
-          await auth.currentUser.getIdToken(true);
-          const { gems: list } = await callGetUserGems();
-          setGems(list || []);
-          return;
-        } catch (e2) {
-          showAlert('Error', e2?.message || t('myGems.errorLoad'));
+      try { await auth.authStateReady(); } catch (e) {
+        console.warn('MyGems.loadGems: authStateReady failed', e?.message);
+      }
+      const u = auth.currentUser;
+      if (!u) {
+        console.warn('MyGems.loadGems: no currentUser tras authStateReady');
+        setLoading(false);
+        return;
+      }
+      const attemptOnce = async (forceRefresh) => {
+        try { await u.getIdToken(forceRefresh); } catch (e) {
+          console.warn('MyGems.loadGems: getIdToken failed', { force: forceRefresh, msg: e?.message });
+        }
+        return callGetUserGems();
+      };
+      // Intento 1: token actual.
+      try {
+        const { gems: list } = await attemptOnce(false);
+        setGems(list || []);
+        return;
+      } catch (e1) {
+        const code1 = String(e1?.code || e1?.message || '').toLowerCase();
+        console.warn('MyGems.loadGems attempt 1 failed', { uid: u.uid, code: e1?.code, msg: e1?.message });
+        if (!code1.includes('unauth') || !auth.currentUser) {
+          showAlert('Error', e1?.message || t('myGems.errorLoad'));
           return;
         }
       }
-      showAlert('Error', e?.message || t('myGems.errorLoad'));
+      // Intento 2: force refresh del token, 500ms después.
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        const { gems: list } = await attemptOnce(true);
+        setGems(list || []);
+        return;
+      } catch (e2) {
+        console.warn('MyGems.loadGems attempt 2 failed', { uid: u.uid, code: e2?.code, msg: e2?.message });
+      }
+      // Intento 3: último retry con backoff 2s + force refresh.
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const { gems: list } = await attemptOnce(true);
+        setGems(list || []);
+        return;
+      } catch (e3) {
+        console.warn('MyGems.loadGems attempt 3 failed', { uid: u.uid, code: e3?.code, msg: e3?.message });
+        showAlert('Error', e3?.message || t('myGems.errorLoad'));
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Load when modal opens (visible goes true) or on standalone mount
+  // Load cuando el modal se abre (visible→true) o en mount standalone.
   useEffect(() => {
     if (asModal ? visible : true) loadGems();
   }, [visible]);
+
+  // v1.3.14: reintentar si el user de auth cambia mientras el modal está
+  // abierto (login tardío, refresh de sesión, etc.). Sin esto la primera
+  // carga fallaba y el usuario tenía que cerrar/abrir el modal a mano.
+  useEffect(() => {
+    if (!(asModal ? visible : true)) return;
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) loadGems();
+    });
+    return () => unsub();
+  }, [visible, loadGems]);
 
   const copyCode = async (code) => {
     try { await Share.share({ message: code }); } catch {}
