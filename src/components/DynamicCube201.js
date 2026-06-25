@@ -1932,10 +1932,19 @@ const handleZoomButton = useCallback((direction) => {
         const idsToAdd = [];
         snap.docChanges().forEach((ch) => {
           if (ch.type !== 'added') return; // en primera carga llegan todos como added
-          const id = ch.doc.id;
+          const docId = ch.doc.id;
+          // v1.3.9: el backend escribe el doc con id `${K}_${cubeNumber}` desde
+          // el fix CRIT-1 (Round 2 Agente #1) para evitar colisiones entre capas.
+          // El frontend espera el número puro; sin este parseo `Number("99_12345")`
+          // daba NaN y `cubeNumberToFaceGrid` retornaba null → todos los mineds
+          // previos se ignoraban en cold start (modal se abría en cubos ya minados
+          // y los parches no persistían). Backward-compat: si no hay "_" aceptamos
+          // el formato viejo (solo N).
+          const n = docId.includes('_') ? Number(docId.split('_')[1]) : Number(docId);
+          if (!Number.isFinite(n)) return;
           const docData = ch.doc.data();
           const rewardPicksFromDB = Number(docData?.rewardPicks || 0);
-          const map = cubeNumberToFaceGrid(id);
+          const map = cubeNumberToFaceGrid(n);
           if (!map) return;
           const { faceIndex, gridX, gridY } = map;
           // Aplicar sólo si corresponde a la capa actual
@@ -1952,7 +1961,12 @@ const handleZoomButton = useCallback((direction) => {
             }
 
             const ok = applyMinedCell(faceIndex, gridX, gridY, rewardPicks);
-            idsToAdd.push(id);
+            // v1.3.9: usar `n` (número de cubo) en el Set, NO el docId completo
+            // "K_N". El resto del componente (findClosestVisibleNumber, render
+            // loop, etc.) hace `minedCubes.has(apiId)` con apiId numérico, así
+            // que el formato debe ser consistente con el del flujo manual de
+            // minado (que también agrega `apiId` numérico al set).
+            idsToAdd.push(n);
             // Si la escena no estaba lista (ok=false), reintentar con delay
             // para no perder la marca visual de minados que llegan en cold start.
             if (!ok) {
