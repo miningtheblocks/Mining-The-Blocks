@@ -3930,21 +3930,45 @@ const handleZoomButton = useCallback((direction) => {
         const shouldDoCulling = cullingFrameCounter.current % 3 === 0;
         
         if (shouldDoCulling) {
-          // Controlar visibilidad de sprites SOLO EN CARA ACTIVA
+          // Visibilidad de parches/sprites de cubos minados.
+          // v1.3.7: los PARCHES grises representan el estado "cubo minado" —
+          // tienen que ser visibles SIEMPRE que la cara mire a la cámara,
+          // sin importar el zoom ni cuál sea la cara "activa". Antes los
+          // ocultábamos cuando la cara no era activa o `shouldShowNumbers`
+          // era false → parches no aparecían en modo cubo (varias caras) ni
+          // tras reiniciar la app hasta acercar mucho el zoom.
+          // Los NÚMEROS grises e INDICADORES de recompensa sí mantienen la
+          // condición original (solo en cara activa con zoom adecuado) para
+          // no saturar la pantalla en modo cubo.
           for (let faceIndex = 0; faceIndex < faceGroupsRef.current.length; faceIndex++) {
           const faceGroup = faceGroupsRef.current[faceIndex];
           const isActiveFace = (stableMostVisibleFaceIndex === faceIndex);
           const isFacingCamera = faceGroup.userData.facingCamera || false;
-          const shouldShowSprites = shouldShowNumbers && isFacingCamera && isActiveFace;
-          
-          // OPTIMIZACIÓN: Para caras inactivas, ocultar todos los sprites de una vez SIN iterar
-          if (!isActiveFace || !shouldShowSprites) {
-            // Ocultar todos los sprites de esta cara sin procesamiento individual
-            if (faceGroup.userData.minedPatches) {
+          const shouldShowAux = shouldShowNumbers && isFacingCamera && isActiveFace;
+
+          // PARCHES grises: visibles si la cara mira a la cámara — viewport
+          // culling preciso por celda para no pintar fuera de pantalla.
+          if (faceGroup.userData.minedPatches) {
+            if (!isFacingCamera) {
               faceGroup.userData.minedPatches.forEach(patch => {
                 if (patch && typeof patch.visible !== 'undefined') patch.visible = false;
               });
+            } else {
+              faceGroup.userData.minedPatches.forEach((patch) => {
+                if (patch && typeof patch.visible !== 'undefined') {
+                  patch.getWorldPosition(_sv3);
+                  _sv4.copy(_sv3).project(camera);
+                  patch.visible = _sv4.z >= -1 && _sv4.z <= 1 &&
+                                  _sv4.x >= -1.1 && _sv4.x <= 1.1 &&
+                                  _sv4.y >= -1.1 && _sv4.y <= 1.1;
+                }
+              });
             }
+          }
+
+          // NÚMEROS grises e INDICADORES: solo en cara activa con zoom dentro
+          // del rango (mantiene la lógica original para no saturar).
+          if (!shouldShowAux) {
             if (faceGroup.userData.minedNumberSprites) {
               faceGroup.userData.minedNumberSprites.forEach(sprite => {
                 if (sprite && typeof sprite.visible !== 'undefined') sprite.visible = false;
@@ -3955,24 +3979,9 @@ const handleZoomButton = useCallback((direction) => {
                 if (sprite && typeof sprite.visible !== 'undefined') sprite.visible = false;
               });
             }
-            continue; // ✅ Saltar al siguiente faceIndex sin hacer culling costoso
-          }
-          
-          // SOLO PARA CARA ACTIVA: Hacer viewport culling preciso (usa scratch para evitar allocations)
-          // Controlar parches grises oscuros de celdas minadas
-          if (faceGroup.userData.minedPatches) {
-            faceGroup.userData.minedPatches.forEach((patch) => {
-              if (patch && typeof patch.visible !== 'undefined') {
-                patch.getWorldPosition(_sv3);
-                _sv4.copy(_sv3).project(camera);
-                patch.visible = _sv4.z >= -1 && _sv4.z <= 1 &&
-                                _sv4.x >= -1.1 && _sv4.x <= 1.1 &&
-                                _sv4.y >= -1.1 && _sv4.y <= 1.1;
-              }
-            });
+            continue;
           }
 
-          // Controlar números grises de celdas minadas
           if (faceGroup.userData.minedNumberSprites) {
             faceGroup.userData.minedNumberSprites.forEach((sprite) => {
               if (sprite && typeof sprite.visible !== 'undefined') {
@@ -3985,7 +3994,6 @@ const handleZoomButton = useCallback((direction) => {
             });
           }
 
-          // Controlar indicadores de premio (X y picos)
           if (faceGroup.userData.rewardIndicators) {
             faceGroup.userData.rewardIndicators.forEach((sprite) => {
               if (sprite && typeof sprite.visible !== 'undefined') {
@@ -4883,6 +4891,24 @@ const handleZoomButton = useCallback((direction) => {
                   if (resp && resp.alreadyMined === true) {
                     setMiningModal(null);
                     showHudToast(t('cube.alreadyMined') || 'Ya minado');
+                    // v1.3.7: si las grietas ya arrancaron (rotura disparada a 1400ms)
+                    // y la API responde alreadyMined, las grietas quedan pegadas en
+                    // escena sin explosión. Esperar que el animation termine y limpiar.
+                    try {
+                      if (cracksPromiseRef.current) {
+                        await cracksPromiseRef.current;
+                        cracksPromiseRef.current = null;
+                      }
+                    } catch {}
+                    try { cleanupCracksNow(sceneRef.current); } catch {}
+                    // Liberar pendingAnimCells — el patch lo aplicará el listener
+                    // de Firestore en su próximo snapshot.
+                    try {
+                      if (modalData && typeof modalData.faceIndex === 'number') {
+                        const ck = `${currentLayer}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
+                        pendingAnimCellsRef.current.delete(ck);
+                      }
+                    } catch {}
                   } else if (resp && resp.ok === true) {
                     let finalReward = Number(resp?.reward || 0);
                     const finalGem = resp?.gem || null; // null or 1-9
@@ -4916,6 +4942,12 @@ const handleZoomButton = useCallback((direction) => {
                       if (modalData && typeof modalData.faceIndex === 'number') {
                         const ck = `${currentLayer}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
                         pendingAnimCellsRef.current.delete(ck);
+                        // v1.3.7: red de seguridad — si startMining no logró
+                        // aplicar el patch (faceGroupsRef estaba a medio armar),
+                        // ya el `delete()` libera la celda y aquí forzamos un
+                        // último intento. Si startMining lo hizo OK, este call
+                        // es no-op gracias a `minedAppliedRef`.
+                        try { applyMinedCell(modalData.faceIndex, modalData.gridX, modalData.gridY, finalReward); } catch {}
                       }
                     } catch {}
                     // CRIT-01: extraído `rewardCash` como variable local para
@@ -5059,6 +5091,16 @@ const handleZoomButton = useCallback((direction) => {
                     const msg = (t('cube.invalidResponse') || '').replace('{msg}', JSON.stringify(resp));
                     showAlert(t('cube.errorTitle'), msg);
                     showHudToast(t('cube.serverErrorToast'));
+                    // v1.3.7: limpiar cracks si quedaron pegados (mismo motivo
+                    // que el path alreadyMined — la rotura disparó las grietas
+                    // pero startMining nunca ejecutó la explosión).
+                    try {
+                      if (cracksPromiseRef.current) {
+                        await cracksPromiseRef.current;
+                        cracksPromiseRef.current = null;
+                      }
+                    } catch {}
+                    try { cleanupCracksNow(sceneRef.current); } catch {}
                   }
                 } catch (e) {
                   console.error('❌ ERROR calling mineCube:', e);
