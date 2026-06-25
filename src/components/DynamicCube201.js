@@ -1928,7 +1928,16 @@ const handleZoomButton = useCallback((direction) => {
         orderBy('minedAt', 'desc'),
         limit(2500)
       );
+      let firstSnapshotShown = false;
       unsub = onSnapshot(q, (snap) => {
+        // v1.3.10: diagnóstico temporal — mostrar en HUD cuántos docs trajo
+        // el primer snapshot. Si "Mineds DB: 0" significa que el listener
+        // no recibe datos (auth/rules/network). Si "Mineds DB: N" pero los
+        // parches no aparecen, el bug está en applyMinedCell/render.
+        if (!firstSnapshotShown) {
+          firstSnapshotShown = true;
+          try { showHudToast(`Mineds DB: ${snap.size} | K=${currentLayer}`, 4000); } catch {}
+        }
         const idsToAdd = [];
         snap.docChanges().forEach((ch) => {
           if (ch.type !== 'added') return; // en primera carga llegan todos como added
@@ -1984,9 +1993,15 @@ const handleZoomButton = useCallback((direction) => {
             return s;
           });
         }
+      }, (err) => {
+        // v1.3.10: error handler — antes Firestore podía rechazar la query
+        // (auth no listo, rules deny, network) sin que el usuario lo viera.
+        try { showHudToast(`ERR Firestore: ${err?.code || err?.message || 'unknown'}`, 6000); } catch {}
+        console.warn('mined onSnapshot error', err);
       });
     } catch (e) {
       console.warn('mined realtime subscribe error', e);
+      try { showHudToast(`ERR subscribe: ${e?.message || 'unknown'}`, 6000); } catch {}
     }
     return () => {
       try { unsub && unsub(); } catch {}
@@ -2026,15 +2041,16 @@ const handleZoomButton = useCallback((direction) => {
       }
       return allApplied;
     };
-    // v1.3.8: 30 intentos × 500ms = 15s. Aumentado desde 10 (5s) porque en
-    // devices Redmi con LOW tier el buildLayer async + K=100 puede tardar más
-    // de 5s. Si después de 15s aún no se aplicaron, el problema está en otro
-    // lado (faceGroupsRef nunca poblado, etc).
+    // v1.3.10: retry indefinido hasta que todo aplicó (o el component se
+    // desmonte). Antes abandonábamos a 15s, lo que en Redmi LOW tier con K=100
+    // podía no alcanzar — buildLayer + numeración global tardan más. Tope de
+    // seguridad: 5 min (600 iteraciones × 500ms) para no consumir CPU si algo
+    // realmente está roto.
     let attempts = 0;
     const timer = setInterval(() => {
       attempts++;
       const ok = tryApply();
-      if (ok || attempts >= 30) {
+      if (ok || attempts >= 600) {
         clearInterval(timer);
       }
     }, 500);
@@ -4336,7 +4352,13 @@ const handleZoomButton = useCallback((direction) => {
             await new Promise((r) => setTimeout(r, 0));
           }
         }
-        faceGroupsRef.current = faceGroups;
+        // v1.3.10: NO setear faceGroupsRef todavía. Antes lo hacíamos acá pero
+        // el listener Firestore podía llamar `applyMinedCell` → `addDarkPatch`
+        // ANTES de que la numeración global poblara `cubeNumbers`. Resultado:
+        // patches creados sin sprite de número ni reward indicator (parches
+        // "negros" sin nada encima). Moviendo la asignación al final, después
+        // de poblar cubeNumbers, garantizamos que cuando el listener pueda
+        // aplicar patches, los datos están completos.
         // Numeración global por shell K. Como ahora un cubo de arista/esquina
         // aparece en 2-3 caras, usamos un Map<coord3D, number> para que el
         // mismo cubo tenga el mismo número en todas las caras donde aparece.
@@ -4389,6 +4411,8 @@ const handleZoomButton = useCallback((direction) => {
           // guardar de nuevo
           cubesMesh.userData.cubeNumbers = numbers;
         }
+        // v1.3.10: AHORA sí, con cubeNumbers poblado en todas las caras.
+        faceGroupsRef.current = faceGroups;
        } finally {
         clearTimeout(_buildSafety);
         buildingLayerRef.current = false;
