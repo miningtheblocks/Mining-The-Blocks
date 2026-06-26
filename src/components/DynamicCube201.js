@@ -3702,9 +3702,7 @@ const handleZoomButton = useCallback((direction) => {
         const hasActiveAnimations = false;
         // IMPORTANTE: NO forzar números fuera del rango de zoom, incluso si hay cara seleccionada
         const shouldShowNumbers = !hasActiveAnimations && (distanceToNearestCube >= (minZoom - EPS) && distanceToNearestCube <= (maxZoom + EPS));
-        
-        // Optimización: Logs eliminados del render loop para mejor rendimiento
-        
+
         // Array para almacenar números visibles
         const currentVisibleNumbers = [];
         
@@ -4026,9 +4024,11 @@ const handleZoomButton = useCallback((direction) => {
                     q.seen.add(rawN);
                   }
                 }
-                // Cap de la cola — si crece sin control (user moviendo mucho)
-                // descartamos los más viejos (FIFO). 1500 entries es ~6× ring.
-                while (q.list.length > 1500) {
+                // v1.3.18: cap escalable por tier. Antes 1500 hardcoded. En LOW
+                // tier el thrashing era peor; en HIGH el cap chico desperdiciaba
+                // RAM disponible. Ahora 800/1500/2500 según preset.
+                const _lookCap = (perfTier.getPreset && perfTier.getPreset().lookaheadCapacity) || 1500;
+                while (q.list.length > _lookCap) {
                   const dropped = q.list.shift();
                   q.seen.delete(dropped);
                 }
@@ -4133,11 +4133,7 @@ const handleZoomButton = useCallback((direction) => {
           }
         }
         }
-        
-        // Debug: log caras visibles si hay cambios
-        if (currentlyVisible.length !== visibleFaces.length) {
-        }
-        
+
         // Actualizar ref de números visibles cada frame (sin re-render)
         visibleNumbersRef.current = currentVisibleNumbers;
 
