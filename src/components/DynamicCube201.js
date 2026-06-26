@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { createRealisticPickaxeTexture, getHighDefinitionPickaxeTexture } from './PickaxeFromPNG';
 import { findClosestFaceFixed, resetFaceDetection, setForcedFace } from './FaceDetection';
-import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform } from 'react-native';
+import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform, ActivityIndicator } from 'react-native';
 import { useAppAlert } from './AppAlert';
 import { GLView } from 'expo-gl';
 import * as THREE from 'three';
@@ -1507,6 +1507,9 @@ export default function DynamicCube201() {
   const renderPausedRef = useRef(false);
   const contextLostHandledRef = useRef(false);
   const buildingLayerRef = useRef(false);
+  // v1.3.19: state acompaña al ref para poder mostrar el loading overlay.
+  // Arranca en true porque al mount el buildLayer todavía no terminó.
+  const [isBuildingLayer, setIsBuildingLayer] = useState(true);
   // Cola incremental de rawN para pre-cargar texturas en background. Se llena
   // cuando el viewport cambia y se vacía en cada frame del render loop con
   // un budget de tiempo, sólo cuando NO hay gesto activo.
@@ -4336,6 +4339,8 @@ const handleZoomButton = useCallback((direction) => {
         // instancias). En mid/high se construye sync como antes.
         const yieldBetweenFaces = perfTier.getTier() === perfTier.TIER_LOW;
         buildingLayerRef.current = true;
+        // v1.3.19: sincronizar state para mostrar loading overlay.
+        try { setIsBuildingLayer(true); } catch {}
         // Limpiar cola de lookahead — los rawN encolados de la capa anterior
         // ya no son relevantes (numbers cambiaron en buildLayer).
         try {
@@ -4490,6 +4495,8 @@ const handleZoomButton = useCallback((direction) => {
        } finally {
         clearTimeout(_buildSafety);
         buildingLayerRef.current = false;
+        // v1.3.19: ocultar loading overlay.
+        try { setIsBuildingLayer(false); } catch {}
        }
       };
 
@@ -4503,10 +4510,14 @@ const handleZoomButton = useCallback((direction) => {
       // los primeros 5-10 frames stuttean fuerte (cada material nuevo bloquea
       // 100-400ms al compilar). renderer.compile() lo hace todo de una vez
       // mientras la pantalla aún está negra, y los siguientes frames salen
-      // limpios. Esto puede agregar ~1-2s al cold start pero elimina el lag
-      // perceptible una vez en pantalla.
+      // limpios.
+      // v1.3.19: en LOW tier saltamos el precompile. En esos devices el costo
+      // bloqueante (1-3s) supera el beneficio (stutter en los primeros frames
+      // ya está dentro del rango "esperable" para esa gama). El user percibe
+      // 2-3s menos de pantalla negra al cold-start.
       try {
-        if (rendererRef.current && sceneRef.current && cameraRef.current) {
+        const _skipCompile = perfTier.getTier() === perfTier.TIER_LOW;
+        if (!_skipCompile && rendererRef.current && sceneRef.current && cameraRef.current) {
           rendererRef.current.compile(sceneRef.current, cameraRef.current);
         }
       } catch (e) {
@@ -4654,6 +4665,21 @@ const handleZoomButton = useCallback((direction) => {
           </View>
         ))}
       </View>
+
+      {/* v1.3.19: loading overlay durante buildLayer. Bloquea touches con
+          pointerEvents auto para que el user no rote/zoom antes de tiempo
+          (eso causaba el crash que el user reportó). */}
+      {isBuildingLayer && (
+        <View style={styles.buildingOverlay} pointerEvents="auto">
+          <ActivityIndicator size="large" color="#ffffff" />
+          <Text style={styles.buildingText}>
+            {t('cube.loadingLayer') || 'Cargando capa...'}
+          </Text>
+          <Text style={styles.buildingSubtext}>
+            {t('cube.loadingHint') || 'Un momento, preparando el cubo'}
+          </Text>
+        </View>
+      )}
 
       <View style={styles.hud} pointerEvents="box-none">
         {/* Barra superior: Hamburguesa + Picos */}
@@ -5437,6 +5463,29 @@ const styles = StyleSheet.create({
   container: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: '#000' },
   gl: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   hud: { position: 'absolute', left: 12, right: 12, top: 28, zIndex: 10 },
+  // v1.3.19: loading overlay durante buildLayer
+  buildingOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  buildingText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 18,
+    letterSpacing: 0.5,
+  },
+  buildingSubtext: {
+    color: '#888',
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 6,
+    letterSpacing: 0.2,
+  },
   label: { color: '#000', fontSize: 12, marginBottom: 4 },
   stats: { color: '#666', fontSize: 13, fontWeight: '700', marginBottom: 2 },
   hamburgerBtn: { alignSelf: 'flex-start', paddingVertical: 4, paddingHorizontal: 6, marginBottom: 6 },
