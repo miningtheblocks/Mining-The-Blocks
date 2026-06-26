@@ -305,32 +305,29 @@
     .install-overlay.open { display: flex; }
     .install-box { max-width: 460px; }
     .install-box h2 { display: flex; align-items: center; gap: 8px; }
+    .install-box { padding: 22px 22px; }
+    .install-box h2 { font-size: 16px; margin-bottom: 6px; }
+    .install-box > p { font-size: 12px; margin-bottom: 4px; line-height: 1.45; }
     .install-steps {
-      list-style: none; padding: 0; margin: 16px 0 4px;
-      counter-reset: install-step;
+      list-style: none; padding: 0; margin: 10px 0 4px;
     }
     .install-steps li {
-      display: flex; align-items: flex-start; gap: 12px;
-      padding: 10px 0; border-bottom: 1px solid #eee;
-      font-size: 14px; color: #1e293b; line-height: 1.5;
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 4px 0;
+      font-size: 13px; color: #1e293b; line-height: 1.4;
     }
-    .install-steps li:last-child { border-bottom: none; }
-    .install-step-num {
-      flex-shrink: 0; width: 26px; height: 26px;
-      border-radius: 50%; background: #1e293b; color: #fff;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 13px; font-weight: 800;
+    .install-step-emoji {
+      font-size: 18px; flex-shrink: 0; line-height: 1.2;
     }
-    .install-step-emoji { font-size: 18px; margin-right: 4px; }
     .install-note {
       background: #fef9c3; border: 1.5px solid #fde047; border-radius: 8px;
-      padding: 10px 12px; margin: 14px 0 4px;
-      font-size: 12px; color: #713f12; font-weight: 600; line-height: 1.45;
+      padding: 8px 10px; margin: 8px 0 0;
+      font-size: 11px; color: #713f12; font-weight: 600; line-height: 1.4;
     }
     .install-close {
-      width: 100%; padding: 12px; border-radius: 10px;
+      width: 100%; padding: 10px; border-radius: 10px;
       background: #1e293b; color: #fff; font-size: 14px; font-weight: 800;
-      border: none; cursor: pointer; margin-top: 14px;
+      border: none; cursor: pointer; margin-top: 10px;
     }
     .install-close:hover { background: #0f172a; }
     .wallet-warning { background: #fef9c3; border: 1.5px solid #fde047; border-radius: 10px; padding: 12px 14px; margin: 12px 0 4px; font-size: 12px; color: #713f12; font-weight: 600; line-height: 1.5; }
@@ -809,43 +806,38 @@
 
     <ol class="install-steps">
       <li>
-        <span class="install-step-num">1</span>
+        <span class="install-step-emoji">⬇️</span>
         <span>
-          <span class="install-step-emoji">⬇️</span>
           <span data-lang="es">Tocá <strong>Descargar para Android</strong>.</span>
           <span data-lang="en visible">Tap <strong>Download for Android</strong>.</span>
         </span>
       </li>
       <li>
-        <span class="install-step-num">2</span>
+        <span class="install-step-emoji">⚠️</span>
         <span>
-          <span class="install-step-emoji">⚠️</span>
-          <span data-lang="es">Si Chrome avisa <em>"podría dañar tu dispositivo"</em>: tocá <strong>Conservar</strong>. Si solo aparece <strong>Descartar</strong>, tocá <strong>Mostrar más</strong> → <strong>Conservar de todos modos</strong>. Es porque el APK no viene de Play Store, no por amenaza real.</span>
-          <span data-lang="en visible">If Chrome warns <em>"may harm your device"</em>: tap <strong>Keep</strong>. If you only see <strong>Discard</strong>, tap <strong>Show more</strong> → <strong>Keep anyway</strong>. It's because the APK isn't from Play Store, not an actual threat.</span>
+          <span data-lang="es">Si Chrome avisa <em>"podría dañar tu dispositivo"</em>: tocá <strong>Conservar</strong>. Si solo aparece <strong>Descartar</strong>, tocá <strong>Mostrar más</strong> → <strong>Conservar de todos modos</strong>.</span>
+          <span data-lang="en visible">If Chrome warns <em>"may harm your device"</em>: tap <strong>Keep</strong>. If you only see <strong>Discard</strong>, tap <strong>Show more</strong> → <strong>Keep anyway</strong>.</span>
         </span>
       </li>
       <li>
-        <span class="install-step-num">3</span>
+        <span class="install-step-emoji">📦</span>
         <span>
-          <span class="install-step-emoji">📦</span>
-          <span data-lang="es">Abrí el archivo <code>MTB-v1.3.18.apk</code> desde la notificación o la carpeta <strong>Descargas</strong>.</span>
-          <span data-lang="en visible">Open <code>MTB-v1.3.18.apk</code> from the notification or your <strong>Downloads</strong> folder.</span>
+          <span data-lang="es">Abrí el APK desde la notificación o <strong>Descargas</strong>.</span>
+          <span data-lang="en visible">Open the APK from the notification or <strong>Downloads</strong>.</span>
         </span>
       </li>
       <li>
-        <span class="install-step-num">4</span>
+        <span class="install-step-emoji">🔓</span>
         <span>
-          <span class="install-step-emoji">🔓</span>
-          <span data-lang="es">Si Android pide <strong>permitir instalar apps de esta fuente</strong>, activá el permiso (solo la primera vez por app — Chrome, Files, etc.).</span>
-          <span data-lang="en visible">If Android asks to <strong>allow installs from this source</strong>, enable it (just once per app — Chrome, Files, etc.).</span>
+          <span data-lang="es">Si Android pide <strong>permitir instalar apps de esta fuente</strong>, activá el permiso (solo la primera vez).</span>
+          <span data-lang="en visible">If Android asks to <strong>allow installs from this source</strong>, enable it (just once).</span>
         </span>
       </li>
       <li>
-        <span class="install-step-num">5</span>
+        <span class="install-step-emoji">✅</span>
         <span>
-          <span class="install-step-emoji">✅</span>
-          <span data-lang="es">Tocá <strong>Instalar</strong>. Si Play Protect avisa <em>"app no analizada"</em>, tocá <strong>Más detalles</strong> → <strong>Instalar de todas formas</strong>. Cuando termine, abrí Mining The Blocks y registrate.</span>
-          <span data-lang="en visible">Tap <strong>Install</strong>. If Play Protect warns <em>"app not analyzed"</em>, tap <strong>More details</strong> → <strong>Install anyway</strong>. When done, open Mining The Blocks and sign up.</span>
+          <span data-lang="es">Tocá <strong>Instalar</strong>. Si Play Protect avisa, tocá <strong>Más detalles</strong> → <strong>Instalar de todas formas</strong>.</span>
+          <span data-lang="en visible">Tap <strong>Install</strong>. If Play Protect warns, tap <strong>More details</strong> → <strong>Install anyway</strong>.</span>
         </span>
       </li>
     </ol>
@@ -856,8 +848,8 @@
     </div>
 
     <button class="install-close" id="installHelpClose" type="button" data-action="closeInstallHelp">
-      <span data-lang="es">Entendido</span>
-      <span data-lang="en visible">Got it</span>
+      <span data-lang="es">Volver</span>
+      <span data-lang="en visible">Back</span>
     </button>
   </div>
 </div>
@@ -905,7 +897,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"
         integrity="sha384-I1LYojsZ5RM1cOda44Z2h42Qa6YfsQ1XkXxREnhp4ueYBR/4d1pG1K+NZM537Vsj"
         crossorigin="anonymous"></script>
-<script src="js/app.js?v=1.3.18b" defer></script>
+<script src="js/app.js?v=1.3.18c" defer></script>
 
 </body>
 </html>
