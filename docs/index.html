@@ -288,6 +288,50 @@
       border: none; cursor: pointer; margin-top: 10px; opacity: 0.4; transition: opacity 0.2s;
     }
     .legal-btn.active { opacity: 1; }
+
+    /* ── Install help (botón + modal) ── */
+    .install-help-row { display: flex; justify-content: center; margin-top: 10px; }
+    .install-help {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: #94a3b8; font-size: 13px; font-weight: 600;
+      text-decoration: none; padding: 6px 10px; border-radius: 6px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .install-help:hover { color: #fff; background: rgba(255,255,255,0.05); }
+    .install-help-icon { width: 14px; height: 14px; flex-shrink: 0; }
+    /* Modal de instructivo — reusa legal-overlay con tweaks específicos */
+    .install-overlay { display: none; }
+    .install-overlay.open { display: flex; }
+    .install-box { max-width: 460px; }
+    .install-box h2 { display: flex; align-items: center; gap: 8px; }
+    .install-steps {
+      list-style: none; padding: 0; margin: 16px 0 4px;
+      counter-reset: install-step;
+    }
+    .install-steps li {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 10px 0; border-bottom: 1px solid #eee;
+      font-size: 14px; color: #1e293b; line-height: 1.5;
+    }
+    .install-steps li:last-child { border-bottom: none; }
+    .install-step-num {
+      flex-shrink: 0; width: 26px; height: 26px;
+      border-radius: 50%; background: #1e293b; color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 800;
+    }
+    .install-step-emoji { font-size: 18px; margin-right: 4px; }
+    .install-note {
+      background: #fef9c3; border: 1.5px solid #fde047; border-radius: 8px;
+      padding: 10px 12px; margin: 14px 0 4px;
+      font-size: 12px; color: #713f12; font-weight: 600; line-height: 1.45;
+    }
+    .install-close {
+      width: 100%; padding: 12px; border-radius: 10px;
+      background: #1e293b; color: #fff; font-size: 14px; font-weight: 800;
+      border: none; cursor: pointer; margin-top: 14px;
+    }
+    .install-close:hover { background: #0f172a; }
     .wallet-warning { background: #fef9c3; border: 1.5px solid #fde047; border-radius: 10px; padding: 12px 14px; margin: 12px 0 4px; font-size: 12px; color: #713f12; font-weight: 600; line-height: 1.5; }
     .claim-grid { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
     .claim-grid input { border: 1.5px solid #ddd; border-radius: 8px; padding: 10px 12px; font-size: 14px; width: 100%; }
@@ -706,6 +750,17 @@
         </svg>
       </a>
     </div>
+    <!-- v1.3.18: link al modal de instalación -->
+    <div class="install-help-row">
+      <a href="#install-help" class="install-help" id="installHelpLink" data-action="openInstallHelp">
+        <span data-lang="es">¿Cómo instalar?</span>
+        <span data-lang="en visible">How to install?</span>
+        <svg class="install-help-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 16v-4m0-4h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </a>
+    </div>
     <p class="dl-entry-note" data-lang="es">
       App gratuita · la entrada a cada episodio cuesta <strong>$15</strong> abonados con
       <span class="dl-entry-crypto">USDC</span> en red <span class="dl-entry-crypto">Polygon</span>
@@ -740,6 +795,71 @@
   <a href="terms.html" target="_blank" rel="noopener noreferrer" style="cursor:pointer" data-lang="es">Términos y Condiciones</a>
   <a href="terms.html" target="_blank" rel="noopener noreferrer" style="cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>
 </footer>
+
+<!-- v1.3.18: Install instructions modal -->
+<div class="legal-overlay install-overlay" id="installHelpModal">
+  <div class="legal-box install-box">
+    <h2>
+      <span data-lang="es">📲 Cómo instalar</span>
+      <span data-lang="en visible">📲 How to install</span>
+    </h2>
+    <p data-lang="es">Mining The Blocks se descarga como APK directo (no está en Play Store todavía). Seguí estos 5 pasos:</p>
+    <p data-lang="en visible">Mining The Blocks downloads as a direct APK (not on Play Store yet). Follow these 5 steps:</p>
+
+    <ol class="install-steps">
+      <li>
+        <span class="install-step-num">1</span>
+        <span>
+          <span class="install-step-emoji">⬇️</span>
+          <span data-lang="es">Tocá <strong>Descargar para Android</strong>.</span>
+          <span data-lang="en visible">Tap <strong>Download for Android</strong>.</span>
+        </span>
+      </li>
+      <li>
+        <span class="install-step-num">2</span>
+        <span>
+          <span class="install-step-emoji">⚠️</span>
+          <span data-lang="es">Si Chrome avisa <em>"podría dañar tu dispositivo"</em>, tocá <strong>Conservar</strong>. Es porque la app no viene del Play Store, no porque tenga problemas.</span>
+          <span data-lang="en visible">If Chrome warns <em>"may harm your device"</em>, tap <strong>Keep</strong>. It's because the app isn't from Play Store, not because it's harmful.</span>
+        </span>
+      </li>
+      <li>
+        <span class="install-step-num">3</span>
+        <span>
+          <span class="install-step-emoji">📦</span>
+          <span data-lang="es">Abrí el archivo <code>MTB-v1.3.18.apk</code> desde la notificación o desde Descargas.</span>
+          <span data-lang="en visible">Open <code>MTB-v1.3.18.apk</code> from the notification or your Downloads folder.</span>
+        </span>
+      </li>
+      <li>
+        <span class="install-step-num">4</span>
+        <span>
+          <span class="install-step-emoji">🔓</span>
+          <span data-lang="es">Android te va a pedir <strong>permitir instalar apps de esta fuente</strong> (Chrome). Activá el permiso — solo una vez.</span>
+          <span data-lang="en visible">Android will ask to <strong>allow installs from this source</strong> (Chrome). Enable it — only once.</span>
+        </span>
+      </li>
+      <li>
+        <span class="install-step-num">5</span>
+        <span>
+          <span class="install-step-emoji">✅</span>
+          <span data-lang="es">Tocá <strong>Instalar</strong>. Cuando termine, abrí Mining The Blocks y registrate.</span>
+          <span data-lang="en visible">Tap <strong>Install</strong>. When done, open Mining The Blocks and sign up.</span>
+        </span>
+      </li>
+    </ol>
+
+    <div class="install-note">
+      <span data-lang="es">🔒 La app está firmada digitalmente y el código es <a href="https://github.com/miningtheblocks/Mining-The-Blocks" target="_blank" rel="noopener noreferrer" style="color:#713f12;text-decoration:underline">open source</a>. Podés verificar el SHA-256 antes de instalar.</span>
+      <span data-lang="en visible">🔒 The app is digitally signed and the code is <a href="https://github.com/miningtheblocks/Mining-The-Blocks" target="_blank" rel="noopener noreferrer" style="color:#713f12;text-decoration:underline">open source</a>. You can verify the SHA-256 before installing.</span>
+    </div>
+
+    <button class="install-close" id="installHelpClose" type="button" data-action="closeInstallHelp">
+      <span data-lang="es">Entendido</span>
+      <span data-lang="en visible">Got it</span>
+    </button>
+  </div>
+</div>
 
 <!-- Age gate modal -->
 <div class="legal-overlay" id="ageGate">

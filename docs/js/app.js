@@ -355,6 +355,16 @@ function acceptAge() {
   document.getElementById('ageGate').style.display = 'none';
 }
 
+// v1.3.18: modal de instructivo de instalación
+function openInstallHelp() {
+  var m = document.getElementById('installHelpModal');
+  if (m) m.classList.add('open');
+}
+function closeInstallHelp() {
+  var m = document.getElementById('installHelpModal');
+  if (m) m.classList.remove('open');
+}
+
 // Round 2 Agente #7 HIGH-2: en lugar de onclick="X()" inline en HTML, los
 // handlers se registran acá via data-action attribute + addEventListener.
 // Esto permite remover 'unsafe-inline' del CSP script-src.
@@ -381,6 +391,11 @@ function wireEventDelegation() {
       case 'confirmNftTransfer': return confirmNftTransfer();
       case 'copyNftReceiverWallet': return copyNftReceiverWallet();
       case 'acceptAge':   return acceptAge();
+      case 'openInstallHelp':
+        e.preventDefault();
+        return openInstallHelp();
+      case 'closeInstallHelp':
+        return closeInstallHelp();
       default: /* unknown action, ignore */
     }
   });
