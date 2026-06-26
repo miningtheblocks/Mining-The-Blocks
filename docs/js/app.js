@@ -392,7 +392,6 @@ function wireEventDelegation() {
       case 'copyNftReceiverWallet': return copyNftReceiverWallet();
       case 'acceptAge':   return acceptAge();
       case 'openInstallHelp':
-        e.preventDefault();
         return openInstallHelp();
       case 'closeInstallHelp':
         return closeInstallHelp();
