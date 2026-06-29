@@ -34,7 +34,7 @@
     "eslint-config-google": "^0.14.0",
     "eslint-plugin-security": "^4.0.1",
     "firebase-functions-test": "^3.1.0",
-    "globals": "^15.15.0",
+    "globals": "^17.7.0",
     "jest": "^30.4.2"
   },
   "private": true
