@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Cartel final para video promo MTB.
+  Diseño 1080×1920 (9:16 vertical).
+  Para reemplazar el QR placeholder:
+    1. Generá el QR de miningtheblocks.com en https://qr.io o qr-code-generator.com.
+    2. Descargalo como SVG o PNG.
+    3. Reemplazá el grupo <g id="qr-placeholder"> con tu <image href="qr.png" .../>
+       o pegá el path del QR SVG.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920">
+  <!-- Fondo negro puro (matchea la estética del cubo) -->
+  <rect width="1080" height="1920" fill="#000000"/>
+
+  <!-- Grid sutil de fondo (apenas visible, refuerza el aesthetic pixel-art) -->
+  <defs>
+    <pattern id="bgGrid" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#0a0a0a" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1080" height="1920" fill="url(#bgGrid)" opacity="0.6"/>
+
+  <!-- Vignette sutil para dar profundidad -->
+  <defs>
+    <radialGradient id="vignette" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.7"/>
+    </radialGradient>
+  </defs>
+  <rect width="1080" height="1920" fill="url(#vignette)"/>
+
+  <!-- ============ TÍTULO ============ -->
+  <text x="540" y="280"
+        font-family="'Courier New', monospace"
+        font-size="84"
+        font-weight="900"
+        fill="#ffffff"
+        text-anchor="middle"
+        letter-spacing="4">
+    MINING THE BLOCKS
+  </text>
+
+  <!-- Subtítulo -->
+  <text x="540" y="350"
+        font-family="'Courier New', monospace"
+        font-size="34"
+        fill="#aaaaaa"
+        text-anchor="middle"
+        letter-spacing="2">
+    Beta abierta · Solo 100.000 jugadores
+  </text>
+
+  <!-- ============ SEPARADOR PIXEL ============ -->
+  <g transform="translate(390, 410)">
+    <rect x="0"   y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="36"  y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="72"  y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="108" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="144" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="180" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="216" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="252" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="288" y="0" width="18" height="18" fill="#ffffff"/>
+  </g>
+
+  <!-- ============ FEATURES (3 líneas) ============ -->
+  <!-- Línea 1: premio principal — destacado en dorado -->
+  <g transform="translate(140, 540)">
+    <rect x="0" y="-40" width="40" height="40" fill="#00ff88"/>
+    <path d="M 8 -22 L 16 -10 L 32 -32" stroke="#000000" stroke-width="6" fill="none" stroke-linecap="square"/>
+    <text x="64" y="-8"
+          font-family="'Courier New', monospace"
+          font-size="42"
+          font-weight="700"
+          fill="#ffd700"
+          letter-spacing="1">
+      $650.000 USD en premios
+    </text>
+  </g>
+
+  <!-- Línea 2: gemas -->
+  <g transform="translate(140, 640)">
+    <rect x="0" y="-40" width="40" height="40" fill="#00ff88"/>
+    <path d="M 8 -22 L 16 -10 L 32 -32" stroke="#000000" stroke-width="6" fill="none" stroke-linecap="square"/>
+    <text x="64" y="-8"
+          font-family="'Courier New', monospace"
+          font-size="38"
+          fill="#ffffff"
+          letter-spacing="1">
+      9 gemas: $15 a $100.000
+    </text>
+  </g>
+
+  <!-- Línea 3: tech stack -->
+  <g transform="translate(140, 740)">
+    <rect x="0" y="-40" width="40" height="40" fill="#00ff88"/>
+    <path d="M 8 -22 L 16 -10 L 32 -32" stroke="#000000" stroke-width="6" fill="none" stroke-linecap="square"/>
+    <text x="64" y="-8"
+          font-family="'Courier New', monospace"
+          font-size="38"
+          fill="#ffffff"
+          letter-spacing="1">
+      Polygon · USDC · Open Source
+    </text>
+  </g>
+
+  <!-- ============ SEPARADOR PIXEL ============ -->
+  <g transform="translate(390, 840)">
+    <rect x="0"   y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="36"  y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="72"  y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="108" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="144" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="180" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="216" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="252" y="0" width="18" height="18" fill="#ffffff"/>
+    <rect x="288" y="0" width="18" height="18" fill="#ffffff"/>
+  </g>
+
+  <!-- ============ URL ============ -->
+  <text x="540" y="980"
+        font-family="'Courier New', monospace"
+        font-size="64"
+        font-weight="700"
+        fill="#ffffff"
+        text-anchor="middle"
+        letter-spacing="2">
+    miningtheblocks.com
+  </text>
+
+  <!-- ============ QR CODE PLACEHOLDER ============ -->
+  <!-- Reemplazá este grupo con tu QR real -->
+  <g id="qr-placeholder" transform="translate(340, 1080)">
+    <!-- Marco blanco -->
+    <rect x="0" y="0" width="400" height="400" fill="#ffffff"/>
+    <!-- Pattern interno para simular pixel-QR -->
+    <g fill="#000000">
+      <!-- Esquinas (finder patterns típicos de QR) -->
+      <rect x="20"  y="20"  width="80" height="80" fill="#000000"/>
+      <rect x="35"  y="35"  width="50" height="50" fill="#ffffff"/>
+      <rect x="50"  y="50"  width="20" height="20" fill="#000000"/>
+
+      <rect x="300" y="20"  width="80" height="80" fill="#000000"/>
+      <rect x="315" y="35"  width="50" height="50" fill="#ffffff"/>
+      <rect x="330" y="50"  width="20" height="20" fill="#000000"/>
+
+      <rect x="20"  y="300" width="80" height="80" fill="#000000"/>
+      <rect x="35"  y="315" width="50" height="50" fill="#ffffff"/>
+      <rect x="50"  y="330" width="20" height="20" fill="#000000"/>
+
+      <!-- Data dots (decorativos, NO es un QR válido) -->
+      <rect x="120" y="20"  width="20" height="20"/>
+      <rect x="160" y="20"  width="20" height="20"/>
+      <rect x="200" y="40"  width="20" height="20"/>
+      <rect x="240" y="20"  width="20" height="20"/>
+      <rect x="140" y="60"  width="20" height="20"/>
+      <rect x="180" y="80"  width="20" height="20"/>
+      <rect x="220" y="60"  width="20" height="20"/>
+      <rect x="120" y="100" width="20" height="20"/>
+      <rect x="200" y="120" width="20" height="20"/>
+      <rect x="280" y="100" width="20" height="20"/>
+      <rect x="240" y="140" width="20" height="20"/>
+      <rect x="160" y="140" width="20" height="20"/>
+      <rect x="20"  y="140" width="20" height="20"/>
+      <rect x="60"  y="160" width="20" height="20"/>
+      <rect x="100" y="180" width="20" height="20"/>
+      <rect x="160" y="180" width="20" height="20"/>
+      <rect x="200" y="200" width="20" height="20"/>
+      <rect x="260" y="180" width="20" height="20"/>
+      <rect x="320" y="200" width="20" height="20"/>
+      <rect x="20"  y="200" width="20" height="20"/>
+      <rect x="80"  y="220" width="20" height="20"/>
+      <rect x="140" y="240" width="20" height="20"/>
+      <rect x="220" y="240" width="20" height="20"/>
+      <rect x="300" y="240" width="20" height="20"/>
+      <rect x="60"  y="260" width="20" height="20"/>
+      <rect x="180" y="260" width="20" height="20"/>
+      <rect x="340" y="280" width="20" height="20"/>
+      <rect x="140" y="300" width="20" height="20"/>
+      <rect x="200" y="320" width="20" height="20"/>
+      <rect x="260" y="340" width="20" height="20"/>
+      <rect x="320" y="320" width="20" height="20"/>
+      <rect x="160" y="340" width="20" height="20"/>
+      <rect x="220" y="360" width="20" height="20"/>
+      <rect x="300" y="360" width="20" height="20"/>
+    </g>
+    <!-- Aviso visible que esto es placeholder (sacar al reemplazar) -->
+    <text x="200" y="218"
+          font-family="'Courier New', monospace"
+          font-size="16"
+          fill="#ff0000"
+          text-anchor="middle"
+          font-weight="900">
+      [PLACEHOLDER]
+    </text>
+  </g>
+
+  <!-- ============ CTA FINAL ============ -->
+  <g transform="translate(540, 1650)">
+    <!-- Marco -->
+    <rect x="-340" y="-70" width="680" height="120" fill="#ffffff"/>
+    <rect x="-330" y="-60" width="660" height="100" fill="#000000"/>
+    <text x="0" y="14"
+          font-family="'Courier New', monospace"
+          font-size="58"
+          font-weight="900"
+          fill="#ffffff"
+          text-anchor="middle"
+          letter-spacing="4">
+      ENTRA AHORA
+    </text>
+  </g>
+
+  <!-- Subtítulo CTA -->
+  <text x="540" y="1820"
+        font-family="'Courier New', monospace"
+        font-size="28"
+        fill="#888888"
+        text-anchor="middle"
+        letter-spacing="2">
+    Una sola entrada · $15 USDC
+  </text>
+
+</svg>

@@ -16,6 +16,7 @@ export const APP_VERSION =
 
 export const TERMS_URL = 'https://miningtheblocks.com/terms.html';
 export const PRIVACY_URL = 'https://miningtheblocks.com/privacy.html';
+export const DISCORD_URL = 'https://discord.gg/ehsaYcSWc';
 
 // Comparación semver simple — devuelve -1, 0 o 1.
 // MEDIO-CONST-05: strip de sufijos prerelease/build (e.g. "1.2.3-beta.1" → "1.2.3")

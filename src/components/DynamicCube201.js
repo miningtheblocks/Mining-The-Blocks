@@ -678,111 +678,261 @@ function findCubeAtScreenPosition(screenX, screenY, camera, scene, screenWidth, 
 
 // Sistema de animaciÃƒÂ³n de minado
 function createCrackGeometry(position, faceNormal) {
-  // Grietas tipo roca. Cada camino completo se convierte en UN solo LineSegments
-  // (en lugar de uno por par de puntos) → reduce draw calls de ~70 a ~5.
+  // Grietas tipo roca real: nacen de UN punto de impacto y se ramifican
+  // radialmente, con sub-ramas que se separan de cada rama principal.
+  // Cada path completo es un único LineSegments para minimizar draw calls.
   const segs = [];
   const faceSize = 1.0;
+  const half = faceSize / 2;
   const n = faceNormal.clone().normalize();
   const upRef = Math.abs(n.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
   const right = upRef.clone().cross(n).normalize();
   const up = n.clone().cross(right).normalize();
   const offsetN = 0.002;
 
-  const jitter = (s) => (Math.random() - 0.5) * s;
+  // EPICENTROS: 2-4 puntos de impacto distribuidos en distintas zonas de la
+  // cara, apareciendo desincronizados a lo largo de los ~3.2s del sonido.
+  // Cada epicentro genera su propio set de ramas radiales → la grieta total
+  // abarca más superficie del cubo, no queda concentrada en un solo punto.
+  // Para evitar que se encimen, se eligen celdas distintas de una grilla 3x3.
+  const GRID_CELLS = [
+    { x: -0.25, y:  0.25 }, { x: 0, y:  0.25 }, { x: 0.25, y:  0.25 },
+    { x: -0.25, y:  0.00 }, { x: 0, y:  0.00 }, { x: 0.25, y:  0.00 },
+    { x: -0.25, y: -0.25 }, { x: 0, y: -0.25 }, { x: 0.25, y: -0.25 },
+  ];
+  // Shuffle (Fisher-Yates) para tomar celdas únicas al azar
+  for (let s = GRID_CELLS.length - 1; s > 0; s--) {
+    const r = Math.floor(Math.random() * (s + 1));
+    const tmp = GRID_CELLS[s]; GRID_CELLS[s] = GRID_CELLS[r]; GRID_CELLS[r] = tmp;
+  }
+  const epicenterCount = 2 + Math.floor(Math.random() * 3); // 2..4
+  const epicenters = [];
+  for (let e = 0; e < epicenterCount; e++) {
+    const cell = GRID_CELLS[e];
+    const jx = (Math.random() - 0.5) * 0.10;
+    const jy = (Math.random() - 0.5) * 0.10;
+    const origin = new THREE.Vector2(cell.x + jx, cell.y + jy);
+    let appearAt;
+    if (e === 0) {
+      appearAt = 0;
+    } else {
+      // Gap aleatorio entre epicentros: 450..900ms desde el anterior.
+      // Mantenemos el último epicentro <= 2400ms para que su rama más larga
+      // alcance a extenderse dentro del ~3.2s total del sonido.
+      const gap = 450 + Math.random() * 450;
+      appearAt = Math.min(epicenters[e - 1].appearAt + gap, 2400);
+    }
+    epicenters.push({ origin, appearAt });
+  }
 
-  const makePath = (fromEdge) => {
-    const pts = [];
-    const steps = 8; // reducido de 16 → menos vértices, misma apariencia en mobile
-    const half = faceSize / 2;
-    let x = fromEdge === 'L' ? -half : fromEdge === 'R' ? half : (Math.random() * faceSize - half);
-    let y = fromEdge === 'T' ? half : fromEdge === 'B' ? -half : (Math.random() * faceSize - half);
-    for (let i = 0; i <= steps; i++) {
-      const tx = fromEdge === 'L' ? half : fromEdge === 'R' ? -half : (Math.random() * faceSize - half);
-      const ty = fromEdge === 'T' ? -half : fromEdge === 'B' ? half : (Math.random() * faceSize - half);
-      x = THREE.MathUtils.damp(x, tx, 5.5, 0.016) + jitter(0.06);
-      y = THREE.MathUtils.damp(y, ty, 5.5, 0.016) + jitter(0.06);
-      pts.push(new THREE.Vector2(x, y));
+  // Random walk con sesgo direccional. Empieza en un punto, avanza en una
+  // dirección aproximada hasta agotar la longitud o chocar contra el borde.
+  const walkBranch = (startPt, baseAngle, length, angleJitterPerStep) => {
+    const pts = [startPt.clone()];
+    const steps = Math.max(4, Math.floor(length * 14));
+    const stepSize = length / steps;
+    let angle = baseAngle;
+    let cx = startPt.x;
+    let cy = startPt.y;
+    for (let i = 0; i < steps; i++) {
+      angle += (Math.random() - 0.5) * angleJitterPerStep;
+      const nx = cx + Math.cos(angle) * stepSize;
+      const ny = cy + Math.sin(angle) * stepSize;
+      const clampedX = THREE.MathUtils.clamp(nx, -half, half);
+      const clampedY = THREE.MathUtils.clamp(ny, -half, half);
+      cx = clampedX;
+      cy = clampedY;
+      pts.push(new THREE.Vector2(cx, cy));
+      // Cortar si chocó contra un borde de la cara
+      if (clampedX !== nx || clampedY !== ny) break;
     }
     return pts;
   };
 
-  // Convertir un array de Vector2 en un único LineSegments (pares p[i-1]→p[i])
-  const pathToLineSegments = (path, delay) => {
+  // Convertir un path en LineSegments. Grosor "2px" = 2 líneas paralelas
+  // con offset perpendicular ±0.003 dentro del plano (el original era 1 línea).
+  // Los vertices se ordenan POR STEP (no por offset) para que setDrawRange()
+  // pueda revelar la grieta progresivamente desde el origen hacia el extremo.
+  const CRACK_HALF_THICKNESS = 0.003;
+  const THICK_OFFSETS = [-CRACK_HALF_THICKNESS, CRACK_HALF_THICKNESS];
+  const VERTS_PER_STEP = THICK_OFFSETS.length * 2; // 2 offsets × 2 vertices/segmento = 4
+  const pathToLineSegments = (path, delay, growDuration) => {
     const verts = [];
     for (let i = 1; i < path.length; i++) {
       const p0 = path[i - 1];
       const p1 = path[i];
-      verts.push(
-        position.clone().add(right.clone().multiplyScalar(p0.x)).add(up.clone().multiplyScalar(p0.y)).add(n.clone().multiplyScalar(offsetN)),
-        position.clone().add(right.clone().multiplyScalar(p1.x)).add(up.clone().multiplyScalar(p1.y)).add(n.clone().multiplyScalar(offsetN))
-      );
+      const dx2 = p1.x - p0.x;
+      const dy2 = p1.y - p0.y;
+      const segLen = Math.hypot(dx2, dy2) || 1;
+      const perpX = -dy2 / segLen;
+      const perpY = dx2 / segLen;
+      for (let k = 0; k < THICK_OFFSETS.length; k++) {
+        const off = THICK_OFFSETS[k];
+        const ox = perpX * off;
+        const oy = perpY * off;
+        verts.push(
+          position.clone().add(right.clone().multiplyScalar(p0.x + ox)).add(up.clone().multiplyScalar(p0.y + oy)).add(n.clone().multiplyScalar(offsetN)),
+          position.clone().add(right.clone().multiplyScalar(p1.x + ox)).add(up.clone().multiplyScalar(p1.y + oy)).add(n.clone().multiplyScalar(offsetN))
+        );
+      }
     }
     if (!verts.length) return null;
     const geo = new THREE.BufferGeometry().setFromPoints(verts);
-    const mat = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.0, depthWrite: false, depthTest: false });
+    // Empezar con 0 segmentos visibles; showCracksAnimation va a expandir
+    // setDrawRange progresivamente hasta verts.length.
+    geo.setDrawRange(0, 0);
+    const mat = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2, transparent: true, opacity: 0.0, depthWrite: false, depthTest: false });
     const line = new THREE.LineSegments(geo, mat);
     line.renderOrder = 10000;
-    line.userData = { delay };
+    line.userData = {
+      delay,
+      growDuration,
+      totalVerts: verts.length,
+      vertsPerStep: VERTS_PER_STEP,
+    };
     return line;
   };
 
-  const mainCount = 2 + Math.floor(Math.random() * 2); // 2-3 caminos (antes 3-4)
-  const edges = ['L', 'R', 'T', 'B'];
-  for (let i = 0; i < mainCount; i++) {
-    const path = makePath(edges[(Math.random() * 4) | 0]);
-    const line = pathToLineSegments(path, i * 60);
-    if (line) segs.push(line);
+  // Velocidad de propagación por step. Calibrado para que la animación total
+  // (epicentros desincronizados + ramas + sub-ramas) dure ~3.2s, igual que el
+  // sonido de rotura. Rama típica de 12 steps → 12 * 75 = 900ms; último
+  // epicentro a 2400ms + 900ms = 3300ms, espacio ajustado para terminar a 3.2s.
+  const SPEED_MS_PER_STEP = 75;
 
-    // Una ramificación por camino (15% prob), también como LineSegments único
-    if (Math.random() < 0.15 && path.length >= 4) {
-      const mid = Math.floor(path.length / 2);
-      const p0 = path[mid];
-      const p1 = path[mid + 1];
-      const dir = new THREE.Vector2().subVectors(p1, p0);
-      const side = Math.random() < 0.5 ? 1 : -1;
-      const branch = new THREE.Vector2(-dir.y, dir.x).setLength(dir.length() * (0.4 + Math.random() * 0.3) * side);
-      const q = new THREE.Vector2().addVectors(p0.clone().lerp(p1, 0.5), branch);
-      const branchPath = [p0.clone().lerp(p1, 0.5), q];
-      const bl = pathToLineSegments(branchPath, i * 60 + 30);
-      if (bl) segs.push(bl);
+  // Para cada epicentro: 2-4 ramas radiales, cada una con posible sub-rama.
+  epicenters.forEach((epi) => {
+    const branchCount = 2 + Math.floor(Math.random() * 3); // 2..4
+    const angleStep = (Math.PI * 2) / branchCount;
+    const angleJitterMain = angleStep * 0.4;
+    for (let i = 0; i < branchCount; i++) {
+      const baseAngle = i * angleStep + Math.random() * Math.PI * 2 / branchCount + (Math.random() - 0.5) * angleJitterMain;
+      const length = 0.30 + Math.random() * 0.40; // 0.30..0.70 unidades
+      const path = walkBranch(epi.origin, baseAngle, length, 0.45);
+      if (path.length < 2) continue;
+      const mainDelay = epi.appearAt + i * 60; // escalonar ramas del mismo epicentro
+      const mainGrowDuration = (path.length - 1) * SPEED_MS_PER_STEP;
+      const line = pathToLineSegments(path, mainDelay, mainGrowDuration);
+      if (line) segs.push(line);
+
+      // Sub-ramificaciones: 1-2 por rama principal, con 55% de probabilidad
+      if (Math.random() < 0.55 && path.length >= 4) {
+        const subBranchCount = 1 + (Math.random() < 0.4 ? 1 : 0);
+        for (let j = 0; j < subBranchCount; j++) {
+          // Punto a 30%-80% del recorrido (cuerpo de la grieta, no extremos)
+          const idx = Math.max(1, Math.min(path.length - 1, Math.floor(path.length * (0.3 + Math.random() * 0.5))));
+          const startPt = path[idx];
+          const prev = path[idx - 1];
+          const baseDir = Math.atan2(startPt.y - prev.y, startPt.x - prev.x);
+          const side = Math.random() < 0.5 ? 1 : -1;
+          const deviation = (0.5 + Math.random() * 0.7) * side; // 0.5..1.2 rad off main
+          const subLength = 0.12 + Math.random() * 0.22;
+          const subPath = walkBranch(startPt, baseDir + deviation, subLength, 0.55);
+          if (subPath.length < 2) continue;
+          const branchFraction = idx / (path.length - 1);
+          const subDelay = mainDelay + branchFraction * mainGrowDuration + 50;
+          const subGrowDuration = (subPath.length - 1) * SPEED_MS_PER_STEP;
+          const subLine = pathToLineSegments(subPath, subDelay, subGrowDuration);
+          if (subLine) segs.push(subLine);
+        }
+      }
     }
-  }
+  });
   return segs;
 }
 
 function createFragments(position, faceNormal, cubeSize = 1.0) {
   const fragments = [];
-  // Reducir fragmentos en pantallas pequeÃƒÂ±as para evitar presiÃƒÂ³n de GPU/driver mÃƒÂ³vil
-  const smallScreen = (screenWidth * screenHeight) <= (1080 * 1920 * 0.75);
-  const fragmentsPerSide = smallScreen ? 4 : 6; // 4x4=16 en low/med, 6x6=36 en high
+  const fragmentsPerSide = 4;
   const fragmentSize = cubeSize / fragmentsPerSide;
-  
+
   try {
     for (let x = 0; x < fragmentsPerSide; x++) {
       for (let y = 0; y < fragmentsPerSide; y++) {
-        const geometry = new THREE.BoxGeometry(
-          fragmentSize * 0.9,
-          fragmentSize * 0.9,
-          fragmentSize * 0.3
-        );
-        // Material bÃƒÂ¡sico con transparencia real habilitada (se modifica opacity durante la animaciÃƒÂ³n)
-        const material = new THREE.MeshBasicMaterial({ 
-          color: 0xffffff, 
-          transparent: true, 
-          opacity: 1.0, 
-          depthWrite: false 
+        // Tamaño base random por pieza: variabilidad ±15% para que no
+        // todas sean iguales — algunas más grandes, otras más chicas.
+        const sizeJitter = 0.85 + Math.random() * 0.30;
+        const sx = fragmentSize * 0.9 * sizeJitter;
+        const sy = fragmentSize * 0.9 * sizeJitter;
+        const sz = fragmentSize * 0.6 * sizeJitter;
+        const geometry = new THREE.BoxGeometry(sx, sy, sz);
+
+        // Deformación de vértices: cada uno de los 8 corners del box recibe
+        // un offset random de ±12% del tamaño → forma irregular tipo roca
+        // rota. EdgesGeometry hereda automáticamente la deformación.
+        try {
+          const pos = geometry.attributes.position;
+          const dispMax = Math.min(sx, sy, sz) * 0.18;
+          // Agrupar vértices por posición (BoxGeometry repite vertices por cara,
+          // necesitamos que los duplicados en el mismo corner se muevan juntos).
+          const cornerMap = new Map();
+          const KEY = (x_, y_, z_) =>
+            `${x_.toFixed(3)}|${y_.toFixed(3)}|${z_.toFixed(3)}`;
+          for (let i = 0; i < pos.count; i++) {
+            const k = KEY(pos.getX(i), pos.getY(i), pos.getZ(i));
+            if (!cornerMap.has(k)) {
+              cornerMap.set(k, {
+                dx: (Math.random() - 0.5) * 2 * dispMax,
+                dy: (Math.random() - 0.5) * 2 * dispMax,
+                dz: (Math.random() - 0.5) * 2 * dispMax,
+              });
+            }
+          }
+          for (let i = 0; i < pos.count; i++) {
+            const k = KEY(pos.getX(i), pos.getY(i), pos.getZ(i));
+            const d = cornerMap.get(k);
+            if (d) {
+              pos.setXYZ(i, pos.getX(i) + d.dx, pos.getY(i) + d.dy, pos.getZ(i) + d.dz);
+            }
+          }
+          pos.needsUpdate = true;
+          geometry.computeVertexNormals();
+        } catch (deformError) {
+          console.warn('Error deforming fragment:', deformError.message);
+        }
+
+        const material = new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 1.0,
+          depthWrite: false,
+          // depthTest: false → fragmento siempre visible encima del parche
+          // oscuro y de los cubitos blancos, sin importar la posición Z.
+          // Es lo único que garantiza visibilidad inmediata en el primer frame.
+          depthTest: false,
         });
         const fragment = new THREE.Mesh(geometry, material);
-        
-        // Contorno negro para mayor contraste - con manejo de errores
+
+        // Contorno negro grueso. WebGL ignora linewidth>1 en muchos drivers,
+        // así que renderizamos los bordes 2 veces con offset perpendicular
+        // chico (mismo truco que las grietas) para forzar grosor visible.
         try {
           const edgeGeom = new THREE.EdgesGeometry(geometry);
-          const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 });
+          const edgeMat = new THREE.LineBasicMaterial({
+            color: 0x000000,
+            linewidth: 3,
+            depthTest: false,
+            depthWrite: false,
+          });
           const edges = new THREE.LineSegments(edgeGeom, edgeMat);
+          // renderOrder por encima del mesh para que los bordes negros se
+          // vean siempre sobre el blanco del fragmento (y sobre todo lo demás).
+          edges.renderOrder = 1000001;
           fragment.add(edges);
+          // 3 capas paralelas con scales 1.03 y 1.06 — un píxel más gruesos
+          // que la versión anterior (que tenía 2 capas: 1.00 + 1.04).
+          // Resultado: stripe negra continua de ~3px de ancho.
+          const edges2 = edges.clone();
+          edges2.scale.setScalar(1.03);
+          edges2.material = edgeMat.clone();
+          edges2.renderOrder = 1000002;
+          fragment.add(edges2);
+          const edges3 = edges.clone();
+          edges3.scale.setScalar(1.06);
+          edges3.material = edgeMat.clone();
+          edges3.renderOrder = 1000003;
+          fragment.add(edges3);
         } catch (edgeError) {
           console.warn('Error creating fragment edges:', edgeError.message);
-          // Continuar sin edges si hay error
         }
         
         const offsetX = (x - fragmentsPerSide / 2 + 0.5) * fragmentSize;
@@ -790,12 +940,38 @@ function createFragments(position, faceNormal, cubeSize = 1.0) {
         fragment.position.copy(position);
         fragment.position.x += offsetX;
         fragment.position.y += offsetY;
-        // Empuje inicial hacia fuera de la cara + ruido
-        const outward = faceNormal.clone().multiplyScalar(0.6 + Math.random() * 1.0);
-        const jitter = new THREE.Vector3((Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6);
+        // Empujar la pieza ligeramente hacia adelante de la cara (en dirección
+        // de la normal) para que NO quede ocluida por el parche oscuro que se
+        // aplica al mismo tiempo. Sin esto, los fragmentos están exactamente
+        // en el plano del cubo original y depthTest los descarta al primer frame.
+        fragment.position.add(faceNormal.clone().multiplyScalar(fragmentSize * 0.55));
+        // renderOrder >1000000 para superar a TODO el resto del cubo:
+        //   parche oscuro      → 9999
+        //   grietas            → 10000
+        //   números/colorCube  → 10001
+        //   sprites (rewards)  → 999999
+        // Los fragmentos son la animación principal de "se rompe el cubo" y
+        // tienen que verse SIEMPRE encima de cualquier otra capa visual.
+        fragment.renderOrder = 1000000;
+        // Velocidades calibradas para 1760ms de animación a 60fps (~106 frames),
+        // 20% más rápido que la versión previa (2200ms). Velocidades 25% más
+        // altas para mantener la misma distancia recorrida en menos tiempo.
+        //   outward 0.031..0.075/frame → 3.3-7.9u recorridos
+        //   jitter ±0.063/frame        → caos lateral leve
+        //   angular ±0.125/frame       → rotación apreciable
+        const outward = faceNormal.clone().multiplyScalar(0.031 + Math.random() * 0.044);
+        const jitter = new THREE.Vector3(
+          (Math.random() - 0.5) * 0.063,
+          (Math.random() - 0.5) * 0.063,
+          (Math.random() - 0.5) * 0.063
+        );
         fragment.userData = {
           velocity: outward.add(jitter),
-          angularVelocity: new THREE.Vector3((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3),
+          angularVelocity: new THREE.Vector3(
+            (Math.random() - 0.5) * 0.125,
+            (Math.random() - 0.5) * 0.125,
+            (Math.random() - 0.5) * 0.125
+          ),
           life: 1.0,
         };
         fragments.push(fragment);
@@ -809,9 +985,15 @@ function createFragments(position, faceNormal, cubeSize = 1.0) {
   return fragments;
 }
 
-function animateFragments(fragments, scene, duration = 1800, cancelRef = null) {
+function animateFragments(fragments, scene, duration = 1760, cancelRef = null) {
   const startTime = Date.now();
-  const gravity = -0.02;
+  // Gravedad acumulativa calibrada para 1760ms (~106 frames a 60fps):
+  // caída total = sum(0.0016*i for i=1..106) ≈ 9u, equivalente a la versión
+  // anterior pero comprimida en menos tiempo (sensación más fluida).
+  const gravity = -0.0016;
+  // Drag suave por frame: pedazos arrancan rápido y se desaceleran al caer
+  // → sensación más natural que velocidad constante + gravedad acumulativa.
+  const DRAG = 0.985;
 
   return new Promise((resolve) => {
   const cleanup = () => {
@@ -847,16 +1029,27 @@ function animateFragments(fragments, scene, duration = 1800, cancelRef = null) {
         try {
           const userData = fragment.userData;
           if (!userData) return;
+          // Drag horizontal solamente — la gravedad sigue aplicando full
+          // sobre la componente vertical. Esto da el efecto "vuelan, se
+          // frenan y caen" en lugar de "vuelan en línea recta + caen".
+          userData.velocity.x *= DRAG;
+          userData.velocity.z *= DRAG;
           userData.velocity.y += gravity;
           fragment.position.add(userData.velocity);
           fragment.rotation.x += userData.angularVelocity.x;
           fragment.rotation.y += userData.angularVelocity.y;
           fragment.rotation.z += userData.angularVelocity.z;
           userData.life = 1.0 - progress;
+          // Opacity: sólido 100% hasta el 82% del vuelo, fade out solo en
+          // el último 18%. Esto garantiza que los pedazos sean claramente
+          // visibles cayendo durante casi toda la animación.
+          const fadeT = Math.max(0, (progress - 0.82) / 0.18);
           if (fragment.material && fragment.material.opacity !== undefined) {
-            fragment.material.opacity = userData.life;
+            fragment.material.opacity = 1.0 - fadeT;
           }
-          const scale = 0.5 + userData.life * 0.5;
+          // Scale: mantener 1.0 hasta el 85%, encoge solo al final a 0.7.
+          const shrinkT = Math.max(0, (progress - 0.85) / 0.15);
+          const scale = 1.0 - shrinkT * 0.3;
           fragment.scale.setScalar(scale);
         } catch {}
       });
@@ -1730,6 +1923,11 @@ const handleZoomButton = useCallback((direction) => {
   const panVelocityRef = useRef({ x: 0, y: 0 });
   const lastPanMoveTimeRef = useRef(0);
   const inertiaAnimRef = useRef(null);
+  // Velocidad e inercia para rotación (modo cubo / zoom lejano).
+  // Se llena en cada move con smooth exponencial y se consume en release.
+  const rotationVelocityRef = useRef({ x: 0, y: 0 });
+  const lastRotateMoveTimeRef = useRef(0);
+  const rotationInertiaAnimRef = useRef(null);
   // Para dos dedos: recordar el punto medio previo para pan de grilla
   const lastTwoFingerMidRef = useRef(null);
   // Cara activa detectada (para suscripciÃƒÂ³n granular de minados)
@@ -1787,6 +1985,7 @@ const handleZoomButton = useCallback((direction) => {
 
     return () => {
       if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
+      if (rotationInertiaAnimRef.current) { cancelAnimationFrame(rotationInertiaAnimRef.current); rotationInertiaAnimRef.current = null; }
     };
   }, []);
 
@@ -2603,23 +2802,47 @@ const handleZoomButton = useCallback((direction) => {
         scene.add(crackGroup);
         cracksRef.current = { crackGroup, cracks }; // Guardar para limpieza posterior
         
-        // Animar propagación de grietas — duración sincronizada con sonido rotura (3.2s)
+        // Animar propagación de grietas — cada rama crece progresivamente
+        // desde su punto de origen usando setDrawRange. La opacity se llena
+        // rápido (primeros 150ms del crecimiento de cada rama) para que se
+        // vea sólida apenas aparece, y el "extenderse" venga del drawRange.
         await new Promise(resolveAnim => {
-          const dur = 3000;
           const start = Date.now();
+          const HOLD_AFTER_DONE = 250; // ms a esperar después que todo terminó
           const step = () => {
             const elapsed = Date.now() - start;
             let allDone = true;
             cracks.forEach(seg => {
-              const dt = Math.max(0, elapsed - (seg.userData?.delay || 0));
-              const tt = Math.min(dt / dur, 1);
-              seg.material.opacity = 0.3 + 0.7 * tt;
+              const ud = seg.userData || {};
+              const delay = ud.delay || 0;
+              const grow = ud.growDuration || 800;
+              const totalVerts = ud.totalVerts || 0;
+              const vertsPerStep = ud.vertsPerStep || 4;
+              const dt = elapsed - delay;
+              if (dt < 0) {
+                allDone = false;
+                return; // todavía no arrancó esta rama
+              }
+              const tt = Math.min(dt / grow, 1);
+              // Easing suave (easeOutQuad) → arranca rápido, frena al final
+              const eased = 1 - (1 - tt) * (1 - tt);
+              // Snap al múltiplo más cercano de vertsPerStep (segmento completo)
+              const targetCount = Math.min(
+                totalVerts,
+                Math.floor((totalVerts * eased) / vertsPerStep) * vertsPerStep
+              );
+              if (seg.geometry && seg.geometry.setDrawRange) {
+                seg.geometry.setDrawRange(0, targetCount);
+              }
+              // Opacity sube en los primeros 150ms del crecimiento de esta rama
+              const opacityT = Math.min(dt / 150, 1);
+              seg.material.opacity = 0.4 + 0.6 * opacityT;
               if (!(seg.isLine || seg.isLineSegments)) {
                 seg.scale.y = Math.max(0.01, tt);
               }
               if (tt < 1) allDone = false;
             });
-            if (!allDone) requestAnimationFrame(step); else setTimeout(resolveAnim, 200);
+            if (!allDone) requestAnimationFrame(step); else setTimeout(resolveAnim, HOLD_AFTER_DONE);
           };
           step();
         });
@@ -2678,20 +2901,39 @@ const handleZoomButton = useCallback((direction) => {
         cracksPromiseRef.current = null; // Limpiar referencia
       }
       
-      // FASE 1: Limpiar grietas previas (ahora que terminaron)
-      // CRIT-09: extraído a helper `cleanupCracksNow` (definido más arriba)
-      // para que también se llame desde el catch del callMineCube si la API
-      // falla y startMining nunca se ejecuta. Antes los cracks quedaban
-      // pegados a la escena (leak GPU acumulado por mine fallido).
+      // FASE 1: Esperar a que termine el sonido de rotura (que arrancó
+      // sincronizado con la animación de grietas) ANTES de hacer la limpieza
+      // y la explosión. De esta forma:
+      //   - Las grietas se ven durante todos los 3.2s del sonido.
+      //   - El parche negro NO aparece prematuramente (antes era visible
+      //     ~1-3s antes de los fragments, dejando un hueco visual).
+      const ROTURA_DURATION_MS = 3200;
+      const startedAt = roturaStartTimeRef.current || 0;
+      if (startedAt > 0) {
+        const elapsed = Date.now() - startedAt;
+        const remaining = ROTURA_DURATION_MS - elapsed;
+        if (remaining > 0) {
+          await new Promise(r => setTimeout(r, remaining));
+        }
+      }
+
+      // FASE 2: Limpiar grietas previas (ahora que el sonido terminó)
       cleanupCracksNow(scene);
-      
-      // FASE 3: Aplicar parche y explotar simultáneamente
-      const K = currentLayerRef.current; // usar ref para evitar closure estale
+
+      // FASE 3: SIMULTÁNEO — sonido explosión + fragmentos + X/premio + parche.
+      // Todo arranca en el mismo instante: el parche se aplica debajo, los
+      // fragmentos cubren la posición original y al volar revelan el parche,
+      // y la X (sin recompensa) o el contador de picos sale por encima.
+      const K = currentLayerRef.current;
       const cellKey = `${K}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
+      const hasPickReward = reward > 0;
+      const hasGemReward = !!gem;
+
+      const gemDef = hasGemReward ? GEMS[gem - 1] : null;
+
+      // Aplicar parche AHORA — mismo instante que explosion + X/premio.
       try {
         if (typeof addDarkPatch === 'function') {
-          // Calcular coord 3D para propagar el parche a TODAS las caras donde
-          // aparece el cubo (arista=2, esquina=3). 2026-06-24.
           const a = modalData.gridX - K, b = modalData.gridY - K;
           let ix=0, iy=0, iz=0;
           const fname = FACES[modalData.faceIndex]?.name;
@@ -2704,8 +2946,6 @@ const handleZoomButton = useCallback((direction) => {
             case 'bottom': iy = -K;  ix = a;  iz = b;  break;
           }
           const facesShowing = getFacesShowingCube(ix, iy, iz, K);
-          // store reward sólo en la cara owner (canónica) para mantener
-          // consistencia con el resto del sistema.
           minedRewardsStore.set(K, modalData.faceIndex, modalData.gridX, modalData.gridY, reward);
           let anyPatched = false;
           for (const fi of facesShowing) {
@@ -2718,9 +2958,6 @@ const handleZoomButton = useCallback((direction) => {
               }
             }
           }
-          // Solo marcar como aplicado si al menos una cara recibió el patch.
-          // Si todas fallaron (faceGroupsRef no listo), dejar la key suelta
-          // para que el useEffect retry vuelva a intentar.
           if (anyPatched) {
             minedAppliedRef.current.add(cellKey);
           }
@@ -2729,25 +2966,7 @@ const handleZoomButton = useCallback((direction) => {
         console.error('Error in patch operations:', patchError.message);
       }
 
-      // FASE 5: Explosión + pico aparecen al mismo tiempo cuando se rompe el bloque
-      const hasPickReward = reward > 0;
-      const hasGemReward = !!gem;
-
-      const gemDef = hasGemReward ? GEMS[gem - 1] : null;
-
       try {
-        // Esperar a que termine rotura (3.2s) antes de explotar.
-        // Si rotura todavía está sonando, hacemos await del remanente para
-        // que la explosión no la tape — secuencia: mining_ok → rotura → explosion.
-        const ROTURA_DURATION_MS = 3200;
-        const startedAt = roturaStartTimeRef.current || 0;
-        if (startedAt > 0) {
-          const elapsed = Date.now() - startedAt;
-          const remaining = ROTURA_DURATION_MS - elapsed;
-          if (remaining > 0) {
-            await new Promise(r => setTimeout(r, remaining));
-          }
-        }
         audioManager.playSound('explosion', 1.0);
         if (hasPickReward || hasGemReward) audioManager.playSound('win', 1.0);
         else audioManager.playSound('lose', 1.0);
@@ -2755,7 +2974,7 @@ const handleZoomButton = useCallback((direction) => {
         fragments.forEach(fragment => scene.add(fragment));
         if (hasGemReward && gemDef) showGemAnimation(scene, modalData.position, THREE, gemDef);
         await Promise.all([
-          animateFragments(fragments, scene, 1000, fragmentsCancelRef),
+          animateFragments(fragments, scene, 1760, fragmentsCancelRef),
           hasPickReward
             ? showRewardAnimation(scene, modalData, reward, THREE)
             : !hasGemReward
@@ -2863,7 +3082,10 @@ const handleZoomButton = useCallback((direction) => {
             };
             // Cancelar inercia pendiente al iniciar nuevo gesto
             if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
+            if (rotationInertiaAnimRef.current) { cancelAnimationFrame(rotationInertiaAnimRef.current); rotationInertiaAnimRef.current = null; }
             panVelocityRef.current = { x: 0, y: 0 };
+            rotationVelocityRef.current = { x: 0, y: 0 };
+            lastRotateMoveTimeRef.current = Date.now();
             lastPanMoveTimeRef.current = Date.now();
             // Inicializar última posición de toque para deltas incrementales (coordenadas locales al target)
             lastTouchPosRef.current = { x: t[0].locationX, y: t[0].locationY };
@@ -3009,6 +3231,7 @@ const handleZoomButton = useCallback((direction) => {
           // se llena → al soltar arranca inercia y la cámara se va.
           if (miningModalRef.current) {
             panVelocityRef.current = { x: 0, y: 0 };
+            rotationVelocityRef.current = { x: 0, y: 0 };
             return;
           }
           markActive(); // PERF-001
@@ -3251,6 +3474,10 @@ const handleZoomButton = useCallback((direction) => {
             } else {
               // Rotación con 1 dedo — sensibilidad adaptativa según distancia de cámara
               // A mayor zoom (menor dist) la rotación se hace más precisa proporcionalmente
+              if (rotationInertiaAnimRef.current) {
+                cancelAnimationFrame(rotationInertiaAnimRef.current);
+                rotationInertiaAnimRef.current = null;
+              }
               const baseSensitivity = 0.008;
               const distNorm = THREE.MathUtils.clamp((camStateRef.current?.distance || 300) / 300, 0.3, 4.0);
               const sensitivity = baseSensitivity * distNorm;
@@ -3263,16 +3490,31 @@ const handleZoomButton = useCallback((direction) => {
               suppressAutoGridRef.current = Date.now() + 2000;
               {
                 const prev = camStateRef.current || {};
-                const targetRotX = prev.rotX + deltaX;
+                // Clamp en pitch (rotX) a (-π/2, π/2) con margen para evitar gimbal lock
+                // y que la cámara cruce el polo (causa visual de "arriba/abajo invertidos"
+                // en zoom lejano, donde la sensibilidad efectiva es ~8× la cercana).
+                const POLE_LIMIT = Math.PI / 2 - 0.01;
+                const targetRotX = THREE.MathUtils.clamp(prev.rotX + deltaX, -POLE_LIMIT, POLE_LIMIT);
                 let targetRotY = prev.rotY + deltaY;
                 targetRotY = THREE.MathUtils.euclideanModulo(targetRotY + Math.PI, Math.PI * 2) - Math.PI;
                 const alpha = 0.5;
+                const appliedDX = (targetRotX - prev.rotX) * alpha;
+                const appliedDY = (targetRotY - prev.rotY) * alpha;
                 const newCamState = {
                   ...prev,
-                  rotX: prev.rotX + (targetRotX - prev.rotX) * alpha,
-                  rotY: prev.rotY + (targetRotY - prev.rotY) * alpha,
+                  rotX: prev.rotX + appliedDX,
+                  rotY: prev.rotY + appliedDY,
                 };
                 camStateRef.current = newCamState;
+                // Capturar velocidad angular (rad/ms) con suavizado exponencial,
+                // para usar en inercia en onPanResponderRelease (modo cubo).
+                const nowRot = Date.now();
+                const dtRot = Math.max(8, nowRot - lastRotateMoveTimeRef.current);
+                lastRotateMoveTimeRef.current = nowRot;
+                rotationVelocityRef.current = {
+                  x: rotationVelocityRef.current.x * 0.4 + (appliedDX / dtRot) * 0.6,
+                  y: rotationVelocityRef.current.y * 0.4 + (appliedDY / dtRot) * 0.6,
+                };
                 const _now4 = Date.now();
                 if (_now4 - lastCamStateReactUpdate.current > 66) {
                   lastCamStateReactUpdate.current = _now4;
@@ -3288,6 +3530,11 @@ const handleZoomButton = useCallback((direction) => {
           const modalOpenAtRelease = !!miningModalRef.current;
           if (modalOpenAtRelease) {
             panVelocityRef.current = { x: 0, y: 0 };
+            rotationVelocityRef.current = { x: 0, y: 0 };
+            if (rotationInertiaAnimRef.current) {
+              cancelAnimationFrame(rotationInertiaAnimRef.current);
+              rotationInertiaAnimRef.current = null;
+            }
           }
           // FIX-P1: mantener FPS alto durante la inercia (no bajar a 30/15 mientras la cámara se desliza)
           markActive();
@@ -3334,6 +3581,21 @@ const handleZoomButton = useCallback((direction) => {
           isRotatingRef.current = false;
           lastGridPanTsRef.current = 0;
 
+          // Si el dedo estuvo quieto al menos ~80ms antes de soltar, NO disparar
+          // inercia — el user frenó conscientemente. Sin esto, el smoothing
+          // exponencial (0.4 hist + 0.6 actual) deja velocidad residual de
+          // movimientos previos aunque el último frame haya sido quieto.
+          // Los lastXxxMoveTimeRef solo se actualizan cuando hay delta>deadzone,
+          // así que en frames de "quietud" no se tocan.
+          const QUIET_BEFORE_RELEASE_MS = 80;
+          const nowRel = Date.now();
+          if (nowRel - (lastPanMoveTimeRef.current || 0) > QUIET_BEFORE_RELEASE_MS) {
+            panVelocityRef.current = { x: 0, y: 0 };
+          }
+          if (nowRel - (lastRotateMoveTimeRef.current || 0) > QUIET_BEFORE_RELEASE_MS) {
+            rotationVelocityRef.current = { x: 0, y: 0 };
+          }
+
           // Inercia estilo Google Maps al soltar en modo grilla
           const _inertiaInGrid = (() => {
             try {
@@ -3375,11 +3637,55 @@ const handleZoomButton = useCallback((direction) => {
               };
               inertiaAnimRef.current = requestAnimationFrame(inertiaStep);
             }
+          } else if (!modalOpenAtRelease) {
+            // Inercia rotacional en modo cubo: si el último gesto fue una rotación,
+            // continuar girando con decay proporcional a la velocidad del swipe.
+            if (rotationInertiaAnimRef.current) {
+              cancelAnimationFrame(rotationInertiaAnimRef.current);
+              rotationInertiaAnimRef.current = null;
+            }
+            let rvx = rotationVelocityRef.current.x;
+            let rvy = rotationVelocityRef.current.y;
+            // Umbral mínimo: por debajo, se considera "soltar quieto" y no gira.
+            if (Math.hypot(rvx, rvy) > 0.00008) {
+              const POLE_LIMIT = Math.PI / 2 - 0.01;
+              const DECAY = 0.94; // mismo feel que la inercia de pan
+              const MIN_SPEED = 0.00002;
+              let _lastT = Date.now();
+              const rotationInertiaStep = () => {
+                markActive();
+                const _now = Date.now();
+                const _dt = Math.min(50, _now - _lastT);
+                _lastT = _now;
+                const decay = Math.pow(DECAY, _dt / 16.67);
+                rvx *= decay; rvy *= decay;
+                if (Math.hypot(rvx, rvy) < MIN_SPEED) {
+                  rotationInertiaAnimRef.current = null;
+                  return;
+                }
+                const prev = camStateRef.current || {};
+                const nextRotXRaw = (prev.rotX || 0) + rvx * _dt;
+                const nextRotX = THREE.MathUtils.clamp(nextRotXRaw, -POLE_LIMIT, POLE_LIMIT);
+                // Si chocamos con un polo, frenar la componente vertical.
+                if (nextRotX !== nextRotXRaw) rvx = 0;
+                let nextRotY = (prev.rotY || 0) + rvy * _dt;
+                nextRotY = THREE.MathUtils.euclideanModulo(nextRotY + Math.PI, Math.PI * 2) - Math.PI;
+                camStateRef.current = { ...prev, rotX: nextRotX, rotY: nextRotY };
+                const _now2 = Date.now();
+                if (_now2 - lastCamStateReactUpdate.current > 66) {
+                  lastCamStateReactUpdate.current = _now2;
+                  setCamState(() => camStateRef.current);
+                }
+                rotationInertiaAnimRef.current = requestAnimationFrame(rotationInertiaStep);
+              };
+              rotationInertiaAnimRef.current = requestAnimationFrame(rotationInertiaStep);
+            }
           }
         },
         onPanResponderTerminate: () => {
           isGesturingRef.current = false;
           if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
+          if (rotationInertiaAnimRef.current) { cancelAnimationFrame(rotationInertiaAnimRef.current); rotationInertiaAnimRef.current = null; }
           try { activeTouchesRef.current = 0; } catch {}
           if (longPressTimer.current) {
             clearTimeout(longPressTimer.current);
@@ -3399,6 +3705,7 @@ const handleZoomButton = useCallback((direction) => {
           lastTwoFingerMidRef.current = null;
           longPressInitiatedRef.current = false;
           panVelocityRef.current = { x: 0, y: 0 };
+          rotationVelocityRef.current = { x: 0, y: 0 };
           try { audioManager.stopMiningSound(); } catch {}
           setLongPressActive(false);
           setSelectedCube(null);
@@ -3576,6 +3883,11 @@ const handleZoomButton = useCallback((direction) => {
           // "invertido" hasta que el user salga y vuelva a entrar.
           gridPositionRef.current = { x: 0, y: 0 };
           panVelocityRef.current = { x: 0, y: 0 };
+          rotationVelocityRef.current = { x: 0, y: 0 };
+          if (rotationInertiaAnimRef.current) {
+            cancelAnimationFrame(rotationInertiaAnimRef.current);
+            rotationInertiaAnimRef.current = null;
+          }
           // CRÍTICO: Capturar la cara que estaba mirando ANTES del zoom para mantenerla en modo grilla
           if (!requestedFaceRef.current) {
             // Usar la última cara detectada como la cara "solicitada" durante el modo grilla
@@ -5001,20 +5313,23 @@ const handleZoomButton = useCallback((direction) => {
                 }, 120);
 
                 // Disparar rotura DESPUÉS que termine mining_ok (1.375s) para
-                // evitar solape. La animación visual de grietas dura 3.2s
-                // (sincronizada con la duración del sonido rotura).
+                // evitar solape. Secuencia exacta solicitada:
+                //   1) cerrar modal
+                //   2) sonido rotura + animación grieta arrancan SIMULTÁNEOS
+                //   3) al terminar rotura, explosión + fragmentos en startMining
                 setTimeout(() => {
                   if (roturaPlayedRef.current) return;
                   roturaPlayedRef.current = true;
-                  roturaStartTimeRef.current = Date.now();
-                  audioManager.playSound('rotura', 1.0);
-                  // Cerrar modal 150ms después para transición suave y que se vean las grietas
-                  setTimeout(async () => {
-                    try { setMiningModal(null); } catch {}
+                  // 1) Cerrar modal primero
+                  try { setMiningModal(null); } catch {}
+                  // 2) Frame siguiente: sonido + animación de grieta JUNTOS
+                  requestAnimationFrame(() => {
+                    roturaStartTimeRef.current = Date.now();
+                    audioManager.playSound('rotura', 1.0);
                     if (!cracksPromiseRef.current && !cracksRef.current) {
-                      await showCracksAnimation(modalData);
+                      showCracksAnimation(modalData);
                     }
-                  }, 150);
+                  });
                 }, 1400);
                 try {
                   // Asegurar apiCubeNumber vÃƒÂ¡lido (derivar si falta)

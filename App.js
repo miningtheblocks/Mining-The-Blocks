@@ -25,7 +25,7 @@ import { initSentry, Sentry } from './src/utils/sentry';
 // Si EXPO_PUBLIC_SENTRY_DSN está vacío queda no-op.
 initSentry();
 
-import { APP_VERSION, TERMS_URL, compareVersions, StorageKeys } from './src/constants';
+import { APP_VERSION, TERMS_URL, DISCORD_URL, compareVersions, StorageKeys } from './src/constants';
 import Home from './src/screens/Home';
 import ServerList from './src/screens/ServerList';
 import ChainHistoryScreen from './src/screens/ChainHistoryScreen';
@@ -484,6 +484,7 @@ function CustomDrawerContent(props) {
       <DrawerItem label={t('drawer.gems')} onPress={() => { props.navigation.closeDrawer(); openModal('gems'); }} />
       <DrawerItem label={t('drawer.getPeaks')} onPress={() => { props.navigation.closeDrawer(); openModal('peaks'); }} />
       <DrawerItem label={t('drawer.buyCredits')} onPress={() => { props.navigation.closeDrawer(); openModal('buyCredits'); }} />
+      <DrawerItem label={t('drawer.discord')} onPress={() => { props.navigation.closeDrawer(); Linking.openURL(DISCORD_URL).catch(() => {}); }} />
 
       {/* Separador */}
       <View style={{ height: 1, backgroundColor: '#333', marginVertical: 8, marginHorizontal: 16 }} />
