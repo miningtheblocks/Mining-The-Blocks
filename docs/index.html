@@ -299,12 +299,12 @@
     .install-help-row { display: flex; justify-content: center; margin-top: 10px; }
     .install-help {
       display: inline-flex; align-items: center; gap: 6px;
-      color: #94a3b8; font-size: 13px; font-weight: 600;
+      color: #1e293b; font-size: 13px; font-weight: 700;
       text-decoration: none; padding: 6px 10px; border-radius: 6px;
       transition: color 0.15s, background 0.15s;
       background: transparent; border: none; cursor: pointer; font-family: inherit;
     }
-    .install-help:hover { color: #fff; background: rgba(255,255,255,0.05); }
+    .install-help:hover { color: #000; background: rgba(0,0,0,0.05); }
     .install-help-icon { width: 14px; height: 14px; flex-shrink: 0; }
     /* Modal de instructivo — reusa legal-overlay con tweaks específicos */
     .install-overlay { display: none; }
@@ -360,7 +360,7 @@
     .pyr-row:nth-child(6) { width: 40%;  border-color: #94a3b8; background: #f8fafc; flex-direction: column; gap: 1px; }
     .pyr-row:nth-child(7) { width: 28%;  border-color: #f59e0b; background: #fffbeb; flex-direction: column; gap: 1px; }
     .pyr-val { font-weight: 900; white-space: nowrap; flex: 1; text-align: left; }
-    .pyr-layers { font-size: 10px; color: #666; font-weight: 600; white-space: nowrap; flex: 1; text-align: center; }
+    .pyr-layers { font-size: 10px; color: #111; font-weight: 700; white-space: nowrap; flex: 1; text-align: center; }
     .pyr-qty { font-size: 10px; color: #999; font-weight: 600; white-space: nowrap; flex: 1; text-align: right; }
     .pyr-row:nth-child(6) .pyr-val,
     .pyr-row:nth-child(6) .pyr-layers,
@@ -368,11 +368,11 @@
     .pyr-row:nth-child(7) .pyr-val,
     .pyr-row:nth-child(7) .pyr-layers,
     .pyr-row:nth-child(7) .pyr-qty { flex: unset; text-align: center; }
-    .pyr-caption { font-size: 11px; color: #888; margin-top: 10px; font-weight: 500; font-style: italic; }
+    .pyr-caption { font-size: 11px; color: #1e293b; margin-top: 10px; font-weight: 700; font-style: italic; }
 
-    /* ── i18n: hidden by default ── */
-    [data-lang] { display: none; }
-    [data-lang].visible { display: block; }
+    /* ── i18n: hidden by default (excluye los botones del toggle) ── */
+    [data-lang]:not(.lang-btn) { display: none; }
+    [data-lang]:not(.lang-btn).visible { display: block; }
     [data-lang-inline] { display: none; }
     [data-lang-inline].visible { display: inline; }
 
