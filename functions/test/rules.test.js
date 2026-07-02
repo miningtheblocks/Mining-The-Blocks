@@ -242,6 +242,25 @@ describe('serverAccess (Cloud Functions only)', () => {
   });
 });
 
+// Cambio 1 (picos por cadena): mismo patrón de reglas que serverAccess.
+describe('chainAccess (Cloud Functions only)', () => {
+  test('write desde cliente: FALLA', async () => {
+    const db = dbAs('uid1');
+    await assertFails(db.doc('users/uid1/chainAccess/chain1').set({
+      chainId: 'chain1', picks: 999,
+    }));
+  });
+  test('read propio: OK', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await ctx.firestore().doc('users/uid1/chainAccess/chain1').set({ chainId: 'chain1', picks: 5 });
+    });
+    await assertSucceeds(dbAs('uid1').collection('users/uid1/chainAccess').get());
+  });
+  test('read ajeno: FALLA', async () => {
+    await assertFails(dbAs('uid1').collection('users/uid2/chainAccess').get());
+  });
+});
+
 describe('usernames', () => {
   test('create con formato válido: OK', async () => {
     const db = dbAs('uid1');

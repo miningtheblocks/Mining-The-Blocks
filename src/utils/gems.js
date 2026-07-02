@@ -150,6 +150,12 @@ const _deepFreeze = (obj) => {
 _deepFreeze(GEMS);
 export const GEM_SHAPE = _deepFreeze(_GEM_SHAPE_RAW);
 
+// Cambio 5 (premio total visible en cada card): calculado a partir de los
+// mismos 9 tiers de arriba en vez de un número hardcodeado aparte, para que
+// nunca pueda desincronizarse de GEMS. Fallback para servers sin `config`
+// propio (todo server estándar/legacy usa este mismo total: $650.000).
+export const TOTAL_PRIZE_POOL_USD = GEMS.reduce((sum, g) => sum + g.price * g.quantityPerServer, 0);
+
 // Helper para acceso seguro por tier (1..9). Evita crashes con tier inválido.
 export function getGemDef(tier) {
   const idx = Number(tier) - 1;

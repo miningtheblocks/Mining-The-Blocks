@@ -94,6 +94,12 @@ service cloud.firestore {
         allow read: if request.auth != null && request.auth.uid == uid;
         allow write: if false; // only Cloud Functions (admin)
       }
+      // Cambio 1 (picos por cadena): pool de picos/ads por chainId, en vez
+      // del campo global users/{uid}.picks. Mismo patrón que serverAccess.
+      match /chainAccess/{chainId} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false; // only Cloud Functions (admin)
+      }
       // notifications: in-app notifications (referral bonus, etc.)
       match /notifications/{notifId} {
         allow read: if request.auth != null && request.auth.uid == uid;

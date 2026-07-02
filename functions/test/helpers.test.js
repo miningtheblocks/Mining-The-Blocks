@@ -6,15 +6,23 @@
 
 const {
   shellTotalCubes,
+  cumSum,
+  zoneSizeFor,
   cubeNumberToFaceGridForK,
   fnv1a,
   getRewardForCube,
   getGemForCube,
+  getGemForCubeGeneric,
   getLayerUnlockThreshold,
+  getLayerUnlockThresholdGeneric,
   isLayerUnlocked,
   generateReferralCode,
   generateGemCode,
   esc,
+  buildChainStatus,
+  DEFAULT_CONFIG,
+  DEFAULT_TIER_TABLE,
+  DEFAULT_REWARD_BRACKETS,
 } = require('../helpers');
 
 describe('shellTotalCubes', () => {
@@ -206,6 +214,153 @@ describe('isLayerUnlocked', () => {
     expect(isLayerUnlocked(50, undefined)).toBe(false);
     expect(isLayerUnlocked(50, null)).toBe(false);
     expect(isLayerUnlocked(100, undefined)).toBe(true); // warmup OK
+  });
+});
+
+// Fase 0 (servers a medida + server Free): getGemForCube/getRewardForCube/
+// getLayerUnlockThreshold aceptan un `config` explícito. Sin config, deben
+// comportarse IDÉNTICO a los tests de arriba (ya lo verifican). Estos tests
+// cubren que el `config` custom realmente se respeta.
+describe('config paramétrico (Fase 0)', () => {
+  test('DEFAULT_CONFIG expone 9 tiers y 5 franjas de reward', () => {
+    expect(DEFAULT_TIER_TABLE).toHaveLength(9);
+    expect(DEFAULT_REWARD_BRACKETS).toHaveLength(5);
+    expect(DEFAULT_CONFIG.tierTable).toBe(DEFAULT_TIER_TABLE);
+    expect(DEFAULT_CONFIG.rewardBrackets).toBe(DEFAULT_REWARD_BRACKETS);
+  });
+
+  test('zoneSizeFor reproduce los zoneSize hardcodeados históricos', () => {
+    expect(zoneSizeFor(0, 6)).toBe(2730);
+    expect(zoneSizeFor(7, 16)).toBe(36540);
+    expect(zoneSizeFor(17, 26)).toBe(118140);
+    expect(zoneSizeFor(0, 46)).toBe(830490);
+    expect(zoneSizeFor(0, 81)).toBe(4410780);
+    expect(zoneSizeFor(0, 97)).toBe(7529340);
+  });
+
+  test('cumSum(n) = suma de shellTotalCubes(0..n-1)', () => {
+    let sum = 0;
+    for (let K = 0; K < 10; K++) sum += shellTotalCubes(K);
+    expect(cumSum(10)).toBe(sum);
+  });
+
+  test('tierTable custom con 1 solo tier chico: solo ese tier puede salir', () => {
+    const tinyTable = [
+      { tier: 9, price: 15, count: 2, minK: 0, maxK: 5, unlockAt: 0, zoneSize: zoneSizeFor(0, 5) },
+    ];
+    let sawGem = false;
+    const total = shellTotalCubes(0) + shellTotalCubes(1) + shellTotalCubes(2) +
+      shellTotalCubes(3) + shellTotalCubes(4) + shellTotalCubes(5);
+    for (let K = 0; K <= 5; K++) {
+      for (let cn = 1; cn <= shellTotalCubes(K); cn++) {
+        const g = getGemForCubeGeneric('s-tiny', K, cn, 999999, 'seed', 1, tinyTable);
+        if (g !== null) {
+          expect(g).toBe(9); // el único tier de la tabla
+          sawGem = true;
+        }
+      }
+      // fuera del rango de la tierTable (K>5 no existe acá) siempre null
+    }
+    expect(sawGem).toBe(true);
+    // K=6 no está en ninguna zona de tinyTable -> siempre null
+    for (let cn = 1; cn <= shellTotalCubes(6); cn++) {
+      expect(getGemForCubeGeneric('s-tiny', 6, cn, 999999, 'seed', 1, tinyTable)).toBeNull();
+    }
+    void total;
+  });
+
+  test('tierTable custom con count=0 nunca reparte ese tier (redondeo a 0, Fase 4)', () => {
+    const zeroTable = [
+      { tier: 1, price: 100000, count: 0, minK: 0, maxK: 6, unlockAt: 0, zoneSize: zoneSizeFor(0, 6) },
+    ];
+    for (let cn = 1; cn <= shellTotalCubes(3); cn++) {
+      expect(getGemForCubeGeneric('s-zero', 3, cn, 999999, 'seed', 1, zeroTable)).toBeNull();
+    }
+  });
+
+  test('rewardBrackets custom cambian el winRate efectivo', () => {
+    const alwaysWin = [{ minK: 0, rate: 1.0 }];
+    const neverWin = [{ minK: 0, rate: 0.0 }];
+    let wins = 0; let losses = 0;
+    for (let i = 1; i <= 50; i++) {
+      if (getRewardForCube('s', 5, i, 'seed', 1, { rewardBrackets: alwaysWin }) > 0) wins++;
+      if (getRewardForCube('s', 5, i, 'seed', 1, { rewardBrackets: neverWin }) > 0) losses++;
+    }
+    expect(wins).toBe(50);
+    expect(losses).toBe(0);
+  });
+
+  test('getLayerUnlockThresholdGeneric = max(unlockAt) entre tiers cuyo maxK alcanza K', () => {
+    const table = [
+      { tier: 1, maxK: 10, unlockAt: 500 },
+      { tier: 2, maxK: 20, unlockAt: 200 },
+    ];
+    expect(getLayerUnlockThresholdGeneric(5, table)).toBe(500); // ambos tiers alcanzan K=5, max=500
+    expect(getLayerUnlockThresholdGeneric(15, table)).toBe(200); // solo tier2 alcanza K=15
+    expect(getLayerUnlockThresholdGeneric(25, table)).toBe(0); // ningún tier alcanza K=25
+  });
+
+  test('getGemForCube/getRewardForCube sin config = idéntico a DEFAULT_CONFIG explícito', () => {
+    for (let K = 0; K <= 100; K += 7) {
+      for (let cn = 1; cn <= 20; cn++) {
+        const a = getGemForCube('s', K, cn, 60000, 'seed', 2);
+        const b = getGemForCube('s', K, cn, 60000, 'seed', 2, DEFAULT_CONFIG);
+        expect(a).toBe(b);
+        const ra = getRewardForCube('s', K, cn, 'seed', 2);
+        const rb = getRewardForCube('s', K, cn, 'seed', 2, DEFAULT_CONFIG);
+        expect(ra).toBe(rb);
+      }
+      const ta = getLayerUnlockThreshold(K);
+      const tb = getLayerUnlockThreshold(K, DEFAULT_CONFIG);
+      expect(ta).toBe(tb);
+    }
+  });
+});
+
+// Cambio 1 (picos por cadena): buildChainStatus reemplaza a buildStatus, con
+// slots de ads variables en vez de los 2 hardcodeados (ad1NextAt/ad2NextAt).
+describe('buildChainStatus (Cambio 1 — picos por cadena)', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  test('doc nuevo (sin lastDailyAt): nextDailyAt ancla en createdAt', () => {
+    const now = 1000000;
+    const s = buildChainStatus({ picks: 3, createdAt: now - 1000 }, now, 2);
+    expect(s.picks).toBe(3);
+    expect(s.nextDailyAt).toBe(now - 1000 + DAY_MS);
+  });
+
+  test('con lastDailyAt: nextDailyAt ancla ahí, no en createdAt', () => {
+    const now = 1000000;
+    const s = buildChainStatus({ picks: 0, createdAt: now - 5000, lastDailyAt: now - 1000 }, now, 2);
+    expect(s.nextDailyAt).toBe(now - 1000 + DAY_MS);
+  });
+
+  test('genera adNextAt para N slots (2 por default, hasta 5 para el server Free)', () => {
+    const now = 1000000;
+    const s2 = buildChainStatus({}, now, 2);
+    expect(Object.keys(s2.adNextAt)).toHaveLength(2);
+    expect(s2.dailyAdSlots).toBe(2);
+
+    const s5 = buildChainStatus({}, now, 5);
+    expect(Object.keys(s5.adNextAt)).toHaveLength(5);
+    expect(s5.adNextAt[5]).toBe(DAY_MS); // sin ads.5 -> lastAt=0 -> next=DAY_MS
+  });
+
+  test('ad ya reclamado hoy: adNextAt[i] = lastClaim + DAY_MS', () => {
+    const now = 2000000;
+    const s = buildChainStatus({ ads: { 1: now - 1000 } }, now, 2);
+    expect(s.adNextAt[1]).toBe(now - 1000 + DAY_MS);
+    expect(s.adNextAt[2]).toBe(DAY_MS); // nunca reclamado
+  });
+
+  test('dailyAdSlots inválido/ausente cae a default 2', () => {
+    const s = buildChainStatus({}, 1000, undefined);
+    expect(s.dailyAdSlots).toBe(2);
+  });
+
+  test('dailyFreeClaim default true, explícito false para el server Free', () => {
+    expect(buildChainStatus({}, 1000, 2).dailyFreeClaim).toBe(true);
+    expect(buildChainStatus({}, 1000, 5, false).dailyFreeClaim).toBe(false);
   });
 });
 

@@ -16,7 +16,7 @@ import { logError } from '../utils/logError';
 import { useOverlayModals } from './OverlayModalsProvider';
 import { useServer } from '../utils/serverContext';
 import { GEMS, GEM_SHAPE } from '../utils/gems';
-import GemPixelArt from './GemPixelArt';
+import GemPixelArt, { GEM_IMAGES as GEM_HUD_IMAGES } from './GemPixelArt';
 import { createRewardIndicatorSprite, MinedCubesRewardStore, clearIndicatorCache } from './MinedCellIndicators';
 import audioManager from '../utils/audioManager';
 import perfTier from '../utils/perfTier';
@@ -1687,6 +1687,17 @@ export default function DynamicCube201() {
   const { activeServer } = useServer ? useServer() : { activeServer: null };
   const { showAlert, AlertComponent } = useAppAlert();
   const serverId = activeServer?.id || null;
+  // Cambio 2/3 (server Free / a medida): la capa inicial ya no es siempre 100.
+  // Varias calibraciones de cámara (distancia a la superficie externa) se
+  // escriben como "100 + offset" -- acá generalizamos la base a la capa
+  // inicial real del server activo, preservando exactamente el comportamiento
+  // actual cuando layerCount es 100 (o no hay config, servers estándar).
+  const startK = activeServer?.config?.layerCount || CURRENT_ECON_LAYER;
+  // Ref-shadow (mismo patrón que camStateRef/cameraModeRef en este archivo)
+  // para poder leer el valor fresco dentro de useCallbacks con deps [] sin
+  // forzar su recreación en cada cambio de activeServer.
+  const startKRef = useRef(startK);
+  useEffect(() => { startKRef.current = startK; }, [startK]);
   const glRef = useRef(null);
   const rendererRef = useRef(null);
   const sceneRef = useRef(null);
@@ -1767,8 +1778,9 @@ const gridExitTimerRef = useRef(null);
 const handleZoomButton = useCallback((direction) => {
   const isZoomOut = direction === -1;
   if (isZoomOut && cameraModeRef.current === 'grid') {
-    // Umbral donde termina el modo grilla (tempDist=dist-100 <= 255.2 → dist <= 355.2)
-    const GRID_EXIT_THRESHOLD = 355.2;
+    // Umbral donde termina el modo grilla (tempDist=dist-startK <= 255.2 → dist <= startK+255.2).
+    // Con startK=100 (server estándar) da 355.2, igual que antes.
+    const GRID_EXIT_THRESHOLD = startKRef.current + 255.2;
     const currentDist = camStateRef.current?.distance ?? 300;
     const step = currentDist < 150 ? 5 : 25;
     const nextDist = currentDist + step;
@@ -1790,8 +1802,8 @@ const handleZoomButton = useCallback((direction) => {
         requestedFaceRef.current = null;
         resetFaceDetection();
         setCamState((prev) => {
-          const jumpOut = Math.max(prev.distance + 100, 350);
-          return { ...prev, distance: THREE.MathUtils.clamp(jumpOut, 106.6, 3000) };
+          const jumpOut = Math.max(prev.distance + startKRef.current, 350);
+          return { ...prev, distance: THREE.MathUtils.clamp(jumpOut, startKRef.current + 6.6, 3000) };
         });
       } else {
         // Primer press: mostrar hint
@@ -2062,9 +2074,15 @@ const handleZoomButton = useCallback((direction) => {
           if (v > maxAsc) maxAsc = v;
         }
         if (isFinite(minAsc) && isFinite(maxAsc)) {
-          const start = DISPLAY_START - minAsc + 1;
-          const end = DISPLAY_START - maxAsc + 1;
-          faceRangesRef.current[fIdx] = { start, end };
+          // Mostrar directamente el número real y acumulado de cada cubo
+          // (posición en la numeración ascendente 1..total de TODA la
+          // economía, no un offset relativo a la capa actual), en orden
+          // descendente para la lectura del botón. Antes se restaba de un
+          // DISPLAY_START fijo (pensado solo para capa 100) para simular una
+          // "cuenta regresiva" prolija, pero para cualquier otra config esa
+          // resta cancelaba los dígitos grandes y dejaba un rango chico sin
+          // sentido (ej. "540,002 a 1" en vez de los ~27 millones reales).
+          faceRangesRef.current[fIdx] = { start: maxAsc, end: minAsc };
         }
       }
     } catch {}
@@ -2390,10 +2408,12 @@ const handleZoomButton = useCallback((direction) => {
   const goToFaceCenter = useCallback((faceName, forceGridMode = false) => {
     // Configuración para ambos modos
     // FIX: Usar distancia dentro del rango de números visibles (6.6-31.1)
-    // Calcular distancia desde superficie: 106.6 = distToCenter, 106.6 - 100 = 6.6 desde superficie
+    // Calcular distancia desde superficie: 106.6 = distToCenter, 106.6 - startK = 6.6 desde superficie
     // Para estar en medio del rango: (6.6 + 31.1) / 2 = 18.85 desde superficie
-    // Distancia al centro: 18.85 + 100 = 118.85
-    const targetDistance = forceGridMode ? 118.85 : 398.5;
+    // Distancia al centro: 18.85 + startK. Con startK=100 (server estándar) da 118.85, igual que antes.
+    // El modo "cubo completo" (398.5) queda fijo -- no hay relación 100+offset
+    // documentada para esa constante, así que no se generaliza acá.
+    const targetDistance = forceGridMode ? (startKRef.current + 18.85) : 398.5;
     
     // Mapear caras a orientaciones (rotX, rotY)
     const faceAngles = {
@@ -2726,7 +2746,8 @@ const handleZoomButton = useCallback((direction) => {
         const ref = doc(db, 'users', u.uid);
         unsubUser = onSnapshot(ref, (snap) => {
           const data = snap.exists() ? snap.data() : {};
-          setPicks(data?.picks ?? 0);
+          // Cambio 1 (picos por cadena): picks se movió a users/{uid}/chainAccess/{chainId}
+          // (ver el efecto de abajo) -- ya no se lee del doc global users/{uid}.
           const walletData = data && data.wallet;
           // Firestore rules deniegan write de 'wallet' desde cliente.
           // Si el campo no existe aún (user nuevo), mostramos 0.
@@ -2778,7 +2799,22 @@ const handleZoomButton = useCallback((direction) => {
     // para sesiones largas (re-render y nuevo bootstrap de user doc).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  
+
+  // Cambio 1 (picos por cadena): el HUD de picos ahora lee de
+  // users/{uid}/chainAccess/{chainId} en vez del doc global users/{uid} —
+  // mineCube ya no decrementa el campo global, así que ese listener quedaría
+  // stale/congelado si no se migra este efecto también.
+  useEffect(() => {
+    const uid = auth?.currentUser?.uid;
+    const chainId = activeServer?.chainId || null;
+    if (!uid || !chainId) { setPicks(chainId ? null : 0); return; }
+    const ref = doc(db, 'users', uid, 'chainAccess', chainId);
+    const unsub = onSnapshot(ref, (snap) => {
+      setPicks(snap.exists() ? (snap.data()?.picks ?? 0) : 0);
+    }, () => {});
+    return () => { try { unsub(); } catch {} };
+  }, [activeServer?.chainId, authReady]);
+
   // Función para mostrar solo las grietas (llamada al 50% de la barra)
   const showCracksAnimation = useCallback(async (modalData) => {
     if (!modalData || !sceneRef.current) {
@@ -3114,7 +3150,7 @@ const handleZoomButton = useCallback((direction) => {
             const currentDistance = camStateRef.current?.distance || camState.distance;
             const tempEye = new THREE.Vector3(0, 0, currentDistance)
               .applyEuler(new THREE.Euler(camStateRef.current?.rotX || camState.rotX, -(camStateRef.current?.rotY || camState.rotY), 0));
-            const tempDist = Math.max(0, tempEye.length() - 100);
+            const tempDist = Math.max(0, tempEye.length() - startKRef.current);
             const inRange = tempDist >= (6.6 - 0.12) && tempDist <= (19.6 + 0.12 * 0.5);
             // Permitir long-press en cualquier zoom; si no hay nÃƒÂºmeros visibles, se usarÃƒÂ¡ raycast en handleLongPress
             {
@@ -3304,7 +3340,7 @@ const handleZoomButton = useCallback((direction) => {
                 const currentDistance = camStateRef.current?.distance || camState.distance;
                 const tempEye = new THREE.Vector3(0, 0, currentDistance)
                   .applyEuler(new THREE.Euler(camStateRef.current?.rotX || camState.rotX, -(camStateRef.current?.rotY || camState.rotY), 0));
-                const tempDist = Math.max(0, tempEye.length() - 100);
+                const tempDist = Math.max(0, tempEye.length() - startKRef.current);
                 const inGrid = tempDist <= 255.2;
                 if (inGrid && cameraRef.current) {
                   const camera = cameraRef.current;
@@ -3411,7 +3447,7 @@ const handleZoomButton = useCallback((direction) => {
               const cs = camStateRef.current || camState;
               const tempEye = new THREE.Vector3(0, 0, cs.distance)
                 .applyEuler(new THREE.Euler(cs.rotX, -cs.rotY, 0));
-              const tempDist = Math.max(0, tempEye.length() - 100);
+              const tempDist = Math.max(0, tempEye.length() - startKRef.current);
               const EXIT_GRID_DIST = 275.0; // mismo umbral de salida que en render loop
               isInGridMode = tempDist <= EXIT_GRID_DIST;
               // Si ya estamos fuera del umbral de grilla pero cameraMode quedÃƒÂ³ pegado, soltarlo ya
@@ -3601,7 +3637,7 @@ const handleZoomButton = useCallback((direction) => {
             try {
               const cs = camStateRef.current || {};
               const eye = new THREE.Vector3(0, 0, cs.distance || 300).applyEuler(new THREE.Euler(cs.rotX || 0, -(cs.rotY || 0), 0));
-              return Math.max(0, eye.length() - 100) <= 275.0;
+              return Math.max(0, eye.length() - startKRef.current) <= 275.0;
             } catch { return false; }
           })();
 
@@ -3824,7 +3860,7 @@ const handleZoomButton = useCallback((direction) => {
           .applyEuler(_sEuler.set(rotX, -rotY, 0))
           .add(target);
         const tempCollisionDistance = tempEye.distanceTo(target);
-        const tempDistanceToNearestCube = Math.max(0, tempCollisionDistance - 100); // 100 = radio del cubo
+        const tempDistanceToNearestCube = Math.max(0, tempCollisionDistance - startKRef.current); // startK = radio del cubo
         // HISTERESIS de modo grilla para evitar vibraciÃƒÂ³n
         // Histeresis ajustada: entrar a grilla cuando muy cerca y salir apenas te alejas un poco
         // Estos valores estÃƒÂ¡n en "cubitos desde la superficie" (distanceToNearestCube)
@@ -3845,7 +3881,7 @@ const handleZoomButton = useCallback((direction) => {
         
         // Calcular distancia al cubito mÃ¡s cercano (superficie del cubo)
         const collisionDistance = eye.distanceTo(target);
-        const distanceToNearestCube = Math.max(0, collisionDistance - 100); // 100 = radio del cubo
+        const distanceToNearestCube = Math.max(0, collisionDistance - startKRef.current); // startK = radio del cubo
         
         // ELIMINAR ajuste automÃƒÂ¡tico que causaba pantalla negra
         // La cÃ¡mara puede acercarse hasta 2 cubitos sin restricciones adicionales
@@ -5747,6 +5783,56 @@ const handleZoomButton = useCallback((direction) => {
         </Modal>
       )}
 
+      {/* Cambio 6: HUD de gemas/picos restantes, a los costados del panel de
+          zoom. 5 tiers a la izquierda (1-5, los más raros/caros), 4 tiers +
+          picos a la derecha (6-9, los más comunes). Lee activeServer.gemsFoundByTier
+          (agregado incrementado en mineCube) contra la cantidad total por tier
+          — config.quantityPerTier si el server tiene config propia (Fase 3/4),
+          si no el fallback estándar de GEMS. Picos no tienen presupuesto fijo
+          en servers de pago (getRewardForCube es probabilístico sin tope), así
+          que ese indicador muestra "otorgados hasta ahora" en vez de "restantes". */}
+      {activeServer && (() => {
+        const found = activeServer.gemsFoundByTier || {};
+        const customQty = activeServer.config?.quantityPerTier;
+        const totalFor = (tier) => customQty ? (customQty[tier - 1] ?? 0) : (GEMS[tier - 1]?.quantityPerServer ?? 0);
+        const remainingFor = (tier) => {
+          const done = Number(found[tier] || 0);
+          return Math.max(0, totalFor(tier) - done);
+        };
+        // Servers con config propia (Free, a medida) no siempre usan los 9
+        // tiers -- un tier con total 0 no tiene premio en ESTE server, así
+        // que no tiene sentido mostrar un pill con "0" fijo. Servers
+        // estándar (sin config) sí usan siempre los 9 tiers.
+        const renderPill = (tier) => {
+          if (totalFor(tier) === 0) return null;
+          return (
+            <View key={tier} style={styles.gemHudPill}>
+              <View style={styles.gemHudTopRow}>
+                <Image source={GEM_HUD_IMAGES[tier]} style={styles.gemHudImage} resizeMode="contain" />
+                <Text style={styles.gemHudTxt}>x {remainingFor(tier).toLocaleString()}</Text>
+              </View>
+              <Text style={styles.gemHudValueTxt}>${GEMS[tier - 1]?.price?.toLocaleString() || 0}</Text>
+            </View>
+          );
+        };
+        return (
+          <>
+            <View style={styles.gemHudColumnLeft} pointerEvents="none">
+              {[1, 2, 3, 4, 5].map(renderPill)}
+            </View>
+            <View style={styles.gemHudColumnRight} pointerEvents="none">
+              {[6, 7, 8, 9].map(renderPill)}
+              <View style={styles.gemHudPill}>
+                <View style={styles.gemHudTopRow}>
+                  <Text style={styles.gemHudPickIcon}>⛏</Text>
+                  <Text style={styles.gemHudTxt}>{Number(activeServer.picksAwarded || 0).toLocaleString()}</Text>
+                </View>
+              </View>
+            </View>
+          </>
+        );
+      })()}
+
       {/* Botones de Zoom - parte inferior central */}
       {showGridExitHint && (
         <View style={styles.gridExitHintBox} pointerEvents="none">
@@ -5806,8 +5892,8 @@ const styles = StyleSheet.create({
   hamburgerBtn: { alignSelf: 'flex-start', paddingVertical: 4, paddingHorizontal: 6, marginBottom: 6 },
   hamburgerTxt: { fontSize: 22, fontWeight: '900', color: '#666' },
   topRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 },
-  picksWrap: { paddingVertical: 2, paddingHorizontal: 6, borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.06)' },
-  picksTxt: { fontSize: 14, fontWeight: '900', color: '#666' },
+  picksWrap: { paddingVertical: 2, paddingHorizontal: 6, borderRadius: 8, backgroundColor: 'rgba(33,150,243,0.12)' },
+  picksTxt: { fontSize: 14, fontWeight: '900', color: '#2196f3' },
   moneyWrap: { marginLeft: 6, paddingVertical: 2, paddingHorizontal: 6, borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.06)' },
   moneyTxt: { fontSize: 14, fontWeight: '900', color: '#666' },
   // MenÃƒÂº hamburguesa
@@ -5913,6 +5999,54 @@ const styles = StyleSheet.create({
     right: 0,
     alignItems: 'center',
     zIndex: 12,
+  },
+  // Cambio 6: columnas de gemas/picos restantes a los costados del zoomPanel.
+  gemHudColumnLeft: {
+    position: 'absolute',
+    bottom: 40,
+    left: 10,
+    zIndex: 12,
+    gap: 6,
+  },
+  gemHudColumnRight: {
+    position: 'absolute',
+    bottom: 40,
+    right: 10,
+    zIndex: 12,
+    gap: 6,
+  },
+  gemHudPill: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(20,20,20,0.85)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#333',
+    paddingVertical: 3,
+    paddingHorizontal: 6,
+    gap: 2,
+    minWidth: 46,
+  },
+  gemHudTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  gemHudImage: {
+    width: 16,
+    height: 16,
+  },
+  gemHudTxt: {
+    color: '#ddd',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  gemHudValueTxt: {
+    color: '#ffd700',
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  gemHudPickIcon: {
+    fontSize: 11,
   },
   gridExitHintTxt: {
     color: '#ff9900',

@@ -19,6 +19,22 @@ export async function callCreateServer(name) {
   return res.data;
 }
 
+// Cambio 3 (Fase 4, servers a medida) — SE ENTREGA COMPLETO PERO INACTIVO:
+// ambas Cloud Functions responden failed-precondition/feature_disabled hasta
+// que config/app.paramServerCreationEnabled se active manualmente. No se usan
+// desde ninguna pantalla habilitada por default -- ver CreateCustomServer.js.
+export async function callPreviewServerConfig(maxMembers, creditPriceUSD, tierQuantities) {
+  const fn = httpsCallable(functions, 'previewServerConfig');
+  const res = await fn({ maxMembers, creditPriceUSD, tierQuantities });
+  return res.data;
+}
+
+export async function callCreateServerCustom(name, maxMembers, creditPriceUSD, tierQuantities) {
+  const fn = httpsCallable(functions, 'createServerCustom');
+  const res = await fn({ name, maxMembers, creditPriceUSD, tierQuantities });
+  return res.data;
+}
+
 export async function callGetServers() {
   const fn = httpsCallable(functions, 'getServers');
   const res = await fn({});
@@ -32,31 +48,33 @@ export async function callMineCube(cubeNumber, serverId) {
 }
 
 // Peaks: server-authoritative status (prevents client manipulation)
+// Cambio 1 (picos por cadena): picos/ads viven por chainId, no más globales
+// por usuario — chainId es REQUERIDO (el backend rechaza si falta).
 // Expected response shape from backend:
 // {
 //   picks: number,
 //   serverNow: number, // millis
 //   nextDailyAt: number, // millis when daily becomes available
-//   ad1NextAt: number, // millis when ad1 becomes available
-//   ad2NextAt: number  // millis when ad2 becomes available
+//   adNextAt: { [slotIndex: number]: number }, // millis when each ad slot becomes available
+//   dailyAdSlots: number, // cantidad de slots de ads de esta cadena (2 estándar, hasta 5 en el server Free)
 // }
-export async function callGetPeaksStatus() {
+export async function callGetPeaksStatus(chainId) {
   const fn = httpsCallable(functions, 'getPeaksStatus');
-  const res = await fn({});
+  const res = await fn({ chainId });
   return res.data;
 }
 
 // Claims a daily pick if eligible on server
-export async function callClaimDailyPick() {
+export async function callClaimDailyPick(chainId) {
   const fn = httpsCallable(functions, 'claimDailyPick');
-  const res = await fn({});
+  const res = await fn({ chainId });
   return res.data; // expect updated status like callGetPeaksStatus
 }
 
 // Creates a web ad session (timer page); returns { sessionId, token }
-export async function callCreateAdSession(index) {
+export async function callCreateAdSession(index, chainId) {
   const fn = httpsCallable(functions, 'createAdSession');
-  const res = await fn({ index });
+  const res = await fn({ index, chainId });
   return res.data;
 }
 

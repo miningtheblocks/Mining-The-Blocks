@@ -6,7 +6,12 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import { callGetPeaksStatus, callClaimDailyPick, callCreateAdSession } from '../firebase/functions';
 import { useI18n } from '../utils/i18n';
 
-export default function GetPeaks({ asModal = false, onClose }) {
+// Cambio 1 (picos por cadena): GetPeaks ya no es un modal global sin
+// contexto — recibe `chainId` (de activeServer.chainId vía useServer()) y lo
+// reenvía a las 3 Cloud Functions, que ahora lo requieren. Los slots de ads
+// pasan de 2 hardcodeados (ad1/ad2) a una cantidad variable (`dailyAdSlots`,
+// hasta 5 en el server Free — Fase 3), renderizados dinámicamente.
+export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
   const { t } = useI18n();
 
   const [loading, setLoading] = useState(true);
@@ -14,14 +19,13 @@ export default function GetPeaks({ asModal = false, onClose }) {
   const [serverNow, setServerNow] = useState(0);
   const [baseLocalTs, setBaseLocalTs] = useState(0);
   const [nextDailyAt, setNextDailyAt] = useState(0);
-  const [ad1NextAt, setAd1NextAt] = useState(0);
-  const [ad2NextAt, setAd2NextAt] = useState(0);
+  const [dailyFreeClaim, setDailyFreeClaim] = useState(true); // Cambio 2: false en el server Free
+  const [adNextAt, setAdNextAt] = useState({}); // { [slotIndex]: timestamp }
   const tickRef = useRef(null);
   const dailyAutoClaimingRef = useRef(false);
   const adStateSubRef = useRef(null);
   const [claimingDaily, setClaimingDaily] = useState(false);
-  const [claimingAd1, setClaimingAd1] = useState(false);
-  const [claimingAd2, setClaimingAd2] = useState(false);
+  const [claimingAdSlot, setClaimingAdSlot] = useState(null); // índice del slot en curso, o null
   const [tick, setTick] = useState(0); // eslint-disable-line no-unused-vars
   const [userData, setUserData] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -31,8 +35,8 @@ export default function GetPeaks({ asModal = false, onClose }) {
   const nowMs = () => serverNow + (Date.now() - baseLocalTs);
 
   const remainingDaily = Math.max(0, nextDailyAt - nowMs());
-  const remainingAd1 = Math.max(0, ad1NextAt - nowMs());
-  const remainingAd2 = Math.max(0, ad2NextAt - nowMs());
+  const adSlotIndices = Object.keys(adNextAt).map(Number).sort((a, b) => a - b);
+  const remainingForSlot = (idx) => Math.max(0, (adNextAt[idx] || 0) - nowMs());
 
   const fmt = (ms) => {
     if (!ms || ms <= 0) return '00:00:00';
@@ -43,19 +47,23 @@ export default function GetPeaks({ asModal = false, onClose }) {
     return `${h}:${m}:${s}`;
   };
 
+  const applyStatus = (data) => {
+    setPicks(Number(data?.picks || 0));
+    setServerNow(Number(data?.serverNow || Date.now()));
+    setBaseLocalTs(Date.now());
+    setNextDailyAt(Number(data?.nextDailyAt || 0));
+    setDailyFreeClaim(data?.dailyFreeClaim !== false);
+    setAdNextAt(data?.adNextAt || {});
+  };
+
   const refresh = async () => {
     // FIX-P1: si no hay user, no llamamos la function (devolvería unauthenticated)
-    if (!auth.currentUser) { setLoading(false); return; }
+    if (!auth.currentUser || !chainId) { setLoading(false); return; }
     try {
       setLoading(true);
       await ensureUser();
-      const data = await callGetPeaksStatus();
-      setPicks(Number(data?.picks || 0));
-      setServerNow(Number(data?.serverNow || Date.now()));
-      setBaseLocalTs(Date.now());
-      setNextDailyAt(Number(data?.nextDailyAt || 0));
-      setAd1NextAt(Number(data?.ad1NextAt || 0));
-      setAd2NextAt(Number(data?.ad2NextAt || 0));
+      const data = await callGetPeaksStatus(chainId);
+      applyStatus(data);
     } catch (e) {
       showAlert(t('peaks.errorTitle'), t('peaks.errorStatus'));
     } finally {
@@ -69,7 +77,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
       if (tickRef.current) clearInterval(tickRef.current);
       if (adStateSubRef.current) { adStateSubRef.current.remove(); adStateSubRef.current = null; }
     };
-  }, []);
+  }, [chainId]);
 
   useEffect(() => {
     let unsub = null;
@@ -94,17 +102,16 @@ export default function GetPeaks({ asModal = false, onClose }) {
   }, []);
 
   useEffect(() => {
+    // Cambio 2: sin esto, una cadena con dailyFreeClaim=false (server Free)
+    // reintentaría el auto-claim cada ~1.5s en loop apenas pasan las 24hs,
+    // porque el backend siempre rechaza y remainingDaily nunca se actualiza.
+    if (!chainId || !dailyFreeClaim) return;
     if (remainingDaily <= 0 && !dailyAutoClaimingRef.current) {
       dailyAutoClaimingRef.current = true;
       (async () => {
         try {
-          const res = await callClaimDailyPick();
-          setPicks(Number(res?.picks || 0));
-          setServerNow(Number(res?.serverNow || Date.now()));
-          setBaseLocalTs(Date.now());
-          setNextDailyAt(Number(res?.nextDailyAt || 0));
-          setAd1NextAt(Number(res?.ad1NextAt || 0));
-          setAd2NextAt(Number(res?.ad2NextAt || 0));
+          const res = await callClaimDailyPick(chainId);
+          applyStatus(res);
         } catch (e) {
           try { await refresh(); } catch {}
         } finally {
@@ -112,19 +119,14 @@ export default function GetPeaks({ asModal = false, onClose }) {
         }
       })();
     }
-  }, [remainingDaily]);
+  }, [remainingDaily, chainId, dailyFreeClaim]);
 
   const onClaimDaily = async () => {
     try {
-      if (claimingDaily) return;
+      if (claimingDaily || !chainId) return;
       setClaimingDaily(true);
-      const res = await callClaimDailyPick();
-      setPicks(Number(res?.picks || 0));
-      setServerNow(Number(res?.serverNow || Date.now()));
-      setBaseLocalTs(Date.now());
-      setNextDailyAt(Number(res?.nextDailyAt || 0));
-      setAd1NextAt(Number(res?.ad1NextAt || 0));
-      setAd2NextAt(Number(res?.ad2NextAt || 0));
+      const res = await callClaimDailyPick(chainId);
+      applyStatus(res);
     } catch (e) {
       showAlert(t('peaks.errorTitle'), t('peaks.errorClaimDaily'));
     } finally {
@@ -133,12 +135,10 @@ export default function GetPeaks({ asModal = false, onClose }) {
   };
 
   const onClaimAd = async (index) => {
-    if (index === 1 && claimingAd1) return;
-    if (index === 2 && claimingAd2) return;
-    if (index === 1) setClaimingAd1(true);
-    if (index === 2) setClaimingAd2(true);
+    if (claimingAdSlot != null || !chainId) return;
+    setClaimingAdSlot(index);
     try {
-      const session = await callCreateAdSession(index);
+      const session = await callCreateAdSession(index, chainId);
       // ALTO-54: encodeURIComponent en query params. Si el backend devuelve
       // tokens con caracteres especiales (& # ?) el URL se rompe; con encode
       // queda parseable y previene inyección via params.
@@ -162,8 +162,7 @@ export default function GetPeaks({ asModal = false, onClose }) {
         showAlert(t('peaks.errorTitle'), t('peaks.errorClaimAd'));
       }
     } finally {
-      if (index === 1) setClaimingAd1(false);
-      if (index === 2) setClaimingAd2(false);
+      setClaimingAdSlot(null);
     }
   };
 
@@ -187,6 +186,17 @@ export default function GetPeaks({ asModal = false, onClose }) {
   const shareReferralCode = async () => {
     try { await Share.share({ message: getInviteMsg() }); } catch {}
   };
+
+  if (!loading && !chainId) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.noChainBox}>
+          <Text style={styles.noChainTxt}>{t('peaks.noChainMsg')}</Text>
+        </View>
+        {AlertComponent}
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -238,86 +248,67 @@ export default function GetPeaks({ asModal = false, onClose }) {
         </View>
       </Modal>
 
-      {/* Daily */}
-      <View style={styles.cardRow}>
-        <View style={styles.cardLeft}>
-          <Text style={styles.cardIcon}>📅</Text>
-          <Text style={styles.cardTitle}>{t('peaks.dailyIn')}</Text>
-        </View>
-        {remainingDaily <= 0 ? (
-          <TouchableOpacity
-            style={[styles.claimBtn, claimingDaily && { opacity: 0.6 }]}
-            onPress={onClaimDaily}
-            disabled={claimingDaily}
-            activeOpacity={0.85}
-            accessibilityLabel={t('peaks.claimDaily')}
-            accessibilityState={{ disabled: claimingDaily, busy: claimingDaily }}
-          >
-            {claimingDaily
-              ? <ActivityIndicator size="small" color="#0a0a0a" />
-              : <Text style={styles.claimTxt}>{t('peaks.claimDaily')}</Text>
-            }
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.timerPill}>
-            <Text style={styles.timerTxt}>{fmt(remainingDaily)}</Text>
+      {/* Daily — no aplica al server Free (dailyFreeClaim: false) */}
+      {dailyFreeClaim && (
+        <View style={styles.cardRow}>
+          <View style={styles.cardLeft}>
+            <Text style={styles.cardIcon}>📅</Text>
+            <Text style={styles.cardTitle}>{t('peaks.dailyIn')}</Text>
           </View>
-        )}
-      </View>
+          {remainingDaily <= 0 ? (
+            <TouchableOpacity
+              style={[styles.claimBtn, claimingDaily && { opacity: 0.6 }]}
+              onPress={onClaimDaily}
+              disabled={claimingDaily}
+              activeOpacity={0.85}
+              accessibilityLabel={t('peaks.claimDaily')}
+              accessibilityState={{ disabled: claimingDaily, busy: claimingDaily }}
+            >
+              {claimingDaily
+                ? <ActivityIndicator size="small" color="#0a0a0a" />
+                : <Text style={styles.claimTxt}>{t('peaks.claimDaily')}</Text>
+              }
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.timerPill}>
+              <Text style={styles.timerTxt}>{fmt(remainingDaily)}</Text>
+            </View>
+          )}
+        </View>
+      )}
 
-      {/* Ad 1 */}
-      <View style={styles.cardRow}>
-        <View style={styles.cardLeft}>
-          <Text style={styles.cardIcon}>📺</Text>
-          <Text style={styles.cardTitle}>{t('peaks.adPeaks1')}</Text>
-        </View>
-        {remainingAd1 <= 0 ? (
-          <TouchableOpacity
-            style={[styles.adBtn, claimingAd1 && { opacity: 0.6 }]}
-            onPress={() => onClaimAd(1)}
-            disabled={claimingAd1}
-            activeOpacity={0.85}
-            accessibilityLabel={`${t('peaks.watchAd')} (1)`}
-            accessibilityState={{ disabled: claimingAd1, busy: claimingAd1 }}
-          >
-            {claimingAd1
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={styles.adTxt}>{t('peaks.watchAd')}</Text>
-            }
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.timerPill}>
-            <Text style={styles.timerTxt}>{fmt(remainingAd1)}</Text>
+      {/* Ads — cantidad dinámica de slots (2 estándar, hasta 5 en el server Free) */}
+      {adSlotIndices.map((idx) => {
+        const remaining = remainingForSlot(idx);
+        const claiming = claimingAdSlot === idx;
+        return (
+          <View style={styles.cardRow} key={idx}>
+            <View style={styles.cardLeft}>
+              <Text style={styles.cardIcon}>📺</Text>
+              <Text style={styles.cardTitle}>{t('peaks.adPeaksN', { n: idx })}</Text>
+            </View>
+            {remaining <= 0 ? (
+              <TouchableOpacity
+                style={[styles.adBtn, claiming && { opacity: 0.6 }]}
+                onPress={() => onClaimAd(idx)}
+                disabled={claimingAdSlot != null}
+                activeOpacity={0.85}
+                accessibilityLabel={`${t('peaks.watchAd')} (${idx})`}
+                accessibilityState={{ disabled: claimingAdSlot != null, busy: claiming }}
+              >
+                {claiming
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.adTxt}>{t('peaks.watchAd')}</Text>
+                }
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.timerPill}>
+                <Text style={styles.timerTxt}>{fmt(remaining)}</Text>
+              </View>
+            )}
           </View>
-        )}
-      </View>
-
-      {/* Ad 2 */}
-      <View style={styles.cardRow}>
-        <View style={styles.cardLeft}>
-          <Text style={styles.cardIcon}>📺</Text>
-          <Text style={styles.cardTitle}>{t('peaks.adPeaks2')}</Text>
-        </View>
-        {remainingAd2 <= 0 ? (
-          <TouchableOpacity
-            style={[styles.adBtn, claimingAd2 && { opacity: 0.6 }]}
-            onPress={() => onClaimAd(2)}
-            disabled={claimingAd2}
-            activeOpacity={0.85}
-            accessibilityLabel={`${t('peaks.watchAd')} (2)`}
-            accessibilityState={{ disabled: claimingAd2, busy: claimingAd2 }}
-          >
-            {claimingAd2
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={styles.adTxt}>{t('peaks.watchAd')}</Text>
-            }
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.timerPill}>
-            <Text style={styles.timerTxt}>{fmt(remainingAd2)}</Text>
-          </View>
-        )}
-      </View>
+        );
+      })}
 
       {/* Referidos */}
       <View style={styles.referralCard}>
@@ -369,6 +360,10 @@ const styles = StyleSheet.create({
   countBlock: { alignItems: 'flex-start' },
   pickCount: { fontSize: 52, fontWeight: '900', color: '#ffd700', lineHeight: 56 },
   picksLabel: { fontSize: 13, fontWeight: '700', color: '#555', textTransform: 'uppercase', letterSpacing: 1 },
+
+  // No chain state
+  noChainBox: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  noChainTxt: { color: '#777', fontSize: 14, textAlign: 'center' },
 
   // Cards
   cardRow: {

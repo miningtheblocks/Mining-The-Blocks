@@ -64,12 +64,20 @@ const {
   generateReferralCode,
   generateGemCode,
   toMillis,
-  buildStatus,
+  buildChainStatus,
   esc,
   // Round 2 Agente #7: setCorsHeaders (wildcard *) removido del import.
   // verifyGemCode (único caller) migró a setRestrictedCorsHeaders en Commit K.
   setRestrictedCorsHeaders,
 } = require("./helpers");
+
+const { FREE_CONFIG, FREE_LAYER_COUNT } = require("./freeServerConfig");
+const {
+  validateServerConfig,
+  validateDerivedConfig,
+  deriveServerConfig,
+  applyManualDistribution,
+} = require("./serverConfig");
 
 // BAJO-H18: validar formato + tamaño de IDs (serverId, chainId, gemId, etc.).
 // Antes el código solo verificaba !id (truthy) — un id de 1500 bytes pasaba
@@ -250,7 +258,10 @@ async function writeActivity(type, data) {
 // Crea el siguiente episodio dentro de una cadena existente
 async function startNextEpisode(chainRef, chainData, prevServerId) {
   const nextEpisode = chainData.currentEpisode + 1;
-  const K = STARTING_LAYER;
+  // Cambio 2/3 (server Free / servers a medida): capas propias por config,
+  // default = STARTING_LAYER global para cadenas estándar sin config.
+  const config = chainData.config || null;
+  const K = (config && config.layerCount) || STARTING_LAYER;
   const totalCubes = shellTotalCubes(K);
 
   const serverRef = db.collection("servers").doc();
@@ -270,6 +281,9 @@ async function startNextEpisode(chainRef, chainData, prevServerId) {
     episodeNumber: nextEpisode,
     prevServerId,
     episodeStartAt: Date.now(), // marca para reset lazy de picos al iniciar episodio
+    // Denormalizado desde la cadena para que mineCube no pague un read extra
+    // a serverChains en el hot path (Fase 0).
+    ...(config ? { config } : {}),
   });
 
   // Layer inicial del episodio
@@ -366,7 +380,10 @@ async function closeEpisode(chainRef, serverRef, serverData, winnerUid, totalMin
     totalMined: totalMinedFinal,
   });
 
-  const isLastEpisode = episodeNumber >= MAX_EPISODES;
+  // Cambio 2 (server Free): nunca hay "último episodio" -- reinicia para
+  // siempre, la cadena no llega jamás a status:'completed'.
+  const isFreeServer = !!(serverData.config && serverData.config.isFreeServer);
+  const isLastEpisode = !isFreeServer && episodeNumber >= MAX_EPISODES;
 
   if (isLastEpisode) {
     // Cadena completa — cerrar definitivamente
@@ -381,6 +398,26 @@ async function closeEpisode(chainRef, serverRef, serverData, winnerUid, totalMin
   }
 
   return { isLastEpisode, nextEpisode: isLastEpisode ? null : episodeNumber + 1 };
+}
+
+// Cambio 3 (Fase 4, pedido explícito del usuario): crear un server a medida
+// requiere haber jugado ANTES en algún server real (paga o legacy) -- unirse
+// solo al Free no alcanza, porque es gratis e ilimitado y no demuestra
+// ningún compromiso real con el juego antes de dejarlo crear su propia
+// cadena. Se implementa como query (no scan limitado): busca CUALQUIER
+// serverAccess con chainId != freeServerChainId, así funciona sin importar
+// cuántas veces haya vuelto a jugar el Free (que genera un serverAccess por
+// episodio, podrían ser muchos). Un solo filtro de desigualdad sobre un
+// campo no necesita índice compuesto en Firestore.
+async function requirePriorNonFreeServerJoin(uid) {
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  const freeChainId = appConfigSnap.exists ? appConfigSnap.data().freeServerChainId : null;
+  const accessCol = db.collection("users").doc(uid).collection("serverAccess");
+  const q = freeChainId ? accessCol.where("chainId", "!=", freeChainId).limit(1) : accessCol.limit(1);
+  const snap = await q.get();
+  if (snap.empty) {
+    throw new HttpsError("failed-precondition", "must_join_server_first");
+  }
 }
 
 // ─── Helpers de créditos ─────────────────────────────────────────────────────
@@ -491,8 +528,14 @@ exports.createServer = onCall(async (request) => {
       role: 'creator',
     });
 
-    // Bienvenida: 5 picos al pagar la entrada
-    tx.set(userRef, { picks: FieldValue.increment(5) }, { merge: true });
+    // Bienvenida: 5 picos al pagar la entrada. Cambio 1: van directo al
+    // pool de la cadena recién creada (nunca existía chainAccess para esta
+    // chain todavía, es literalmente la primera vez).
+    tx.set(userRef.collection("chainAccess").doc(chainRef.id), {
+      chainId: chainRef.id,
+      picks: 5,
+      createdAt: Date.now(),
+    });
   });
 
   writeActivity("player_joined", {
@@ -502,6 +545,212 @@ exports.createServer = onCall(async (request) => {
   });
 
   return { ok: true, serverId: serverRef.id, chainId: chainRef.id, welcomePicks: 5 };
+});
+
+// Cambio 2 (Fase 3): crea la cadena "Free" fija (150 capas, $35.000, entrada
+// gratis) UNA sola vez y la pinea via config/app.freeServerChainId. Acción
+// admin, no forma parte del flujo público de creación de servers (createServer
+// sigue siendo solo para cadenas estándar de pago). Reintentarla es un no-op
+// seguro si la cadena ya existe (idempotente por el guard de config/app).
+exports.bootstrapFreeServer = onCall(async (request) => {
+  await requireAdminFresh(request);
+
+  const appConfigRef = db.collection("config").doc("app");
+  const appConfigSnap = await appConfigRef.get();
+  const existingChainId = appConfigSnap.exists ? appConfigSnap.data().freeServerChainId : null;
+  if (existingChainId) {
+    return { ok: true, alreadyExists: true, chainId: existingChainId };
+  }
+
+  const K = FREE_LAYER_COUNT;
+  const totalCubes = shellTotalCubes(K);
+  const chainRef = db.collection("serverChains").doc();
+  const serverRef = db.collection("servers").doc();
+
+  const batch = db.batch();
+  batch.set(chainRef, {
+    name: "Free",
+    createdBy: null,
+    createdAt: Date.now(),
+    status: 'active',
+    currentEpisode: 1,
+    currentServerId: serverRef.id,
+    completedAt: null,
+    config: FREE_CONFIG,
+  });
+  batch.set(serverRef, {
+    name: "Free",
+    createdBy: null,
+    createdAt: Date.now(),
+    status: 'active',
+    currentLayer: K,
+    totalMined: 0,
+    winner: null,
+    completedAt: null,
+    memberCount: 0,
+    chainId: chainRef.id,
+    episodeNumber: 1,
+    prevServerId: null,
+    episodeStartAt: Date.now(),
+    config: FREE_CONFIG,
+  });
+  batch.set(serverRef.collection("layers").doc(String(K)), {
+    K,
+    totalCubes,
+    stats: { mined: 0 },
+    winRate: 0.50,
+  });
+  batch.set(appConfigRef, { freeServerChainId: chainRef.id }, { merge: true });
+  await batch.commit();
+
+  writeActivity("player_joined", {
+    chainId: chainRef.id,
+    chainName: "Free",
+    serverId: serverRef.id,
+  });
+
+  return { ok: true, alreadyExists: false, chainId: chainRef.id, serverId: serverRef.id };
+});
+
+// Cambio 3 (Fase 4): servers a medida (jugadores + precio configurables).
+// SE ENTREGA COMPLETO PERO INACTIVO -- gateado por
+// config/app.paramServerCreationEnabled (default false/ausente). Función
+// separada de createServer (no toca el flujo estándar ya probado en
+// producción); activar el flag es un cambio de datos en Firestore, no
+// requiere redeploy. Pensado para probarse primero en el emulador local/LAN.
+//
+// Modelo matemático completo y su verificación en functions/serverConfig.js
+// (ratio premio/recaudación SIEMPRE 43,3% ± redondeo, nunca configurable
+// directamente -- ver comentario de cabecera de ese archivo).
+exports.createServerCustom = onCall(async (request) => {
+  requireRegistered(request);
+  const uid = request.auth.uid;
+
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  const flagEnabled = appConfigSnap.exists && appConfigSnap.data().paramServerCreationEnabled === true;
+  if (!flagEnabled) {
+    throw new HttpsError("failed-precondition", "feature_disabled");
+  }
+
+  // Pedido explícito del usuario: hay que haber jugado antes en un server
+  // real (el Free no cuenta) antes de poder crear el propio.
+  await requirePriorNonFreeServerJoin(uid);
+
+  const name = String((request.data && request.data.name) || '').trim().slice(0, 40);
+  if (!name) throw new HttpsError("invalid-argument", "Server name required");
+  const N = Number(request.data && request.data.maxMembers);
+  const P = Number(request.data && request.data.creditPriceUSD);
+
+  const rangeErrors = validateServerConfig(N, P);
+  if (rangeErrors.length) throw new HttpsError("invalid-argument", rangeErrors.join(","));
+
+  const baseConfig = deriveServerConfig(N, P);
+  const baseErrors = validateDerivedConfig(baseConfig);
+  if (baseErrors.length) throw new HttpsError("invalid-argument", baseErrors.join(","));
+
+  // D7/D8: distribución manual opcional de premios por tier (si no se manda,
+  // se usa el auto-escalado de baseConfig tal cual).
+  let finalConfig = baseConfig;
+  const tierQuantitiesRaw = request.data && request.data.tierQuantities;
+  if (Array.isArray(tierQuantitiesRaw)) {
+    const result = applyManualDistribution(baseConfig, tierQuantitiesRaw);
+    if (!result.ok) throw new HttpsError("invalid-argument", result.errors.join(","));
+    finalConfig = result.config;
+  }
+
+  const K = finalConfig.layerCount;
+  const totalCubes = shellTotalCubes(K);
+  const chainRef = db.collection("serverChains").doc();
+  const serverRef = db.collection("servers").doc();
+  const userRef = db.collection("users").doc(uid);
+
+  await db.runTransaction(async (tx) => {
+    // Mismo patrón que createServer: 1 crédito, mismo bonus de bienvenida.
+    await consumeServerCredit(uid, tx);
+
+    tx.set(chainRef, {
+      name,
+      createdBy: uid,
+      createdAt: Date.now(),
+      status: 'active',
+      currentEpisode: 1,
+      currentServerId: serverRef.id,
+      completedAt: null,
+      config: finalConfig,
+    });
+
+    tx.set(serverRef, {
+      name,
+      createdBy: uid,
+      createdAt: Date.now(),
+      status: 'active',
+      currentLayer: K,
+      totalMined: 0,
+      winner: null,
+      completedAt: null,
+      memberCount: 1,
+      chainId: chainRef.id,
+      episodeNumber: 1,
+      prevServerId: null,
+      config: finalConfig,
+    });
+
+    tx.set(serverRef.collection("layers").doc(String(K)), {
+      K, totalCubes, stats: { mined: 0 }, winRate: 0.50,
+    });
+
+    tx.set(userRef.collection("serverAccess").doc(serverRef.id), {
+      serverId: serverRef.id,
+      chainId: chainRef.id,
+      joinedAt: Date.now(),
+      role: 'creator',
+    });
+
+    // Cambio 1: bienvenida de 5 picos directo al pool de la cadena recién creada.
+    tx.set(userRef.collection("chainAccess").doc(chainRef.id), {
+      chainId: chainRef.id,
+      picks: 5,
+      createdAt: Date.now(),
+    });
+  });
+
+  writeActivity("player_joined", { chainId: chainRef.id, chainName: name, serverId: serverRef.id });
+
+  return {
+    ok: true,
+    serverId: serverRef.id,
+    chainId: chainRef.id,
+    welcomePicks: 5,
+    config: finalConfig,
+  };
+});
+
+// Cambio 3: preview de solo lectura (sin crear nada) para que el formulario
+// del frontend pueda mostrar el Premio Total / capas / distribución en vivo
+// mientras el usuario ajusta N y P, sin necesidad de replicar la fórmula
+// completa en el cliente. Gateada por el mismo flag que createServerCustom.
+exports.previewServerConfig = onCall(async (request) => {
+  requireRegistered(request);
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  const flagEnabled = appConfigSnap.exists && appConfigSnap.data().paramServerCreationEnabled === true;
+  if (!flagEnabled) throw new HttpsError("failed-precondition", "feature_disabled");
+
+  const N = Number(request.data && request.data.maxMembers);
+  const P = Number(request.data && request.data.creditPriceUSD);
+  const rangeErrors = validateServerConfig(N, P);
+  if (rangeErrors.length) throw new HttpsError("invalid-argument", rangeErrors.join(","));
+
+  const baseConfig = deriveServerConfig(N, P);
+  const baseErrors = validateDerivedConfig(baseConfig);
+  if (baseErrors.length) throw new HttpsError("invalid-argument", baseErrors.join(","));
+
+  const tierQuantitiesRaw = request.data && request.data.tierQuantities;
+  if (Array.isArray(tierQuantitiesRaw)) {
+    const result = applyManualDistribution(baseConfig, tierQuantitiesRaw);
+    if (!result.ok) return { ok: false, errors: result.errors, autoConfig: baseConfig };
+    return { ok: true, config: result.config };
+  }
+  return { ok: true, config: baseConfig };
 });
 
 // Unirse a un server existente (consume 1 crédito)
@@ -522,6 +771,12 @@ exports.joinServer = onCall(async (request) => {
 
   // Track whether this was an actual new (paid) join vs already-had-access
   let wasNewPaidJoin = false;
+  // Cambio 1: capturado dentro de la TX para usarlo después en el bonus de
+  // referido (picks van a la cadena recién unida, no al pool global).
+  let joinedChainId = null;
+  // Cambio 2: para no devolver welcomePicks:5 en el join al server Free
+  // (ahí no se regala nada, los picos vienen solo de anuncios).
+  let isFreeServerJoin = false;
 
   await db.runTransaction(async (tx) => {
     const serverSnap = await tx.get(serverRef);
@@ -535,9 +790,19 @@ exports.joinServer = onCall(async (request) => {
 
     const serverData = serverSnap.data();
     const serverChainId = serverData.chainId || null;
+    // Cambio 1 (picos por cadena): leer ANTES de cualquier write en esta TX
+    // (consumeServerCredit más abajo ya escribe) -- Firestore exige todos los
+    // reads antes que cualquier write dentro de una transacción.
+    const chainAccessRef = serverChainId ? userRef.collection("chainAccess").doc(serverChainId) : null;
+    const chainAccessSnap = chainAccessRef ? await tx.get(chainAccessRef) : null;
 
-    // Verificar límite de jugadores por eslabon
-    if ((serverData.memberCount || 0) >= MAX_MEMBERS_PER_SERVER) {
+    // Cambio 2 (server Free): sin límite de miembros (config.maxMembers=null),
+    // resto de servers mantiene el máximo global de siempre.
+    const isFreeServer = !!(serverData.config && serverData.config.isFreeServer);
+    const maxMembers = serverData.config && serverData.config.maxMembers !== undefined ?
+      serverData.config.maxMembers :
+      MAX_MEMBERS_PER_SERVER;
+    if (maxMembers != null && (serverData.memberCount || 0) >= maxMembers) {
       throw new HttpsError("resource-exhausted", "server_full");
     }
 
@@ -546,6 +811,18 @@ exports.joinServer = onCall(async (request) => {
     // Servers legacy (sin chainId) son de acceso libre
     if (!serverChainId) {
       tx.set(accessRef, { serverId, chainId: null, episodeNumber, joinedAt: Date.now(), role: 'member' });
+      return;
+    }
+
+    // Cambio 2: server Free -- entrada siempre gratis (sin consumeServerCredit)
+    // y sin picos de bienvenida (acá los picos vienen solo de anuncios, no hay
+    // regalo inicial). El único gate es requireRegistered (ya corrido arriba).
+    if (isFreeServer) {
+      tx.set(accessRef, { serverId, chainId: serverChainId, episodeNumber, joinedAt: Date.now(), role: 'member' });
+      tx.set(serverRef, { memberCount: (serverData.memberCount || 0) + 1 }, { merge: true });
+      wasNewPaidJoin = true; // reusa el flag para disparar el bonus de referido (sigue teniendo sentido en el Free)
+      joinedChainId = serverChainId;
+      isFreeServerJoin = true;
       return;
     }
 
@@ -574,13 +851,19 @@ exports.joinServer = onCall(async (request) => {
     // Registrar acceso
     tx.set(accessRef, { serverId, chainId: serverChainId, episodeNumber, joinedAt: Date.now(), role: 'member' });
 
-    // Bienvenida: 5 picos al pagar la entrada
-    tx.set(userRef, { picks: FieldValue.increment(5) }, { merge: true });
+    // Bienvenida: 5 picos al pagar la entrada -- van al pool de la cadena
+    // (chainAccessSnap ya leído arriba, antes del write de consumeServerCredit).
+    if (chainAccessSnap.exists) {
+      tx.set(chainAccessRef, { picks: FieldValue.increment(5) }, { merge: true });
+    } else {
+      tx.set(chainAccessRef, { chainId: serverChainId, picks: 5, createdAt: Date.now() });
+    }
 
     // Incrementar memberCount
     tx.set(serverRef, { memberCount: (serverData.memberCount || 0) + 1 }, { merge: true });
 
     wasNewPaidJoin = true;
+    joinedChainId = serverChainId;
   });
 
   // If user already had access, just let them in — no welcome picks, no bonus
@@ -597,21 +880,48 @@ exports.joinServer = onCall(async (request) => {
 
   // SEC-M1: referral bonus con check DENTRO de la TX (anteriormente se leía
   // referralBonusPaid afuera y dos joins concurrentes podían duplicar el bonus).
+  // Cambio 1: el bonus del REFERIDO (uid) va a la cadena que acaba de unirse
+  // (joinedChainId) -- contexto inequívoco, va a minar ahí seguro. El bonus
+  // del REFERIDOR en cambio se mantiene en el campo global: no sabemos a qué
+  // cadena pertenece el referidor (puede no estar ni siquiera en esta), así
+  // que atribuírselo a joinedChainId lo dejaría en una cadena donde tal vez
+  // ni juega. Se recupera vía la migración lazy "grandfather" la próxima vez
+  // que el referidor entre a una cadena nueva.
+  // SEC-review 2026-07-02: el bonus de referido requería históricamente que
+  // el referido pagara 1 crédito real ($15) para unirse a un server -- ese
+  // costo era el control anti-sybil implícito detrás de REFERRER_BONUS_CAP
+  // (ver su comentario: protege contra "farm de cuentas falsas... minería
+  // gratuita masiva → eventualmente NFTs tier-1 ($100k c/u)"). La rama del
+  // server Free reusa wasNewPaidJoin (entrada gratis e ilimitada) para
+  // disparar el resto del flujo post-join, pero NO debe disparar el bonus de
+  // referido -- sin este `!isFreeServerJoin`, cualquiera podía crear cuentas
+  // descartables gratis, unirlas al Free vía un código de referido, y cobrar
+  // hasta 250 picos gratis (50 referidos × 5), sin el costo que sostenía el
+  // cap. El referido igual puede jugar el Free gratis con normalidad, solo
+  // que esa acción puntual no otorga el bonus.
   const referredBy = userData.referredBy || null;
-  if (referredBy) {
+  if (referredBy && !isFreeServerJoin) {
     try {
       let bonusGranted = false;
       await db.runTransaction(async (tx) => {
         const uRef = db.collection("users").doc(uid);
         const rRef = db.collection("users").doc(referredBy);
+        const uChainRef = uRef.collection("chainAccess").doc(joinedChainId);
         // Round 2 audit #4 HIGH-R1: leer referrer ANTES de cualquier write
         // (Firestore exige reads-before-writes en TX). Si está capeado, el
         // referido igual cobra sus 5 picks pero el referrer no.
-        const [freshU, freshR] = await Promise.all([tx.get(uRef), tx.get(rRef)]);
+        const [freshU, freshR, uChainSnap] = await Promise.all([
+          tx.get(uRef), tx.get(rRef), tx.get(uChainRef),
+        ]);
         if (!freshU.exists) return;
         const fud = freshU.data();
         if (fud.referralBonusPaid) return; // ya pagado
-        tx.set(uRef, { picks: FieldValue.increment(5), referralBonusPaid: true }, { merge: true });
+        tx.set(uRef, { referralBonusPaid: true }, { merge: true });
+        if (uChainSnap.exists) {
+          tx.set(uChainRef, { picks: FieldValue.increment(5) }, { merge: true });
+        } else {
+          tx.set(uChainRef, { chainId: joinedChainId, picks: 5, createdAt: Date.now() });
+        }
         const referrerRewardedSoFar = (freshR.exists && Number(freshR.data().referralsRewarded || 0)) || 0;
         if (referrerRewardedSoFar < REFERRER_BONUS_CAP) {
           tx.set(rRef, {
@@ -644,7 +954,11 @@ exports.joinServer = onCall(async (request) => {
     serverId,
   });
 
-  return { ok: true, serverId, welcomePicks: 5 };
+  // Cambio 2: sin welcomePicks para el join al server Free (no se regala nada
+  // ahí, evita que el frontend muestre el modal "¡recibiste 5 picos!" en falso).
+  return isFreeServerJoin ?
+    { ok: true, serverId } :
+    { ok: true, serverId, welcomePicks: 5 };
 });
 
 // Verificar si el usuario tiene acceso a un server (sin consumir crédito)
@@ -680,7 +994,26 @@ exports.getServers = onCall(async (request) => {
   const PUBLIC_FIELDS = [
     "name", "createdAt", "status", "currentLayer", "totalMined",
     "memberCount", "chainId", "episodeNumber", "winner", "completedAt", "prevServerId",
+    "config", "gemsFoundByTier", "picksAwarded",
   ];
+  // El Free libera tiers por anuncios vistos (serverChains.totalAdViews), no
+  // por memberCount -- ver mismo comentario en mineCube. Traer esos docs de
+  // cadena en batch (normalmente 1, como mucho un puñado de Free chains).
+  const freeChainIds = [...new Set(
+      snap.docs
+          .map((d) => d.data() || {})
+          .filter((data) => data.config && data.config.isFreeServer && data.chainId)
+          .map((data) => data.chainId),
+  )];
+  const freeChainSnaps = await Promise.all(
+      freeChainIds.map((id) => db.collection("serverChains").doc(id).get()),
+  );
+  const adViewsByChainId = {};
+  freeChainIds.forEach((id, i) => {
+    // eslint-disable-next-line security/detect-object-injection -- id viene de chainId propio, no de input de usuario
+    adViewsByChainId[id] = (freeChainSnaps[i].exists && freeChainSnaps[i].data().totalAdViews) || 0;
+  });
+
   const servers = snap.docs.map((d) => {
     const data = d.data() || {};
     const out = { id: d.id };
@@ -691,9 +1024,12 @@ exports.getServers = onCall(async (request) => {
     // call. layerUnlockThreshold=0 significa "warmup, sin lock".
     const K = data.currentLayer;
     if (typeof K === "number") {
-      const threshold = getLayerUnlockThreshold(K);
+      const threshold = getLayerUnlockThreshold(K, data.config);
+      const isFreeServer = !!(data.config && data.config.isFreeServer);
+
+      const unlockMetric = isFreeServer ? (adViewsByChainId[data.chainId] || 0) : (data.memberCount || 0);
       out.layerUnlockThreshold = threshold;
-      out.layerUnlocked = threshold === 0 || (data.memberCount || 0) >= threshold;
+      out.layerUnlocked = threshold === 0 || unlockMetric >= threshold;
     }
     return out;
   });
@@ -880,8 +1216,11 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     if (serverData.status && serverData.status !== 'active') throw new HttpsError("failed-precondition", "Server not active");
 
     const K = serverData.currentLayer;
-    // FIX-FINAL-4: validar K range para evitar NaN propagation y data corruption
-    if (!Number.isInteger(K) || K < 0 || K > 100) {
+    // FIX-FINAL-4: validar K range para evitar NaN propagation y data corruption.
+    // Cambio 2/3: el máximo ya no es 100 fijo -- servers con config propia
+    // (Free, a medida) pueden tener más capas (150 en el Free).
+    const maxK = (serverData.config && serverData.config.layerCount) || STARTING_LAYER;
+    if (!Number.isInteger(K) || K < 0 || K > maxK) {
       throw new HttpsError("failed-precondition", "Invalid layer state");
     }
     const TOTAL_CUBES_K = shellTotalCubes(K);
@@ -896,22 +1235,38 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     const minedRef = serverRef.collection("mined").doc(`${K}_${cubeNumber}`);
     const layerRef = serverRef.collection("layers").doc(String(K));
     const accessRef = userRef.collection("serverAccess").doc(serverId);
+    // Cambio 1 (picos por cadena): chainId siempre se conoce server-side desde
+    // serverData, sin depender de que el cliente lo mande — mineCube no
+    // necesita ningún cambio de compatibilidad hacia atrás para esto.
+    const chainId = serverData.chainId || null;
+    const chainPicksRef = chainId ? userRef.collection("chainAccess").doc(chainId) : null;
+    // El Free no cobra entrada -- no hay recaudación que la fórmula 1,25×costo
+    // pueda proteger, así que ahí la liberación de tiers se cubre con
+    // anuncios vistos (serverChains/{chainId}.totalAdViews, incrementado en
+    // claimAdSession) en vez de memberCount. Ver freeServerConfig.js.
+    const isFreeServer = !!(serverData.config && serverData.config.isFreeServer);
+    const chainRef = (isFreeServer && chainId) ? db.collection("serverChains").doc(chainId) : null;
 
-    const [minedSnap, userSnap, layerSnap, accessSnap] = await Promise.all([
+    const [minedSnap, userSnap, layerSnap, accessSnap, chainPicksSnap, chainSnap] = await Promise.all([
       tx.get(minedRef), tx.get(userRef), tx.get(layerRef), tx.get(accessRef),
+      chainPicksRef ? tx.get(chainPicksRef) : Promise.resolve(null),
+      chainRef ? tx.get(chainRef) : Promise.resolve(null),
     ]);
 
     // Enforce payment — user must have joined (paid) this server
     if (!accessSnap.exists) throw new HttpsError("permission-denied", "No server access. Join the server first.");
 
     // Audit feedback 2026-06-23+: capa locked si el server no llega al
-    // threshold de miembros para los premios de la capa actual. Defensa
-    // server-side (el frontend muestra modal y bloquea, pero un cliente
-    // modificado podría llamar mineCube igual). Error code "layer_locked"
-    // con formato current/required para que el frontend pueda parsearlo.
-    const memberCountForUnlock = serverData.memberCount || 0;
-    if (!isLayerUnlocked(K, memberCountForUnlock)) {
-      const required = getLayerUnlockThreshold(K);
+    // threshold de miembros (o, en el Free, de anuncios vistos) para los
+    // premios de la capa actual. Defensa server-side (el frontend muestra
+    // modal y bloquea, pero un cliente modificado podría llamar mineCube
+    // igual). Error code "layer_locked" con formato current/required para
+    // que el frontend pueda parsearlo.
+    const memberCountForUnlock = isFreeServer ?
+      ((chainSnap && chainSnap.exists && chainSnap.data().totalAdViews) || 0) :
+      (serverData.memberCount || 0);
+    if (!isLayerUnlocked(K, memberCountForUnlock, serverData.config)) {
+      const required = getLayerUnlockThreshold(K, serverData.config);
       throw new HttpsError("failed-precondition", `layer_locked:${memberCountForUnlock}/${required}`);
     }
 
@@ -934,16 +1289,43 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
       return { ok: true, alreadyMined: true };
     }
 
-    let picks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
+    // Cambio 1 (picos por cadena): el pool de picos vive en
+    // users/{uid}/chainAccess/{chainId} en vez del campo global
+    // users/{uid}.picks. Servers legacy sin chainId ("de acceso libre", ver
+    // joinServer más arriba) siguen 100% con el comportamiento histórico
+    // sobre el campo global -- no hay cadena a la que asociarlos.
+    const chainPicksExists = !!(chainPicksSnap && chainPicksSnap.exists);
+    const chainPicksData = chainPicksExists ? chainPicksSnap.data() : null;
+
+    let picks;
+    let picksLastResetAt;
+    if (chainPicksRef) {
+      if (chainPicksExists) {
+        picks = Number(chainPicksData.picks) || 0;
+        picksLastResetAt = chainPicksData.picksLastResetAt || 0;
+      } else {
+        // Migración lazy "grandfather": primera vez que este user mina en
+        // esta cadena -> arranca con el balance global actual (snapshot
+        // único, NO se resta del global -- riesgo aceptado y documentado:
+        // puede duplicar transitoriamente unos pocos picos si el user ya
+        // juega 2+ cadenas al momento de migrar).
+        picks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
+        picksLastResetAt = 0;
+      }
+    } else {
+      picks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
+      picksLastResetAt = userSnap.exists ? (userSnap.data().picksLastResetAt || 0) : 0;
+    }
     if (!userSnap.exists) {
       tx.set(userRef, { picks: 0, createdAt: Date.now(), referralCode: generateReferralCode() }, { merge: true });
     }
 
-    // Reset lazy de picos: si el servidor inició un nuevo episodio y el usuario no fue reseteado aún
+    // D3: bonus de +5 picos ADITIVO (no reset duro) al arrancar un episodio
+    // nuevo dentro de la misma cadena -- ahora el pool se acumula de punta a
+    // punta en vez de perderse en cada nuevo episodio.
     const episodeStartAt = serverData.episodeStartAt || 0;
-    const picksLastResetAt = userSnap.exists ? (userSnap.data().picksLastResetAt || 0) : 0;
     const needsPicksReset = episodeStartAt > 0 && picksLastResetAt < episodeStartAt;
-    if (needsPicksReset) picks = 5;
+    if (needsPicksReset) picks += 5;
 
     if (picks <= 0) throw new HttpsError("failed-precondition", "No picks");
 
@@ -962,17 +1344,40 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     // per (serverId, episode) — limita blast radius de un seed leak.
     const seed = serverSeed.value();
     const episodeNumberForSeed = serverData.episodeNumber || 1;
-    const reward = getRewardForCube(serverId, K, cubeNumber, seed, episodeNumberForSeed);
-    const gem = getGemForCube(serverId, K, cubeNumber, serverData.memberCount || 0, seed, episodeNumberForSeed);
-
-    const userUpdate = { lastMineAt: Date.now() };
-    if (needsPicksReset) {
-      userUpdate.picks = 4 + reward;
-      userUpdate.picksLastResetAt = episodeStartAt;
-    } else {
-      userUpdate.picks = FieldValue.increment(-1 + reward);
+    const reward = getRewardForCube(serverId, K, cubeNumber, seed, episodeNumberForSeed, serverData.config);
+    let gem = getGemForCube(serverId, K, cubeNumber, memberCountForUnlock, seed, episodeNumberForSeed, serverData.config);
+    // D5 (server Free): el cubo que cierra el episodio (K=0) siempre otorga
+    // el 5to premio de $1.000 (tier 4) fijo, sin depender del hash -- los
+    // otros 4 se reparten al azar en K 40-70 (ver FREE_PRIZE_TABLE, count:4).
+    if (isFreeServer && episodeComplete) {
+      gem = 4;
     }
-    tx.set(userRef, userUpdate, { merge: true });
+
+    tx.set(userRef, { lastMineAt: Date.now() }, { merge: true });
+
+    if (chainPicksRef) {
+      if (chainPicksExists) {
+        const chainUpdate = needsPicksReset ?
+          { picks: FieldValue.increment(5 - 1 + reward), picksLastResetAt: episodeStartAt } :
+          { picks: FieldValue.increment(-1 + reward) };
+        tx.set(chainPicksRef, chainUpdate, { merge: true });
+      } else {
+        // Primer doc de esta cadena para este user: valores literales (ya
+        // incluyen el grandfather del global + este mine) -- no hay valor
+        // previo del que partir con FieldValue.increment.
+        tx.set(chainPicksRef, {
+          chainId,
+          createdAt: Date.now(),
+          picks: picks - 1 + reward,
+          picksLastResetAt: needsPicksReset ? episodeStartAt : 0,
+        });
+      }
+    } else {
+      const legacyUpdate = needsPicksReset ?
+        { picks: 4 + reward, picksLastResetAt: episodeStartAt } :
+        { picks: FieldValue.increment(-1 + reward) };
+      tx.set(userRef, legacyUpdate, { merge: true });
+    }
 
     const mapped = cubeNumberToFaceGridForK(n, K) || {};
     // CRIT (Round 2 Agentes #2 + #5): schema canónico `minedAt`. Antes se
@@ -985,6 +1390,13 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     tx.set(layerRef, { K, totalCubes: TOTAL_CUBES_K, stats: { mined: FieldValue.increment(1) } }, { merge: true });
 
     const serverUpdate = { totalMined: FieldValue.increment(1) };
+    // Cambio 6: total de picos otorgados en el episodio — a diferencia de las
+    // gemas, los picos no tienen un presupuesto fijo (getRewardForCube es
+    // probabilístico sin tope), así que el HUD muestra "otorgados hasta
+    // ahora" en vez de "restantes" para este indicador.
+    if (reward > 0) {
+      serverUpdate.picksAwarded = FieldValue.increment(reward);
+    }
 
     if (episodeComplete) {
       serverUpdate.status = 'completed';
@@ -993,6 +1405,20 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     } else if (layerComplete) {
       // Capa completa — pasar a la siguiente capa interior
       serverUpdate.currentLayer = K - 1;
+    }
+
+    // Cambio 6 (HUD gemas restantes): agregado por tier para que el frontend
+    // pueda mostrar "cuántas quedan" sin tener que contar `mined/*` a mano.
+    // Se incrementa acá (gema probabilística) y de nuevo más abajo si aplica
+    // el bonus de cierre de episodio (tier 6 extra, fuera del budget normal).
+    // El bonus de tier 6 NO aplica al server Free (D5, ver más abajo) -- sin
+    // el `!isFreeServer` acá, el HUD contaría un tier-6 "encontrado" que en
+    // realidad nunca se persiste como gema para esa cadena.
+    if (gem) {
+      serverUpdate[`gemsFoundByTier.${gem}`] = FieldValue.increment(1);
+    }
+    if (episodeComplete && !isFreeServer) {
+      serverUpdate['gemsFoundByTier.6'] = FieldValue.increment(gem === 6 ? 2 : 1);
     }
 
     tx.set(serverRef, serverUpdate, { merge: true });
@@ -1060,8 +1486,12 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     // a la gema probabilística (si la hubo) — el winner puede recibir 2
     // gemas distintas en la misma mining tx (ej: tier 1 + tier 6 bonus).
     // El "_winner" suffix en el docId evita colisión con la gema regular.
+    // No aplica al server Free (D5): ahí el premio de cierre de episodio YA
+    // es el tier 4 ($1.000) forzado arriba y persistido como gema normal —
+    // agregar este bonus también sería un premio extra no contemplado en
+    // el total de $35.000.
     let winnerBonusGem = null;
-    if (episodeComplete) {
+    if (episodeComplete && !isFreeServer) {
       const WINNER_TIER = 6;
       persistGem(WINNER_TIER, "_winner");
       winnerBonusGem = WINNER_TIER;
@@ -1147,38 +1577,95 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
 });
 
 // ─── Peaks ───────────────────────────────────────────────────────────────────
+//
+// Cambio 1 (picos por cadena): antes vivían en users/{uid}.picks (un pool
+// GLOBAL compartido entre todas las cadenas donde juega el usuario — bug si
+// jugaba 2 a la vez). Ahora viven en users/{uid}/chainAccess/{chainId}.
+// `chainId` es REQUERIDO en los 3 endpoints callable de acá (no hay fallback
+// legacy "sin chainId" como en otros cambios): a diferencia de `mineCube`
+// -que siempre puede derivar el chainId server-side desde el server que se
+// está minando-, estos 3 endpoints se llaman desde la pantalla de Picos, que
+// antes era un modal global sin noción de cadena. Mantener un fallback ahí
+// dejaría el pool global (que mineCube ya no toca) completamente desacoplado
+// del pool real usado para minar -> picos "reclamados" que en la práctica se
+// pierden. Se prefiere fallar explícito (invalid-argument) hasta que el
+// cliente actualice (requiere bump de config/app.minVersion al desplegar
+// este cambio) antes que corromper silenciosamente el balance del usuario.
+const DEFAULT_AD_SLOTS = 2;
+
+// Helper: config de una cadena relevante para Picos/ads (slots de ads,
+// si el daily-claim está habilitado). Default = comportamiento histórico.
+async function getChainPeaksConfig(chainId) {
+  const chainSnap = await db.collection("serverChains").doc(chainId).get();
+  const config = (chainSnap.exists && chainSnap.data().config) || {};
+  return {
+    dailyAdSlots: Number(config.dailyAdSlots) || DEFAULT_AD_SLOTS,
+    dailyFreeClaim: config.dailyFreeClaim !== false,
+  };
+}
+
+function requireChainId(request) {
+  const chainId = String((request.data && request.data.chainId) || '');
+  if (!chainId) throw new HttpsError("invalid-argument", "chainId required");
+  assertValidId(chainId, "chainId");
+  return chainId;
+}
 
 exports.getPeaksStatus = onCall(async (request) => {
   const uid = request.auth && request.auth.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  const chainId = requireChainId(request);
   const nowMs = Date.now();
   const userRef = db.collection("users").doc(uid);
-  const snap = await userRef.get();
-  if (!snap.exists) {
+  const chainAccessRef = userRef.collection("chainAccess").doc(chainId);
+
+  const [userSnap, accessSnap, { dailyAdSlots, dailyFreeClaim }] = await Promise.all([
+    userRef.get(), chainAccessRef.get(), getChainPeaksConfig(chainId),
+  ]);
+
+  if (!userSnap.exists) {
     await userRef.set({ picks: 0, createdAt: nowMs, referralCode: generateReferralCode() }, { merge: true });
-    return buildStatus({ picks: 0, createdAt: nowMs }, nowMs);
-  }
-  const data = snap.data() || {};
-  if (!data.referralCode) {
+  } else if (!userSnap.data().referralCode) {
     await userRef.set({ referralCode: generateReferralCode() }, { merge: true });
   }
-  return buildStatus(data, nowMs);
+
+  if (accessSnap.exists) {
+    return buildChainStatus(accessSnap.data(), nowMs, dailyAdSlots, dailyFreeClaim);
+  }
+  // Migración lazy "grandfather": primera vez que se pide status de esta
+  // cadena -> semillar con el balance global actual (snapshot único, NO se
+  // resta del global).
+  const globalPicks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
+  const seed = { chainId, picks: globalPicks, createdAt: nowMs };
+  await chainAccessRef.set(seed);
+  return buildChainStatus(seed, nowMs, dailyAdSlots, dailyFreeClaim);
 });
 
 exports.claimDailyPick = onCall(async (request) => {
   requireRegistered(request);
   const uid = request.auth.uid;
+  const chainId = requireChainId(request);
   const nowMs = Date.now();
+  const { dailyAdSlots, dailyFreeClaim } = await getChainPeaksConfig(chainId);
+  if (!dailyFreeClaim) throw new HttpsError("failed-precondition", "daily_claim_disabled");
+
   const userRef = db.collection("users").doc(uid);
+  const chainAccessRef = userRef.collection("chainAccess").doc(chainId);
   const result = await db.runTransaction(async (tx) => {
-    const snap = await tx.get(userRef);
-    const data = snap.exists ? (snap.data() || {}) : { picks: 0, createdAt: nowMs };
-    if (!snap.exists) tx.set(userRef, data, { merge: true });
-    const status = buildStatus(data, nowMs);
+    const [userSnap, accessSnap] = await Promise.all([tx.get(userRef), tx.get(chainAccessRef)]);
+    const data = accessSnap.exists ?
+      accessSnap.data() :
+      { chainId, picks: userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0, createdAt: nowMs };
+    const status = buildChainStatus(data, nowMs, dailyAdSlots, dailyFreeClaim);
     if (nowMs < status.nextDailyAt) throw new HttpsError("failed-precondition", "Daily not ready");
-    tx.set(userRef, { picks: FieldValue.increment(1), lastDailyAt: nowMs }, { merge: true });
+
+    if (accessSnap.exists) {
+      tx.set(chainAccessRef, { picks: FieldValue.increment(1), lastDailyAt: nowMs }, { merge: true });
+    } else {
+      tx.set(chainAccessRef, { chainId, createdAt: nowMs, picks: (data.picks || 0) + 1, lastDailyAt: nowMs });
+    }
     const updated = Object.assign({}, data, { picks: (data.picks || 0) + 1, lastDailyAt: nowMs });
-    return buildStatus(updated, nowMs);
+    return buildChainStatus(updated, nowMs, dailyAdSlots, dailyFreeClaim);
   });
   return result;
 });
@@ -1192,17 +1679,20 @@ exports.claimDailyPick = onCall(async (request) => {
 exports.createAdSession = onCall(async (request) => {
   requireRegistered(request);
   const uid = request.auth.uid;
+  const chainId = requireChainId(request);
   const index = Number(request.data && request.data.index);
-  if (index !== 1 && index !== 2) throw new HttpsError("invalid-argument", "index must be 1 or 2");
+  const { dailyAdSlots } = await getChainPeaksConfig(chainId);
+  if (!Number.isInteger(index) || index < 1 || index > dailyAdSlots) {
+    throw new HttpsError("invalid-argument", `index must be between 1 and ${dailyAdSlots}`);
+  }
 
   // Verificar límite diario antes de crear la sesión
-  const userRef = db.collection("users").doc(uid);
-  const userSnap = await userRef.get();
-  if (userSnap.exists) {
-    const data = userSnap.data() || {};
-    const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
-    // eslint-disable-next-line security/detect-object-injection -- lastKey de literal whitelist
-    const lastVal = toMillis(data[lastKey]) || 0;
+  const chainAccessRef = db.collection("users").doc(uid).collection("chainAccess").doc(chainId);
+  const accessSnap = await chainAccessRef.get();
+  if (accessSnap.exists) {
+    const ads = accessSnap.data().ads || {};
+    // eslint-disable-next-line security/detect-object-injection -- index validado 1..dailyAdSlots arriba
+    const lastVal = toMillis(ads[index]) || 0;
     if (Date.now() < lastVal + DAY_MS) throw new HttpsError("failed-precondition", `Ad ${index} not ready`);
   }
 
@@ -1213,7 +1703,7 @@ exports.createAdSession = onCall(async (request) => {
   // existiendo pero ya no sirve. TTL la limpia para no acumular.
   const now = Date.now();
   await db.collection("adSessions").doc(sessionId).set({
-    uid, index, token, createdAt: now, used: false,
+    uid, chainId, index, token, createdAt: now, used: false,
     expiresAt: Timestamp.fromMillis(now + 24 * 60 * 60 * 1000),
   });
   return { sessionId, token };
@@ -1221,6 +1711,8 @@ exports.createAdSession = onCall(async (request) => {
 
 // Endpoint HTTP llamado desde la página web después del timer.
 // No requiere auth de Firebase — la seguridad la da el token de un solo uso.
+// `chainId` viene del documento de sesión (fijado server-side en
+// createAdSession), NUNCA del body de este request no-autenticado.
 exports.claimAdSession = onRequest(async (req, res) => {
   setRestrictedCorsHeaders(req, res);
   if (req.method === "OPTIONS") {
@@ -1260,16 +1752,37 @@ exports.claimAdSession = onRequest(async (req, res) => {
 
       const uid = session.uid;
       const index = session.index;
+      const chainId = session.chainId;
+      // Sesiones creadas antes de este release no tienen chainId — ventana
+      // de despliegue chica (TTL de sesión = 12 min), fallar explícito.
+      if (!chainId) throw new Error("bad_request");
+
       const userRef = db.collection("users").doc(uid);
-      const userSnap = await tx.get(userRef);
-      const data = userSnap.exists ? (userSnap.data() || {}) : { picks: 0 };
-      const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
-      // eslint-disable-next-line security/detect-object-injection -- lastKey de literal whitelist
-      const lastVal = toMillis(data[lastKey]) || 0;
+      const chainAccessRef = userRef.collection("chainAccess").doc(chainId);
+      // Todos los reads ANTES de cualquier write (orden requerido por
+      // Firestore transactions) — por eso leemos userRef acá aunque solo se
+      // use en la rama "primera vez" de abajo.
+      const [userSnap, accessSnap] = await Promise.all([tx.get(userRef), tx.get(chainAccessRef)]);
+      const ads = (accessSnap.exists && accessSnap.data().ads) || {};
+      // eslint-disable-next-line security/detect-object-injection -- index viene de session.index, fijado server-side en createAdSession
+      const lastVal = toMillis(ads[index]) || 0;
       if (nowMs < lastVal + DAY_MS) throw new Error("not_ready");
 
       tx.set(sessionRef, { used: true, claimedAt: nowMs }, { merge: true });
-      tx.set(userRef, { picks: FieldValue.increment(1), [lastKey]: nowMs }, { merge: true });
+      if (accessSnap.exists) {
+        tx.set(chainAccessRef, { picks: FieldValue.increment(1), [`ads.${index}`]: nowMs }, { merge: true });
+      } else {
+        const globalPicks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
+        tx.set(chainAccessRef, { chainId, createdAt: nowMs, picks: globalPicks + 1, ads: { [index]: nowMs } });
+      }
+      // Contador agregado de anuncios vistos de la cadena — usado por el
+      // server Free para liberar tiers de premio en vez de recaudación
+      // (el Free no cobra entrada, así que no hay $ que la fórmula
+      // 1,25×costo pueda proteger; acá el "costo cubierto" se mide en
+      // anuncios vistos × AD_VIEW_VALUE_USD, ver freeServerConfig.js).
+      // Barato/inofensivo incrementarlo para toda cadena, no solo Free.
+      const chainRef = db.collection("serverChains").doc(chainId);
+      tx.set(chainRef, { totalAdViews: FieldValue.increment(1) }, { merge: true });
     });
     res.json({ ok: true });
   } catch (e) {
