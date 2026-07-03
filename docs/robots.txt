@@ -4,7 +4,6 @@
 User-agent: *
 Allow: /
 Disallow: /verify.html
-Disallow: /adpick.html
 Disallow: /js/
 Disallow: /privacy.html$
 
