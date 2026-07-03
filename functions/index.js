@@ -209,6 +209,14 @@ const ACTIVITY_FEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // per-user via referralBonusPaid). Documentado en TOS §6.2 (program rules).
 const REFERRER_BONUS_CAP = 50;
 
+// SEC-review 2026-07-03: el timer de la página web del anuncio (docs/adpick.js,
+// TIMER_SECONDS) es puramente client-side -- claimAdSession solo validaba un
+// tope MÁXIMO de 12min desde que se creó la sesión, nunca un mínimo. Con el
+// sessionId+token en mano (se devuelven apenas se crea la sesión) se podía
+// reclamar el pico al instante, sin esperar el anuncio para nada. Mismo valor
+// que docs/adpick.js#TIMER_SECONDS -- si se cambia uno, cambiar el otro.
+const AD_MIN_WATCH_MS = 60 * 1000;
+
 // Audit feedback 2026-06-23+: ventana de canje 90 días desde el cierre del
 // episodio. Pre-fix: gemCodes válidos para SIEMPRE → liability eterna sobre
 // MTB + speculation a largo plazo de users esperando recompra a precio fijo.
@@ -1749,6 +1757,7 @@ exports.claimAdSession = onRequest(async (req, res) => {
       }
       if (session.used) throw new Error("already_used");
       if (nowMs - session.createdAt > 12 * 60 * 1000) throw new Error("expired"); // 12 min
+      if (nowMs - session.createdAt < AD_MIN_WATCH_MS) throw new Error("not_ready");
 
       const uid = session.uid;
       const index = session.index;
