@@ -322,20 +322,13 @@ describe('config paramétrico (Fase 0)', () => {
 describe('buildChainStatus (Cambio 1 — picos por cadena)', () => {
   const DAY_MS = 24 * 60 * 60 * 1000;
 
-  test('doc nuevo (sin lastDailyAt): nextDailyAt ancla en createdAt', () => {
+  test('doc nuevo: picks se refleja tal cual', () => {
     const now = 1000000;
     const s = buildChainStatus({ picks: 3, createdAt: now - 1000 }, now, 2);
     expect(s.picks).toBe(3);
-    expect(s.nextDailyAt).toBe(now - 1000 + DAY_MS);
   });
 
-  test('con lastDailyAt: nextDailyAt ancla ahí, no en createdAt', () => {
-    const now = 1000000;
-    const s = buildChainStatus({ picks: 0, createdAt: now - 5000, lastDailyAt: now - 1000 }, now, 2);
-    expect(s.nextDailyAt).toBe(now - 1000 + DAY_MS);
-  });
-
-  test('genera adNextAt para N slots (2 por default, hasta 5 para el server Free)', () => {
+  test('genera adNextAt para N slots (2 en toda cadena)', () => {
     const now = 1000000;
     const s2 = buildChainStatus({}, now, 2);
     expect(Object.keys(s2.adNextAt)).toHaveLength(2);
@@ -356,11 +349,6 @@ describe('buildChainStatus (Cambio 1 — picos por cadena)', () => {
   test('dailyAdSlots inválido/ausente cae a default 2', () => {
     const s = buildChainStatus({}, 1000, undefined);
     expect(s.dailyAdSlots).toBe(2);
-  });
-
-  test('dailyFreeClaim default true, explícito false para el server Free', () => {
-    expect(buildChainStatus({}, 1000, 2).dailyFreeClaim).toBe(true);
-    expect(buildChainStatus({}, 1000, 5, false).dailyFreeClaim).toBe(false);
   });
 });
 

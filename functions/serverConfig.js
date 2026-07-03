@@ -309,7 +309,6 @@ function deriveServerConfig(N, P) {
     maxMembers: N,
     creditPriceUSD: P,
     dailyAdSlots: 2,
-    dailyFreeClaim: true,
     scaleFactor: S,
     totalPrizePoolUSD,
     expectedPicks,

@@ -1,16 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking, AppState, Share, Modal } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Share } from 'react-native';
+import { WebView } from 'react-native-webview';
 import { useAppAlert } from '../components/AppAlert';
 import { ensureUser, auth, db } from '../firebase/client';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { callGetPeaksStatus, callClaimDailyPick, callCreateAdSession } from '../firebase/functions';
+import { callGetPeaksStatus, callClaimAdSlotPick } from '../firebase/functions';
 import { useI18n } from '../utils/i18n';
 
 // Cambio 1 (picos por cadena): GetPeaks ya no es un modal global sin
 // contexto — recibe `chainId` (de activeServer.chainId vía useServer()) y lo
-// reenvía a las 3 Cloud Functions, que ahora lo requieren. Los slots de ads
-// pasan de 2 hardcodeados (ad1/ad2) a una cantidad variable (`dailyAdSlots`,
-// hasta 5 en el server Free — Fase 3), renderizados dinámicamente.
+// reenvía a las Cloud Functions, que ahora lo requieren.
+// Cambio 5 (compliance anuncios, 2026-07-03): se elimina el "Daily" separado
+// y el flujo de timer web (createAdSession/claimAdSession, condicionado a
+// "esperar viendo el anuncio" -- confirmado con soporte de Adsterra que ese
+// patrón viola sus términos como "incentivized traffic"). Ahora hay 2 slots
+// incondicionales (`dailyAdSlots`, fijo en 2 para toda cadena) que se
+// reclaman al toque, cada uno con su propio cooldown de 24h. El Social Bar
+// que se muestra acá abajo es puramente pasivo (WebView aislado, mismo
+// subdominio separado que antes) -- no tiene ninguna relación server-side
+// con el claim, aparece igual haya o no picos disponibles.
+const AD_FRAME_URL = 'https://ads.miningtheblocks.com/ad-frame.html?type=social';
+
 export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
   const { t } = useI18n();
 
@@ -18,23 +28,16 @@ export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
   const [picks, setPicks] = useState(0);
   const [serverNow, setServerNow] = useState(0);
   const [baseLocalTs, setBaseLocalTs] = useState(0);
-  const [nextDailyAt, setNextDailyAt] = useState(0);
-  const [dailyFreeClaim, setDailyFreeClaim] = useState(true); // Cambio 2: false en el server Free
   const [adNextAt, setAdNextAt] = useState({}); // { [slotIndex]: timestamp }
   const tickRef = useRef(null);
-  const dailyAutoClaimingRef = useRef(false);
-  const adStateSubRef = useRef(null);
-  const [claimingDaily, setClaimingDaily] = useState(false);
   const [claimingAdSlot, setClaimingAdSlot] = useState(null); // índice del slot en curso, o null
   const [tick, setTick] = useState(0); // eslint-disable-line no-unused-vars
   const [userData, setUserData] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [showExamples, setShowExamples] = useState(false);
   const { showAlert, AlertComponent } = useAppAlert();
 
   const nowMs = () => serverNow + (Date.now() - baseLocalTs);
 
-  const remainingDaily = Math.max(0, nextDailyAt - nowMs());
   const adSlotIndices = Object.keys(adNextAt).map(Number).sort((a, b) => a - b);
   const remainingForSlot = (idx) => Math.max(0, (adNextAt[idx] || 0) - nowMs());
 
@@ -51,8 +54,6 @@ export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
     setPicks(Number(data?.picks || 0));
     setServerNow(Number(data?.serverNow || Date.now()));
     setBaseLocalTs(Date.now());
-    setNextDailyAt(Number(data?.nextDailyAt || 0));
-    setDailyFreeClaim(data?.dailyFreeClaim !== false);
     setAdNextAt(data?.adNextAt || {});
   };
 
@@ -75,7 +76,6 @@ export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
     refresh();
     return () => {
       if (tickRef.current) clearInterval(tickRef.current);
-      if (adStateSubRef.current) { adStateSubRef.current.remove(); adStateSubRef.current = null; }
     };
   }, [chainId]);
 
@@ -101,59 +101,12 @@ export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
     return () => clearInterval(tickRef.current);
   }, []);
 
-  useEffect(() => {
-    // Cambio 2: sin esto, una cadena con dailyFreeClaim=false (server Free)
-    // reintentaría el auto-claim cada ~1.5s en loop apenas pasan las 24hs,
-    // porque el backend siempre rechaza y remainingDaily nunca se actualiza.
-    if (!chainId || !dailyFreeClaim) return;
-    if (remainingDaily <= 0 && !dailyAutoClaimingRef.current) {
-      dailyAutoClaimingRef.current = true;
-      (async () => {
-        try {
-          const res = await callClaimDailyPick(chainId);
-          applyStatus(res);
-        } catch (e) {
-          try { await refresh(); } catch {}
-        } finally {
-          setTimeout(() => { dailyAutoClaimingRef.current = false; }, 1500);
-        }
-      })();
-    }
-  }, [remainingDaily, chainId, dailyFreeClaim]);
-
-  const onClaimDaily = async () => {
-    try {
-      if (claimingDaily || !chainId) return;
-      setClaimingDaily(true);
-      const res = await callClaimDailyPick(chainId);
-      applyStatus(res);
-    } catch (e) {
-      showAlert(t('peaks.errorTitle'), t('peaks.errorClaimDaily'));
-    } finally {
-      setClaimingDaily(false);
-    }
-  };
-
   const onClaimAd = async (index) => {
     if (claimingAdSlot != null || !chainId) return;
     setClaimingAdSlot(index);
     try {
-      const session = await callCreateAdSession(index, chainId);
-      // ALTO-54: encodeURIComponent en query params. Si el backend devuelve
-      // tokens con caracteres especiales (& # ?) el URL se rompe; con encode
-      // queda parseable y previene inyección via params.
-      const sid = encodeURIComponent(session.sessionId || '');
-      const tok = encodeURIComponent(session.token || '');
-      const url = `https://miningtheblocks.com/adpick.html?sid=${sid}&t=${tok}`;
-      await Linking.openURL(url);
-      // Cuando el usuario vuelva a la app, refrescar picks
-      if (adStateSubRef.current) adStateSubRef.current.remove();
-      adStateSubRef.current = AppState.addEventListener('change', (nextState) => {
-        if (nextState === 'active') {
-          if (adStateSubRef.current) { adStateSubRef.current.remove(); adStateSubRef.current = null; }
-          refresh();
-        }
-      });
+      const res = await callClaimAdSlotPick(index, chainId);
+      applyStatus(res);
     } catch (e) {
       const code = e?.code || '';
       if (code === 'failed-precondition') {
@@ -216,75 +169,14 @@ export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
         )}
       </View>
 
-      {/* Aviso ads externos */}
-      <View style={styles.adWarningBox}>
-        <Text style={styles.adWarningTxt}>{t('peaks.adBrowserWarning')}</Text>
-        <TouchableOpacity onPress={() => setShowExamples(true)} activeOpacity={0.8}>
-          <Text style={styles.adExamplesLink}>{t('peaks.adExamplesBtn')}</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Modal ejemplos de publicidad engañosa */}
-      <Modal visible={showExamples} transparent animationType="fade" onRequestClose={() => setShowExamples(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.examplesBox}>
-            <Text style={styles.examplesTitle}>{t('peaks.adExamplesTitle')}</Text>
-            <Text style={styles.examplesTxt}>
-              {'• ' + t('peaks.adExamples.iphone')    + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
-              {'• ' + t('peaks.adExamples.visitor')   + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
-              {'• ' + t('peaks.adExamples.selected')  + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
-              {'• ' + t('peaks.adExamples.survey')    + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
-              {'• ' + t('peaks.adExamples.points')    + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
-              {'• ' + t('peaks.adExamples.car')       + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
-              {'• ' + t('peaks.adExamples.virus')     + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagFake')}</Text>{'\n'}
-              {'• ' + t('peaks.adExamples.phone')     + ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagDont')}</Text>{'\n'}
-              {'• ' + t('peaks.adExamples.installBtn')+ ' → '}<Text style={styles.fakeTag}>{t('peaks.adExamples.tagSkip')}</Text>{'\n'}
-              {'• ' + t('peaks.adExamples.closeBtn')  + ' → '}<Text style={styles.cautionTag}>{t('peaks.adExamples.tagCaution')}</Text>
-            </Text>
-            <TouchableOpacity style={styles.examplesCloseBtn} onPress={() => setShowExamples(false)} activeOpacity={0.85}>
-              <Text style={styles.examplesCloseTxt}>{t('peaks.adExamplesClose')}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Daily — no aplica al server Free (dailyFreeClaim: false) */}
-      {dailyFreeClaim && (
-        <View style={styles.cardRow}>
-          <View style={styles.cardLeft}>
-            <Text style={styles.cardIcon}>📅</Text>
-            <Text style={styles.cardTitle}>{t('peaks.dailyIn')}</Text>
-          </View>
-          {remainingDaily <= 0 ? (
-            <TouchableOpacity
-              style={[styles.claimBtn, claimingDaily && { opacity: 0.6 }]}
-              onPress={onClaimDaily}
-              disabled={claimingDaily}
-              activeOpacity={0.85}
-              accessibilityLabel={t('peaks.claimDaily')}
-              accessibilityState={{ disabled: claimingDaily, busy: claimingDaily }}
-            >
-              {claimingDaily
-                ? <ActivityIndicator size="small" color="#0a0a0a" />
-                : <Text style={styles.claimTxt}>{t('peaks.claimDaily')}</Text>
-              }
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.timerPill}>
-              <Text style={styles.timerTxt}>{fmt(remainingDaily)}</Text>
-            </View>
-          )}
-        </View>
-      )}
-
-      {/* Ads — cantidad dinámica de slots (2 estándar, hasta 5 en el server Free) */}
+      {/* Ads — 2 slots incondicionales, cada uno con su cooldown propio */}
       {adSlotIndices.map((idx) => {
         const remaining = remainingForSlot(idx);
         const claiming = claimingAdSlot === idx;
         return (
           <View style={styles.cardRow} key={idx}>
             <View style={styles.cardLeft}>
-              <Text style={styles.cardIcon}>📺</Text>
+              <Text style={styles.cardIcon}>⛏</Text>
               <Text style={styles.cardTitle}>{t('peaks.adPeaksN', { n: idx })}</Text>
             </View>
             {remaining <= 0 ? (
@@ -309,6 +201,25 @@ export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
           </View>
         );
       })}
+
+      {/* Banner pasivo (Social Bar) — WebView aislado, mismo subdominio
+          separado que usaba la vieja página web (ads.miningtheblocks.com).
+          Sin relación con onClaimAd: aparece siempre, haya o no picos
+          disponibles para reclamar. originWhitelist restringe navegación
+          a ese origen; el WebView no comparte JS/DOM con la app (proceso
+          web aislado, a diferencia de un iframe same-origin). */}
+      <Text style={styles.adDisclaimer}>{t('peaks.adDisclaimer')}</Text>
+      <View style={styles.adBannerBox}>
+        <WebView
+          source={{ uri: AD_FRAME_URL }}
+          style={styles.adBannerWebview}
+          originWhitelist={['https://ads.miningtheblocks.com']}
+          onShouldStartLoadWithRequest={(req) => req.url.startsWith('https://ads.miningtheblocks.com')}
+          javaScriptEnabled
+          domStorageEnabled
+          setSupportMultipleWindows={false}
+        />
+      </View>
 
       {/* Referidos */}
       <View style={styles.referralCard}>
@@ -382,19 +293,6 @@ const styles = StyleSheet.create({
   cardIcon: { fontSize: 20 },
   cardTitle: { fontSize: 15, fontWeight: '700', color: '#ccc' },
 
-  // Claim daily (gold)
-  claimBtn: {
-    backgroundColor: '#1a1400',
-    borderWidth: 1,
-    borderColor: '#ffd700',
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    borderRadius: 20,
-    minWidth: 90,
-    alignItems: 'center',
-  },
-  claimTxt: { color: '#ffd700', fontWeight: '900', fontSize: 13 },
-
   // Ad button (green)
   adBtn: {
     backgroundColor: '#0a1a0a',
@@ -419,26 +317,16 @@ const styles = StyleSheet.create({
   },
   timerTxt: { fontSize: 16, fontWeight: '900', color: '#888', fontFamily: 'monospace' },
 
-  // Ad warning banner
-  adWarningBox: {
-    backgroundColor: '#1a1000',
-    borderWidth: 1,
-    borderColor: '#4a3000',
+  // Banner pasivo (Social Bar)
+  adDisclaimer: { fontSize: 10, color: '#555', textAlign: 'center', marginBottom: 4, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  adBannerBox: {
+    height: 70,
     borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+    overflow: 'hidden',
     marginBottom: 8,
+    backgroundColor: '#0a0a0a',
   },
-  adWarningTxt: { fontSize: 12, color: '#aa8800', lineHeight: 18, textAlign: 'center', fontWeight: '700' },
-  adExamplesLink: { fontSize: 12, color: '#4a9eff', fontWeight: '700', textAlign: 'center', marginTop: 6 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.88)', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  examplesBox: { backgroundColor: '#111', borderWidth: 1, borderColor: '#333', borderRadius: 14, padding: 22, width: '100%', maxWidth: 380 },
-  examplesTitle: { fontSize: 14, fontWeight: '900', color: '#ff6600', marginBottom: 14, textAlign: 'center' },
-  examplesTxt: { fontSize: 13, color: '#ccc', lineHeight: 26 },
-  fakeTag: { color: '#ff4444', fontWeight: '900' },
-  cautionTag: { color: '#ff9900', fontWeight: '900' },
-  examplesCloseBtn: { backgroundColor: '#1a3a1a', borderWidth: 1, borderColor: '#2e7d32', borderRadius: 10, paddingVertical: 11, paddingHorizontal: 32, alignItems: 'center', marginTop: 18 },
-  examplesCloseTxt: { color: '#5cb85c', fontSize: 14, fontWeight: '800' },
+  adBannerWebview: { flex: 1, backgroundColor: 'transparent' },
 
   // Referral card
   referralCard: {

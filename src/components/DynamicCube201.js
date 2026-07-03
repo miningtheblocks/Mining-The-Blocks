@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { createRealisticPickaxeTexture, getHighDefinitionPickaxeTexture } from './PickaxeFromPNG';
 import { findClosestFaceFixed, resetFaceDetection, setForcedFace } from './FaceDetection';
 import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform, ActivityIndicator } from 'react-native';
+import { WebView } from 'react-native-webview';
 import { useAppAlert } from './AppAlert';
 import { GLView } from 'expo-gl';
 import * as THREE from 'three';
@@ -91,6 +92,12 @@ const TOTAL_FACE_CUBES = CUBES_PER_FACE * 6; // 242406
 // La capa externa inicia en 8,120,610 y va bajando.
 // El cubo central (K=0) seria 1 en ascendente, por lo que en descendente seria DISPLAY_START - (ascend - 1)
 const DISPLAY_START = 8120610;
+
+// Cambio 5 (compliance anuncios, 2026-07-03): banner pasivo (Social Bar)
+// solo en la carga inicial del cubo, estirado a este mínimo para que cuente
+// como impresión viewable aunque el build real sea más rápido.
+const ENTRY_BANNER_MIN_MS = 1100;
+const AD_FRAME_URL = 'https://ads.miningtheblocks.com/ad-frame.html?type=banner';
 
 
 function faceGridToCubeNumber(faceIndex, gridX, gridY) {
@@ -1714,6 +1721,14 @@ export default function DynamicCube201() {
   // v1.3.19: state acompaña al ref para poder mostrar el loading overlay.
   // Arranca en true porque al mount el buildLayer todavía no terminó.
   const [isBuildingLayer, setIsBuildingLayer] = useState(true);
+  // Cambio 5 (compliance anuncios, 2026-07-03): banner pasivo solo en la
+  // carga INICIAL del cubo (al entrar a la pantalla), no en cada transición
+  // de capa completa (transitionToLayer -- evento raro, community-paced,
+  // pero igual no es "entrar al cubo"). initialCubeLoadRef se apaga después
+  // del primer buildLayer y nunca se vuelve a prender.
+  const initialCubeLoadRef = useRef(true);
+  const [showEntryBanner, setShowEntryBanner] = useState(true);
+  const buildStartRef = useRef(0);
   // Cola incremental de rawN para pre-cargar texturas en background. Se llena
   // cuando el viewport cambia y se vacía en cada frame del render loop con
   // un budget de tiempo, sólo cuando NO hay gesto activo.
@@ -4689,6 +4704,7 @@ const handleZoomButton = useCallback((direction) => {
         buildingLayerRef.current = true;
         // v1.3.19: sincronizar state para mostrar loading overlay.
         try { setIsBuildingLayer(true); } catch {}
+        if (initialCubeLoadRef.current) buildStartRef.current = Date.now();
         // Limpiar cola de lookahead — los rawN encolados de la capa anterior
         // ya no son relevantes (numbers cambiaron en buildLayer).
         try {
@@ -4843,6 +4859,19 @@ const handleZoomButton = useCallback((direction) => {
        } finally {
         clearTimeout(_buildSafety);
         buildingLayerRef.current = false;
+        // Cambio 5: si es la carga inicial (banner visible), asegurar que el
+        // overlay quede al menos ENTRY_BANNER_MIN_MS en pantalla para que el
+        // banner cuente como impresión viewable, aunque el build real haya
+        // sido más rápido. Transiciones de capa (no inicial) no se estiran.
+        if (initialCubeLoadRef.current) {
+          const elapsed = Date.now() - buildStartRef.current;
+          const remaining = ENTRY_BANNER_MIN_MS - elapsed;
+          if (remaining > 0) {
+            await new Promise((r) => setTimeout(r, remaining));
+          }
+          initialCubeLoadRef.current = false;
+          try { setShowEntryBanner(false); } catch {}
+        }
         // v1.3.19: ocultar loading overlay.
         try { setIsBuildingLayer(false); } catch {}
        }
@@ -5026,6 +5055,27 @@ const handleZoomButton = useCallback((direction) => {
           <Text style={styles.buildingSubtext}>
             {t('cube.loadingHint') || 'Un momento, preparando el cubo'}
           </Text>
+          {/* Cambio 5: banner pasivo solo en la carga inicial (no en
+              transiciones de capa completa). Sin relación con ningún pico
+              -- aparece por entrar al cubo, no por ninguna recompensa. */}
+          {showEntryBanner && (
+            <View style={styles.entryBannerWrap}>
+              <Text style={styles.entryBannerDisclaimer}>
+                {t('cube.adDisclaimer') || 'Publicidad externa'}
+              </Text>
+              <View style={styles.entryBannerBox}>
+                <WebView
+                  source={{ uri: AD_FRAME_URL }}
+                  style={styles.entryBannerWebview}
+                  originWhitelist={['https://ads.miningtheblocks.com']}
+                  onShouldStartLoadWithRequest={(req) => req.url.startsWith('https://ads.miningtheblocks.com')}
+                  javaScriptEnabled
+                  domStorageEnabled
+                  setSupportMultipleWindows={false}
+                />
+              </View>
+            </View>
+          )}
         </View>
       )}
 
@@ -5887,6 +5937,28 @@ const styles = StyleSheet.create({
     marginTop: 6,
     letterSpacing: 0.2,
   },
+  entryBannerWrap: {
+    position: 'absolute',
+    bottom: 40,
+    left: 20,
+    right: 20,
+  },
+  entryBannerDisclaimer: {
+    fontSize: 10,
+    color: '#888',
+    textAlign: 'center',
+    marginBottom: 4,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  entryBannerBox: {
+    height: 70,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#0a0a0a',
+  },
+  entryBannerWebview: { flex: 1, backgroundColor: 'transparent' },
   label: { color: '#000', fontSize: 12, marginBottom: 4 },
   stats: { color: '#666', fontSize: 13, fontWeight: '700', marginBottom: 2 },
   hamburgerBtn: { alignSelf: 'flex-start', paddingVertical: 4, paddingHorizontal: 6, marginBottom: 6 },

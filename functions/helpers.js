@@ -307,14 +307,14 @@ function toMillis(ts) {
 // Cambio 1 (picos por cadena): reemplaza al viejo buildStatus() (operaba
 // sobre users/{uid} global, con 2 slots de ads hardcodeados ad1NextAt/
 // ad2NextAt) — ahora opera sobre un doc de
-// `users/{uid}/chainAccess/{chainId}`, con cantidad de slots de ads variable
-// (2 en cadenas estándar, hasta 5 en el server Free — Fase 3).
-function buildChainStatus(chainData, nowMs, dailyAdSlots, dailyFreeClaim) {
+// `users/{uid}/chainAccess/{chainId}`, con cantidad de slots de ads variable.
+// Cambio 5 (compliance anuncios): se elimina el "Daily" separado
+// (nextDailyAt/dailyFreeClaim) — los picos incondicionales ahora se
+// reparten exclusivamente vía los N slots (2 en toda cadena, ver
+// claimAdSlotPick), cada uno con su propio cooldown en `ads[i]`.
+function buildChainStatus(chainData, nowMs, dailyAdSlots) {
   chainData = chainData || {};
   const picks = Number(chainData.picks || 0);
-  const createdAt = toMillis(chainData.createdAt) || nowMs;
-  const lastDailyAt = toMillis(chainData.lastDailyAt) || 0;
-  const anchorDaily = lastDailyAt || createdAt;
   const ads = chainData.ads || {};
   const adNextAt = {};
   const slots = Number(dailyAdSlots) || 2;
@@ -325,13 +325,8 @@ function buildChainStatus(chainData, nowMs, dailyAdSlots, dailyFreeClaim) {
   return {
     picks,
     serverNow: nowMs,
-    nextDailyAt: anchorDaily + DAY_MS,
     adNextAt,
     dailyAdSlots: slots,
-    // Cambio 2 (server Free): el frontend necesita esto para no mostrar la
-    // tarjeta "Daily" ni reintentar el auto-claim contra una cadena que no
-    // reparte picos diarios (dailyFreeClaim: false en su config).
-    dailyFreeClaim: dailyFreeClaim !== false,
   };
 }
 

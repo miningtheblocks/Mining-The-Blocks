@@ -246,11 +246,6 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Ad sessions: solo Cloud Functions (admin) — tokens de un solo uso para la página de anuncios
-    match /adSessions/{sessionId} {
-      allow read, write: if false;
-    }
-
     // SEC-004: userMeta — rate-limit counters, sólo Cloud Functions escriben.
     // Lectura permitida al dueño para que el cliente pueda mostrar "esperá 5 min".
     match /userMeta/{uid} {

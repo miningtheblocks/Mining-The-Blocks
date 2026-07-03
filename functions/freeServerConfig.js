@@ -35,14 +35,17 @@ const E_REWARD_GIVEN_WIN = 0.40 * 1 + 0.30 * 2 + 0.20 * 3 + 0.05 * 4 + 0.05 * 5;
 // tier 4 tiene count=4, no 5).
 // El Free no cobra entrada, así que no hay recaudación que la fórmula
 // estándar (1,25×costo acumulado / recaudación_ref, ver serverConfig.js)
-// pueda proteger -- acá el "costo cubierto" se mide en anuncios vistos de la
+// pueda proteger -- acá el "costo cubierto" se mide en claims de picos de la
 // cadena (serverChains/{chainId}.totalAdViews, incrementado en
-// claimAdSession) en vez de plata. AD_VIEW_VALUE_USD es una estimación de
-// eCPM conservadora (~$10 CPM) confirmada por el usuario; unlockAt queda en
-// UNIDADES DE ANUNCIOS VISTOS (no jugadores), mismo campo `unlockAt` que ya
-// usa getGemForCubeGeneric/isLayerUnlocked -- mineCube/getServers pasan
-// totalAdViews en vez de memberCount cuando isFreeServer (ver index.js).
-const AD_VIEW_VALUE_USD = 0.01;
+// claimAdSlotPick) en vez de plata. AD_VIEW_VALUE_USD es una estimación
+// conservadora de eCPM real de banner pasivo (Social Bar, piso ~$6 CPM,
+// 2026-07-03 -- bajado de $0,01/$10CPM porque el modelo viejo, condicionado
+// a "ver" el anuncio, viola los términos de las redes -- ver postmortem);
+// unlockAt queda en UNIDADES DE CLAIMS (no jugadores), mismo campo
+// `unlockAt` que ya usa getGemForCubeGeneric/isLayerUnlocked --
+// mineCube/getServers pasan totalAdViews en vez de memberCount cuando
+// isFreeServer (ver index.js).
+const AD_VIEW_VALUE_USD = 0.006;
 
 const FREE_PRIZE_TABLE_BASE = [
   {tier: 3, price: GEM_PRICES[2], count: 1, minK: 2, maxK: 30}, // $10.000 x1
@@ -117,8 +120,7 @@ const FREE_CONFIG = {
   isFreeServer: true,
   layerCount: FREE_LAYER_COUNT,
   maxMembers: null,
-  dailyAdSlots: 5,
-  dailyFreeClaim: false,
+  dailyAdSlots: 2,
   totalPrizePoolUSD: FREE_TOTAL_PRIZE_POOL_USD,
   quantityPerTier: FREE_QUANTITY_PER_TIER,
   tierTable: FREE_PRIZE_TABLE,

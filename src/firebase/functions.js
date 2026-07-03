@@ -54,9 +54,8 @@ export async function callMineCube(cubeNumber, serverId) {
 // {
 //   picks: number,
 //   serverNow: number, // millis
-//   nextDailyAt: number, // millis when daily becomes available
-//   adNextAt: { [slotIndex: number]: number }, // millis when each ad slot becomes available
-//   dailyAdSlots: number, // cantidad de slots de ads de esta cadena (2 estándar, hasta 5 en el server Free)
+//   adNextAt: { [slotIndex: number]: number }, // millis when each slot becomes available again
+//   dailyAdSlots: number, // cantidad de slots de picos incondicionales (2, toda cadena)
 // }
 export async function callGetPeaksStatus(chainId) {
   const fn = httpsCallable(functions, 'getPeaksStatus');
@@ -64,18 +63,15 @@ export async function callGetPeaksStatus(chainId) {
   return res.data;
 }
 
-// Claims a daily pick if eligible on server
-export async function callClaimDailyPick(chainId) {
-  const fn = httpsCallable(functions, 'claimDailyPick');
-  const res = await fn({ chainId });
-  return res.data; // expect updated status like callGetPeaksStatus
-}
-
-// Creates a web ad session (timer page); returns { sessionId, token }
-export async function callCreateAdSession(index, chainId) {
-  const fn = httpsCallable(functions, 'createAdSession');
+// Cambio 5 (compliance anuncios, 2026-07-03): reemplaza claimDailyPick +
+// createAdSession/claimAdSession (timer web condicionado al anuncio). El
+// pico se entrega incondicional al tocar el botón del slot; cualquier
+// anuncio que se muestre en esa pantalla es pasivo, sin relación con este
+// claim.
+export async function callClaimAdSlotPick(index, chainId) {
+  const fn = httpsCallable(functions, 'claimAdSlotPick');
   const res = await fn({ index, chainId });
-  return res.data;
+  return res.data; // expect updated status like callGetPeaksStatus
 }
 
 // Verifica créditos y acceso del usuario a un server

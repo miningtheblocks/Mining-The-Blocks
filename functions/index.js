@@ -13,7 +13,6 @@ const {getFirestore, FieldValue, Timestamp, FieldPath} = require("firebase-admin
 const {getAuth} = require("firebase-admin/auth");
 const {getMessaging} = require("firebase-admin/messaging");
 const nodemailer = require("nodemailer");
-const crypto = require("crypto");
 
 // OPS-8: reducir CPU por función para entrar en el quota de Cloud Run.
 // Con 31 funciones × 1 vCPU = 31 vCPUs reservados, agotaba el quota default.
@@ -208,14 +207,6 @@ const ACTIVITY_FEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // recibe sus 5 picks (cap solo se aplica al referrer; el referido es 1×
 // per-user via referralBonusPaid). Documentado en TOS §6.2 (program rules).
 const REFERRER_BONUS_CAP = 50;
-
-// SEC-review 2026-07-03: el timer de la página web del anuncio (docs/adpick.js,
-// TIMER_SECONDS) es puramente client-side -- claimAdSession solo validaba un
-// tope MÁXIMO de 12min desde que se creó la sesión, nunca un mínimo. Con el
-// sessionId+token en mano (se devuelven apenas se crea la sesión) se podía
-// reclamar el pico al instante, sin esperar el anuncio para nada. Mismo valor
-// que docs/adpick.js#TIMER_SECONDS -- si se cambia uno, cambiar el otro.
-const AD_MIN_WATCH_MS = 60 * 1000;
 
 // Audit feedback 2026-06-23+: ventana de canje 90 días desde el cierre del
 // episodio. Pre-fix: gemCodes válidos para SIEMPRE → liability eterna sobre
@@ -1601,14 +1592,12 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
 // este cambio) antes que corromper silenciosamente el balance del usuario.
 const DEFAULT_AD_SLOTS = 2;
 
-// Helper: config de una cadena relevante para Picos/ads (slots de ads,
-// si el daily-claim está habilitado). Default = comportamiento histórico.
+// Helper: config de una cadena relevante para Picos (cantidad de slots).
 async function getChainPeaksConfig(chainId) {
   const chainSnap = await db.collection("serverChains").doc(chainId).get();
   const config = (chainSnap.exists && chainSnap.data().config) || {};
   return {
     dailyAdSlots: Number(config.dailyAdSlots) || DEFAULT_AD_SLOTS,
-    dailyFreeClaim: config.dailyFreeClaim !== false,
   };
 }
 
@@ -1627,7 +1616,7 @@ exports.getPeaksStatus = onCall(async (request) => {
   const userRef = db.collection("users").doc(uid);
   const chainAccessRef = userRef.collection("chainAccess").doc(chainId);
 
-  const [userSnap, accessSnap, { dailyAdSlots, dailyFreeClaim }] = await Promise.all([
+  const [userSnap, accessSnap, { dailyAdSlots }] = await Promise.all([
     userRef.get(), chainAccessRef.get(), getChainPeaksConfig(chainId),
   ]);
 
@@ -1638,7 +1627,7 @@ exports.getPeaksStatus = onCall(async (request) => {
   }
 
   if (accessSnap.exists) {
-    return buildChainStatus(accessSnap.data(), nowMs, dailyAdSlots, dailyFreeClaim);
+    return buildChainStatus(accessSnap.data(), nowMs, dailyAdSlots);
   }
   // Migración lazy "grandfather": primera vez que se pide status de esta
   // cadena -> semillar con el balance global actual (snapshot único, NO se
@@ -1646,16 +1635,28 @@ exports.getPeaksStatus = onCall(async (request) => {
   const globalPicks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
   const seed = { chainId, picks: globalPicks, createdAt: nowMs };
   await chainAccessRef.set(seed);
-  return buildChainStatus(seed, nowMs, dailyAdSlots, dailyFreeClaim);
+  return buildChainStatus(seed, nowMs, dailyAdSlots);
 });
 
-exports.claimDailyPick = onCall(async (request) => {
+// Cambio 5 (compliance anuncios, 2026-07-03): reemplaza el viejo trío
+// claimDailyPick + createAdSession + claimAdSession (timer web de 60s +
+// token de sesión, servía para condicionar el pico a "esperaste viendo el
+// anuncio" — confirmado con soporte de Adsterra que ese patrón es
+// "incentivized traffic" y viola sus términos). Ahora el pico se entrega
+// incondicional al tocar el botón; el banner/Social Bar que se muestre en
+// esa pantalla es puramente pasivo, sin ninguna relación server-side con
+// este claim. Mismo modelo de datos que antes (ads[index] por slot,
+// dailyAdSlots por cadena) para no romper el histórico de cooldowns.
+exports.claimAdSlotPick = onCall(async (request) => {
   requireRegistered(request);
   const uid = request.auth.uid;
   const chainId = requireChainId(request);
+  const index = Number(request.data && request.data.index);
   const nowMs = Date.now();
-  const { dailyAdSlots, dailyFreeClaim } = await getChainPeaksConfig(chainId);
-  if (!dailyFreeClaim) throw new HttpsError("failed-precondition", "daily_claim_disabled");
+  const { dailyAdSlots } = await getChainPeaksConfig(chainId);
+  if (!Number.isInteger(index) || index < 1 || index > dailyAdSlots) {
+    throw new HttpsError("invalid-argument", `index must be between 1 and ${dailyAdSlots}`);
+  }
 
   const userRef = db.collection("users").doc(uid);
   const chainAccessRef = userRef.collection("chainAccess").doc(chainId);
@@ -1664,147 +1665,31 @@ exports.claimDailyPick = onCall(async (request) => {
     const data = accessSnap.exists ?
       accessSnap.data() :
       { chainId, picks: userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0, createdAt: nowMs };
-    const status = buildChainStatus(data, nowMs, dailyAdSlots, dailyFreeClaim);
-    if (nowMs < status.nextDailyAt) throw new HttpsError("failed-precondition", "Daily not ready");
-
-    if (accessSnap.exists) {
-      tx.set(chainAccessRef, { picks: FieldValue.increment(1), lastDailyAt: nowMs }, { merge: true });
-    } else {
-      tx.set(chainAccessRef, { chainId, createdAt: nowMs, picks: (data.picks || 0) + 1, lastDailyAt: nowMs });
-    }
-    const updated = Object.assign({}, data, { picks: (data.picks || 0) + 1, lastDailyAt: nowMs });
-    return buildChainStatus(updated, nowMs, dailyAdSlots, dailyFreeClaim);
-  });
-  return result;
-});
-
-// claimAdPick removed — ad picks are now issued exclusively through the
-// createAdSession → web timer page → claimAdSession flow.
-
-// ─── Ad timer page (web interstitial) ────────────────────────────────────────
-// Crea una sesión para la página de anuncios web (timer de 45s).
-// La página llama a claimAdSession vía HTTP para acreditar el pick.
-exports.createAdSession = onCall(async (request) => {
-  requireRegistered(request);
-  const uid = request.auth.uid;
-  const chainId = requireChainId(request);
-  const index = Number(request.data && request.data.index);
-  const { dailyAdSlots } = await getChainPeaksConfig(chainId);
-  if (!Number.isInteger(index) || index < 1 || index > dailyAdSlots) {
-    throw new HttpsError("invalid-argument", `index must be between 1 and ${dailyAdSlots}`);
-  }
-
-  // Verificar límite diario antes de crear la sesión
-  const chainAccessRef = db.collection("users").doc(uid).collection("chainAccess").doc(chainId);
-  const accessSnap = await chainAccessRef.get();
-  if (accessSnap.exists) {
-    const ads = accessSnap.data().ads || {};
+    const ads = data.ads || {};
     // eslint-disable-next-line security/detect-object-injection -- index validado 1..dailyAdSlots arriba
     const lastVal = toMillis(ads[index]) || 0;
-    if (Date.now() < lastVal + DAY_MS) throw new HttpsError("failed-precondition", `Ad ${index} not ready`);
-  }
+    if (nowMs < lastVal + DAY_MS) throw new HttpsError("failed-precondition", `Slot ${index} not ready`);
 
-  const token = crypto.randomBytes(24).toString("hex");
-  const sessionId = crypto.randomBytes(16).toString("hex");
-  // OPS-7: expiresAt para TTL — sesiones se borran 1 día después de crear.
-  // El user tiene 30 min reales para ver el ad; después la session sigue
-  // existiendo pero ya no sirve. TTL la limpia para no acumular.
-  const now = Date.now();
-  await db.collection("adSessions").doc(sessionId).set({
-    uid, chainId, index, token, createdAt: now, used: false,
-    expiresAt: Timestamp.fromMillis(now + 24 * 60 * 60 * 1000),
-  });
-  return { sessionId, token };
-});
-
-// Endpoint HTTP llamado desde la página web después del timer.
-// No requiere auth de Firebase — la seguridad la da el token de un solo uso.
-// `chainId` viene del documento de sesión (fijado server-side en
-// createAdSession), NUNCA del body de este request no-autenticado.
-exports.claimAdSession = onRequest(async (req, res) => {
-  setRestrictedCorsHeaders(req, res);
-  if (req.method === "OPTIONS") {
-    res.status(204).send("");
-    return;
-  }
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "method_not_allowed" });
-    return;
-  }
-
-  const { sessionId, token } = req.body || {};
-  if (!sessionId || !token) {
-    res.status(400).json({ error: "missing_params" });
-    return;
-  }
-
-  const sessionRef = db.collection("adSessions").doc(String(sessionId));
-  const nowMs = Date.now();
-
-  try {
-    await db.runTransaction(async (tx) => {
-      const sessionSnap = await tx.get(sessionRef);
-      if (!sessionSnap.exists) throw new Error("not_found");
-      const session = sessionSnap.data();
-      // BAJO (ESLint security/detect-possible-timing-attacks): comparación
-      // constant-time del token. `!==` short-circuita y leakea info via
-      // timing analysis (no práctico para 192-bit tokens vía internet, pero
-      // defense-in-depth). timingSafeEqual exige Buffers del mismo length.
-      const a = Buffer.from(String(session.token || ''), 'utf8');
-      const b = Buffer.from(String(token || ''), 'utf8');
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-        throw new Error("invalid_token");
-      }
-      if (session.used) throw new Error("already_used");
-      if (nowMs - session.createdAt > 12 * 60 * 1000) throw new Error("expired"); // 12 min
-      if (nowMs - session.createdAt < AD_MIN_WATCH_MS) throw new Error("not_ready");
-
-      const uid = session.uid;
-      const index = session.index;
-      const chainId = session.chainId;
-      // Sesiones creadas antes de este release no tienen chainId — ventana
-      // de despliegue chica (TTL de sesión = 12 min), fallar explícito.
-      if (!chainId) throw new Error("bad_request");
-
-      const userRef = db.collection("users").doc(uid);
-      const chainAccessRef = userRef.collection("chainAccess").doc(chainId);
-      // Todos los reads ANTES de cualquier write (orden requerido por
-      // Firestore transactions) — por eso leemos userRef acá aunque solo se
-      // use en la rama "primera vez" de abajo.
-      const [userSnap, accessSnap] = await Promise.all([tx.get(userRef), tx.get(chainAccessRef)]);
-      const ads = (accessSnap.exists && accessSnap.data().ads) || {};
-      // eslint-disable-next-line security/detect-object-injection -- index viene de session.index, fijado server-side en createAdSession
-      const lastVal = toMillis(ads[index]) || 0;
-      if (nowMs < lastVal + DAY_MS) throw new Error("not_ready");
-
-      tx.set(sessionRef, { used: true, claimedAt: nowMs }, { merge: true });
-      if (accessSnap.exists) {
-        tx.set(chainAccessRef, { picks: FieldValue.increment(1), [`ads.${index}`]: nowMs }, { merge: true });
-      } else {
-        const globalPicks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
-        tx.set(chainAccessRef, { chainId, createdAt: nowMs, picks: globalPicks + 1, ads: { [index]: nowMs } });
-      }
-      // Contador agregado de anuncios vistos de la cadena — usado por el
-      // server Free para liberar tiers de premio en vez de recaudación
-      // (el Free no cobra entrada, así que no hay $ que la fórmula
-      // 1,25×costo pueda proteger; acá el "costo cubierto" se mide en
-      // anuncios vistos × AD_VIEW_VALUE_USD, ver freeServerConfig.js).
-      // Barato/inofensivo incrementarlo para toda cadena, no solo Free.
-      const chainRef = db.collection("serverChains").doc(chainId);
-      tx.set(chainRef, { totalAdViews: FieldValue.increment(1) }, { merge: true });
-    });
-    res.json({ ok: true });
-  } catch (e) {
-    // INF-001: NO devolver e.message al cliente — eso permite enumerar estados
-    // internos (invalid_token, already_used, expired, not_ready, ALREADY_CLOSING).
-    // Mapeamos a un set chico de códigos públicos.
-    const KNOWN_PUBLIC = new Set(["invalid_token", "already_used", "expired", "not_ready", "not_found"]);
-    const code = KNOWN_PUBLIC.has(e && e.message) ? e.message : "bad_request";
-    if (!KNOWN_PUBLIC.has(code)) {
-      console.error("claimAdSession internal error:", e && e.message);
+    if (accessSnap.exists) {
+      tx.set(chainAccessRef, { picks: FieldValue.increment(1), [`ads.${index}`]: nowMs }, { merge: true });
+    } else {
+      tx.set(chainAccessRef, { chainId, createdAt: nowMs, picks: (data.picks || 0) + 1, ads: { [index]: nowMs } });
     }
-    res.status(400).json({ error: code });
-  }
+    // Contador agregado de "views" de la cadena — usado por el server Free
+    // para liberar tiers de premio en vez de recaudación (el Free no cobra
+    // entrada, así que no hay $ que la fórmula 1,25×costo pueda proteger;
+    // acá el "costo cubierto" se mide en claims × AD_VIEW_VALUE_USD, ver
+    // freeServerConfig.js). Barato/inofensivo incrementarlo para toda
+    // cadena, no solo Free. Ya no está condicionado a haber visto un
+    // anuncio real — se cuenta con que al menos un slot se reclamó.
+    const chainRef = db.collection("serverChains").doc(chainId);
+    tx.set(chainRef, { totalAdViews: FieldValue.increment(1) }, { merge: true });
+
+    const updatedAds = Object.assign({}, ads, { [index]: nowMs });
+    const updated = Object.assign({}, data, { picks: (data.picks || 0) + 1, ads: updatedAds });
+    return buildChainStatus(updated, nowMs, dailyAdSlots);
+  });
+  return result;
 });
 
 // ─── Admin helpers ───────────────────────────────────────────────────────────

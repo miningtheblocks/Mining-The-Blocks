@@ -219,9 +219,6 @@ describe('Colecciones admin-only no son legibles', () => {
   test('rateLimits: no read', async () => {
     await assertFails(dbAs('uid1').collection('rateLimits').get());
   });
-  test('adSessions: no read', async () => {
-    await assertFails(dbAs('uid1').collection('adSessions').get());
-  });
 });
 
 describe('serverAccess (Cloud Functions only)', () => {
