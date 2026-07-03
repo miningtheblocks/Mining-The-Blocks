@@ -6,7 +6,7 @@
 
 Juego de minería 3D para Android. Cubos por capas, recompensas deterministas, gemas con NFT en Polygon, y pagos en USDC.
 
-Stack: React Native 0.81 + Expo SDK 54 (managed) · Three.js (expo-gl/expo-three) · Firebase (Auth · Firestore · Functions v2 · Hosting) · ethers.js v6 · AdMob.
+Stack: React Native 0.81 + Expo SDK 54 (managed) · Three.js (expo-gl/expo-three) · Firebase (Auth · Firestore · Functions v2 · Hosting) · ethers.js v6 · Adsterra (ads pasivos, sin SDK nativo).
 
 ## Comunidad
 
@@ -19,9 +19,11 @@ Descargá el APK desde [miningtheblocks.com](https://miningtheblocks.com/) o des
 **Antes de instalar — verificar checksum** (recomendado):
 
 ```bash
-sha256sum -c MTB-v1.1.0.apk.sha256
-# debe imprimir: MTB-v1.1.0.apk: OK
+sha256sum -c MTB-latest.apk.sha256
+# debe imprimir: MTB-latest.apk: OK
 ```
+
+(o `MTB-v<versión>.apk.sha256` si descargaste una versión específica de la pestaña Releases, en vez del alias `latest`)
 
 **Instalación en Android:**
 
@@ -54,13 +56,17 @@ El APK se firma con un keystore propio mantenido por fuera del repo (variables d
 │   │   ├── ErrorBoundary.js
 │   │   └── OverlayModalsProvider.js
 │   ├── screens/                    # Pantallas de la app
+│   │   ├── GetPeaks.js            # Picos diarios (incondicionales) + ad pasivo
+│   │   └── CreateCustomServer.js  # Creación de servers a medida
 │   ├── firebase/                   # Cliente Firebase + wrappers de funciones
 │   ├── utils/                      # i18n, auth context, server context, logError
 │   └── constants.js               # APP_VERSION, URLs, StorageKeys
 ├── functions/                      # Cloud Functions v2
 │   ├── index.js                   # Exports (mining, gems, pagos, email...)
 │   ├── constants.js               # Constantes de juego/pagos
-│   └── helpers.js                 # Helpers puros (hash, geometría, códigos)
+│   ├── helpers.js                 # Helpers puros (hash, geometría, códigos)
+│   ├── freeServerConfig.js        # Config fija del server Free (150 capas, sin costo de entrada)
+│   └── serverConfig.js            # Deriva config de servers a medida (N jugadores, precio → premios)
 ├── firestore.rules                 # Reglas de seguridad Firestore
 ├── firebase.json                   # Hosting + headers de seguridad
 ├── public/                         # Hosting estático (verify, claim de gemas)
