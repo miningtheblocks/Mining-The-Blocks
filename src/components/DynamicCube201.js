@@ -1898,6 +1898,16 @@ const handleZoomButton = useCallback((direction) => {
   const [serverMemberCount, setServerMemberCount] = useState(0);
   // Menú hamburguesa
   const [menuOpen, setMenuOpen] = useState(false);
+  // Cambio 6 (modo Chain): entrada de menú gateada por
+  // config/app.blockchainModeEnabled, mismo patrón que
+  // paramServerCreationEnabled en ServerList.js.
+  const [blockchainModeEnabled, setBlockchainModeEnabled] = useState(false);
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'config', 'app'), (snap) => {
+      if (snap.exists()) setBlockchainModeEnabled(snap.data().blockchainModeEnabled === true);
+    }, () => {});
+    return () => unsub();
+  }, []);
   // Modal "Cómo se juega?"
   const [howToPlayVisible, setHowToPlayVisible] = useState(false);
   // UI de progreso de minado dentro del modal
@@ -5144,6 +5154,18 @@ const handleZoomButton = useCallback((direction) => {
                 >
                   <Text style={styles.menuItemTxt}>{t('cube.menuPeaks')}</Text>
                 </TouchableOpacity>
+                {blockchainModeEnabled && (
+                  <TouchableOpacity
+                    style={styles.menuItem}
+                    onPress={() => {
+                      setMenuOpen(false);
+                      try { openModal('chain'); } catch { showAlert(t('cube.errorTitle'), t('cube.menuChain')); }
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.menuItemTxt}>{t('cube.menuChain')}</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity
                   style={styles.menuItem}
                   onPress={() => {

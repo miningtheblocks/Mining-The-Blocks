@@ -74,6 +74,27 @@ export async function callClaimAdSlotPick(index, chainId) {
   return res.data; // expect updated status like callGetPeaksStatus
 }
 
+// Cambio 6 (modo Chain, cubo invertido) — SE ENTREGA COMPLETO PERO INACTIVO,
+// gateado server-side por config/app.blockchainModeEnabled. Un solo cubo
+// global (no por-server): status, pico diario (con captcha) y colocar cubo.
+export async function callGetChainBlockchainStatus() {
+  const fn = httpsCallable(functions, 'getChainBlockchainStatus');
+  const res = await fn({});
+  return res.data;
+}
+
+export async function callClaimChainPick(captchaToken) {
+  const fn = httpsCallable(functions, 'claimChainPick');
+  const res = await fn({ captchaToken });
+  return res.data;
+}
+
+export async function callPlaceCube(cubeNumber) {
+  const fn = httpsCallable(functions, 'placeCube');
+  const res = await fn({ cubeNumber });
+  return res.data;
+}
+
 // Verifica créditos y acceso del usuario a un server
 export async function callCheckServerAccess(serverId) {
   const fn = httpsCallable(functions, 'checkServerAccess');

@@ -26,6 +26,10 @@ setGlobalOptions({ cpu: 0.5, memory: "256MiB", maxInstances: 10 });
 const companyWalletKey = defineSecret("COMPANY_WALLET_KEY");
 const gmailAppPassword = defineSecret("GMAIL_APP_PASSWORD");
 const serverSeed = defineSecret("SERVER_SEED");
+// Cambio 6 (modo Chain): anti-bot en claimChainPick + registro. Configurar
+// con `firebase functions:secrets:set HCAPTCHA_SECRET` una vez que el
+// usuario cree la cuenta en hCaptcha y tenga site key + secret key.
+const hcaptchaSecret = defineSecret("HCAPTCHA_SECRET");
 
 try {
   admin.initializeApp();
@@ -55,6 +59,8 @@ const {
 
 const {
   shellTotalCubes,
+  shellSizeDedup,
+  cumSumDedup,
   cubeNumberToFaceGridForK,
   getRewardForCube,
   getGemForCube,
@@ -77,6 +83,11 @@ const {
   deriveServerConfig,
   applyManualDistribution,
 } = require("./serverConfig");
+const {
+  BLOCKCHAIN_LAYER_COUNT,
+  BLOCKCHAIN_CHAIN_NAME,
+  rateForStreakDays,
+} = require("./blockchainConfig");
 
 // BAJO-H18: validar formato + tamaño de IDs (serverId, chainId, gemId, etc.).
 // Antes el código solo verificaba !id (truthy) — un id de 1500 bytes pasaba
@@ -1691,6 +1702,292 @@ exports.claimAdSlotPick = onCall(async (request) => {
   });
   return result;
 });
+
+// ─── Modo Chain (cubo invertido, MTB coin) ───────────────────────────────────
+// Cambio 6 (2026-07-03): modo nuevo, SE ENTREGA COMPLETO PERO INACTIVO --
+// gateado por config/app.blockchainModeEnabled (default false/ausente),
+// mismo patrón que createServerCustom/paramServerCreationEnabled. Un solo
+// cubo global (blockchainState/main), sin episodios -- las capas se AGREGAN
+// a medida que se completan (arranca en K=0, shellSizeDedup(0)=1), al
+// revés del cubo estándar/Free que las destruye de afuera hacia adentro.
+//
+// Economía: no hay premios en gemas. Cada cubo colocado aporta una tarifa
+// en USD (según la racha de días consecutivos de quien lo coloca, ver
+// blockchainConfig.js) al pool compartido Y al crédito propio de ese
+// usuario -- el reparto final es proporcional a $ contribuido, no a
+// cantidad de cubos, para que la racha de uno no le saque % a nadie más.
+
+function requireBlockchainModeEnabled(appConfigSnap) {
+  const enabled = appConfigSnap.exists && appConfigSnap.data().blockchainModeEnabled === true;
+  if (!enabled) throw new HttpsError("failed-precondition", "feature_disabled");
+}
+
+// Día calendario en UTC, formato "YYYY-MM-DD" -- para comparar rachas sin
+// depender de zona horaria del cliente.
+function utcDayKey(ms) {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function daysBetweenUtc(aMs, bMs) {
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const a = Date.UTC(...new Date(aMs).toISOString().slice(0, 10).split("-").map(Number));
+  const b = Date.UTC(...new Date(bMs).toISOString().slice(0, 10).split("-").map(Number));
+  return Math.round((b - a) / MS_PER_DAY);
+}
+
+// Verifica un token de hCaptcha contra su API siteverify. Lanza si no está
+// configurado el secret (falla cerrado -- sin captcha configurado, este
+// modo no puede operar, mejor que aceptar todo sin validar).
+async function verifyCaptcha(token, secretValue) {
+  if (!token || typeof token !== "string") {
+    throw new HttpsError("invalid-argument", "captcha_required");
+  }
+  const secret = secretValue;
+  if (!secret) {
+    console.error("HCAPTCHA_SECRET not configured");
+    throw new HttpsError("failed-precondition", "captcha_not_configured");
+  }
+  const params = new URLSearchParams({ secret, response: token });
+  const res = await fetch("https://hcaptcha.com/siteverify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  });
+  const data = await res.json();
+  if (!data || data.success !== true) {
+    throw new HttpsError("permission-denied", "captcha_failed");
+  }
+}
+
+// Status de solo lectura del cubo global + del usuario que consulta.
+exports.getChainBlockchainStatus = onCall(async (request) => {
+  const uid = request.auth && request.auth.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+
+  const stateRef = db.collection("blockchainState").doc("main");
+  const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
+  const [stateSnap, accessSnap] = await Promise.all([stateRef.get(), accessRef.get()]);
+
+  const state = stateSnap.exists ? stateSnap.data() : { currentLayer: 0, placedInCurrentLayer: 0, poolUSD: 0 };
+  const access = accessSnap.exists ? accessSnap.data() : { picks: 0, streakDays: 0, totalContributedUSD: 0 };
+  const nowMs = Date.now();
+  const lastPickAt = toMillis(access.lastPickAt) || 0;
+
+  return {
+    name: state.name || BLOCKCHAIN_CHAIN_NAME,
+    currentLayer: state.currentLayer || 0,
+    layerCount: BLOCKCHAIN_LAYER_COUNT,
+    placedInCurrentLayer: state.placedInCurrentLayer || 0,
+    layerSize: shellSizeDedup(state.currentLayer || 0),
+    poolUSD: state.poolUSD || 0,
+    picks: access.picks || 0,
+    streakDays: access.streakDays || 0,
+    totalContributedUSD: access.totalContributedUSD || 0,
+    currentRatePerCube: rateForStreakDays(access.streakDays || 0),
+    pickNextAt: lastPickAt ? lastPickAt + DAY_MS : 0,
+    serverNow: nowMs,
+  };
+});
+
+// Pico diario incondicional (1 slot) -- exige captcha verificado
+// server-side, anti-bot puro, sin relación a ningún anuncio. Reclamar el
+// pico NO cuenta para la racha de colocado (ver placeCube) -- pedido
+// explícito del usuario.
+exports.claimChainPick = onCall({ secrets: [hcaptchaSecret] }, async (request) => {
+  requireRegistered(request);
+  const uid = request.auth.uid;
+
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  requireBlockchainModeEnabled(appConfigSnap);
+
+  const captchaToken = String((request.data && request.data.captchaToken) || "");
+  await verifyCaptcha(captchaToken, hcaptchaSecret.value());
+
+  const nowMs = Date.now();
+  const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
+
+  const result = await db.runTransaction(async (tx) => {
+    const accessSnap = await tx.get(accessRef);
+    const data = accessSnap.exists ? accessSnap.data() : {};
+    const lastPickAt = toMillis(data.lastPickAt) || 0;
+    if (nowMs < lastPickAt + DAY_MS) throw new HttpsError("failed-precondition", "pick_not_ready");
+
+    const updated = {
+      picks: (data.picks || 0) + 1,
+      lastPickAt: nowMs,
+      streakDays: data.streakDays || 0,
+      lastPlacedDay: data.lastPlacedDay || null,
+      totalContributedUSD: data.totalContributedUSD || 0,
+    };
+    tx.set(accessRef, updated, { merge: true });
+    return updated;
+  });
+  return { picks: result.picks, pickNextAt: nowMs + DAY_MS };
+});
+
+// Coloca (no mina) un cubo en la capa frontera actual. Consume 1 pico,
+// aporta al pool según la racha de días consecutivos de quien coloca, y
+// avanza a la siguiente capa cuando la actual se completa.
+exports.placeCube = onCall(async (request) => {
+  requireRegistered(request);
+  await assertFreshToken(request);
+  const uid = request.auth.uid;
+
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  requireBlockchainModeEnabled(appConfigSnap);
+
+  const nRaw = (request.data && request.data.cubeNumber);
+  const n = Math.floor(Number(nRaw));
+  if (!Number.isInteger(n) || n < 1) throw new HttpsError("invalid-argument", "cubeNumber required");
+
+  const stateRef = db.collection("blockchainState").doc("main");
+  const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
+  const nowMs = Date.now();
+
+  const result = await db.runTransaction(async (tx) => {
+    const [stateSnap, accessSnap] = await Promise.all([tx.get(stateRef), tx.get(accessRef)]);
+    const state = stateSnap.exists ? stateSnap.data() : { currentLayer: 0, placedInCurrentLayer: 0, poolUSD: 0 };
+    const K = state.currentLayer || 0;
+    if (K > BLOCKCHAIN_LAYER_COUNT) throw new HttpsError("failed-precondition", "chain_closed");
+
+    // El cubeNumber tiene que caer en el rango de la capa K (acumulado
+    // dedup): (cumSumDedup(K-1), cumSumDedup(K)].
+    const rangeMin = K > 0 ? cumSumDedup(K - 1) : 0;
+    const rangeMax = cumSumDedup(K);
+    if (n <= rangeMin || n > rangeMax) throw new HttpsError("invalid-argument", "cube_out_of_range");
+
+    const placedRef = stateRef.collection("placed").doc(String(n));
+    const placedSnap = await tx.get(placedRef);
+    if (placedSnap.exists) throw new HttpsError("already-exists", "already_placed");
+
+    const access = accessSnap.exists ? accessSnap.data() : {};
+    const picks = access.picks || 0;
+    if (picks < 1) throw new HttpsError("failed-precondition", "no_picks");
+
+    // Racha: solo avanza/mantiene si coloca en un día calendario distinto
+    // al último donde ya había colocado (evita inflar la racha colocando
+    // 50 cubos el mismo día). Si el gap es de más de 1 día, se corta.
+    const lastPlacedDay = access.lastPlacedDay || null;
+    const todayKey = utcDayKey(nowMs);
+    let streakDays = access.streakDays || 0;
+    if (lastPlacedDay === todayKey) {
+      // ya colocó hoy -- racha no cambia, pero sigue coloando cubos hoy.
+    } else if (lastPlacedDay) {
+      const gap = daysBetweenUtc(new Date(lastPlacedDay + "T00:00:00Z").getTime(), nowMs);
+      streakDays = gap === 1 ? streakDays + 1 : 1; // gap>1 corta la racha, arranca de nuevo
+    } else {
+      streakDays = 1; // primera vez que coloca
+    }
+
+    const rate = rateForStreakDays(streakDays);
+
+    tx.set(placedRef, { uid, placedAt: nowMs, rate });
+    tx.set(accessRef, {
+      picks: picks - 1,
+      streakDays,
+      lastPlacedDay: todayKey,
+      totalContributedUSD: (access.totalContributedUSD || 0) + rate,
+    }, { merge: true });
+
+    const placedInCurrentLayer = (state.placedInCurrentLayer || 0) + 1;
+    const layerSize = shellSizeDedup(K);
+    const layerComplete = placedInCurrentLayer >= layerSize;
+    tx.set(stateRef, {
+      name: state.name || BLOCKCHAIN_CHAIN_NAME,
+      currentLayer: layerComplete ? K + 1 : K,
+      placedInCurrentLayer: layerComplete ? 0 : placedInCurrentLayer,
+      poolUSD: (state.poolUSD || 0) + rate,
+    }, { merge: true });
+
+    return {
+      cubeNumber: n,
+      rate,
+      streakDays,
+      layerComplete,
+      newLayer: layerComplete ? K + 1 : K,
+      chainClosing: layerComplete && K === BLOCKCHAIN_LAYER_COUNT,
+      chainName: state.name || BLOCKCHAIN_CHAIN_NAME,
+      poolUSD: (state.poolUSD || 0) + rate,
+    };
+  });
+
+  // Cambio 7 (cierre de cadena, 2026-07-04): la última capa (250) se acaba
+  // de completar con ESTE placeCube -- archivar, repartir proporcional y
+  // arrancar la próxima cadena. Corre DESPUÉS de la transacción (no adentro
+  // -- iterar todos los contribuyentes de la cadena es un collectionGroup
+  // query de tamaño no acotado, no cabe bien en una transacción de
+  // Firestore). Evento rarísimo en la práctica (ver estimación de tiempo
+  // para llenar 250 capas), no es un hot path.
+  if (result.chainClosing) {
+    try {
+      await closeChainAndArchive(result.chainName, result.poolUSD);
+    } catch (e) {
+      // No re-lanzar: el cubo YA se colocó y acreditó (arriba). Si el
+      // cierre falla, el estado queda con currentLayer > BLOCKCHAIN_LAYER_COUNT
+      // (placeCube ya rechaza nuevos intentos con chain_closed) y hay que
+      // reintentar el cierre manualmente -- no perder el placement del user.
+      console.error("closeChainAndArchive failed:", e && e.message);
+    }
+  }
+
+  return result;
+});
+
+// Archiva la cadena cerrada a blockchainHistory, calcula el % de cada
+// contribuyente sobre el pool final y lo registra como ledger (SIN
+// movimiento real de plata todavía -- ver decisión del usuario 2026-07-03:
+// dejar armado, activar el pago real recién con claridad legal). Arranca
+// la cadena siguiente con un nombre placeholder incremental -- el usuario
+// puede editarlo a mano en Firestore cuando llegue el momento, dado que
+// completar 250 capas tarda muchísimo tiempo real.
+async function closeChainAndArchive(chainName, finalPoolUSD) {
+  const stateRef = db.collection("blockchainState").doc("main");
+  const historyRef = db.collection("blockchainHistory").doc(chainName);
+  const counterRef = db.collection("blockchainState").doc("counter");
+
+  const contributorsSnap = await db.collectionGroup("blockchainAccess")
+      .where("totalContributedUSD", ">", 0)
+      .get();
+
+  const batch = db.batch();
+  let contributorCount = 0;
+  contributorsSnap.forEach((doc) => {
+    const uid = doc.ref.parent.parent.id;
+    const contributed = doc.data().totalContributedUSD || 0;
+    if (contributed <= 0) return;
+    const share = finalPoolUSD > 0 ? contributed / finalPoolUSD : 0;
+    const payoutRef = db.collection("users").doc(uid).collection("blockchainPayouts").doc(chainName);
+    batch.set(payoutRef, {
+      chainName,
+      contributedUSD: contributed,
+      share,
+      amountUSD: finalPoolUSD * share,
+      closedAt: Date.now(),
+    });
+    contributorCount += 1;
+  });
+
+  batch.set(historyRef, {
+    name: chainName,
+    poolUSD: finalPoolUSD,
+    layerCount: BLOCKCHAIN_LAYER_COUNT,
+    contributorCount,
+    closedAt: Date.now(),
+  });
+
+  const counterSnap = await counterRef.get();
+  const closedChains = (counterSnap.exists ? counterSnap.data().closedChains : 0) || 0;
+  const nextName = `${BLOCKCHAIN_CHAIN_NAME}-${closedChains + 2}`; // -2: la primera cadena ya usó el nombre base
+  batch.set(counterRef, { closedChains: closedChains + 1 });
+  batch.set(stateRef, {
+    name: nextName,
+    currentLayer: 0,
+    placedInCurrentLayer: 0,
+    poolUSD: 0,
+  });
+
+  await batch.commit();
+}
 
 // ─── Admin helpers ───────────────────────────────────────────────────────────
 // OPS-8: grantPicksDev / resetAllMinedCubes / sendTestPush / initLayerRewards

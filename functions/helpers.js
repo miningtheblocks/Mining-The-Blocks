@@ -16,6 +16,25 @@ function shellTotalCubes(K) {
   return g * g * 6;
 }
 
+// Cambio 6 (modo Chain, cubo invertido): cantidad de cubos ÚNICOS
+// (deduplicados) en la capa K -- misma fórmula que shellSize() en
+// DynamicCube201.js (frontend). shellTotalCubes() de arriba es grid-based
+// SIN deduplicar (cuenta aristas/esquinas compartidas 2-3 veces), correcto
+// para el pricing de zonas de premios del cubo estándar pero NO para contar
+// acciones de "colocar" reales -- acá cada cubo se coloca una sola vez.
+function shellSizeDedup(K) {
+  if (K <= 0) return 1;
+  return 24 * K * K + 2;
+}
+
+// Suma acumulada de shellSizeDedup(0..K) -- total de cubos únicos en las
+// capas 0..K inclusive.
+function cumSumDedup(K) {
+  let total = 0;
+  for (let k = 0; k <= K; k++) total += shellSizeDedup(k);
+  return total;
+}
+
 // Suma acumulada de shellTotalCubes(0..n-1) — cantidad total de cubos en las
 // capas 0 a n-1 inclusive. Usada tanto para ubicar premios (offsetInZone)
 // como para derivar el tamaño de cada "zona" de tier (zoneSizeFor).
@@ -364,6 +383,8 @@ function setRestrictedCorsHeaders(req, res) {
 module.exports = {
   getLayerGridSize,
   shellTotalCubes,
+  shellSizeDedup,
+  cumSumDedup,
   cumSum,
   zoneSizeFor,
   cubeNumberToFaceGridForK,

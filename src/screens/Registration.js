@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, ActivityIndicator, Switch, Linking, Modal } from 'react-native';
 import { useAppAlert } from '../components/AppAlert';
+import CaptchaModal from '../components/CaptchaModal';
 import { TERMS_URL, PRIVACY_URL } from '../constants';
 import { auth, db, storage } from '../firebase/client';
 import { createUserWithEmailAndPassword, EmailAuthProvider, linkWithCredential, verifyBeforeUpdateEmail, reauthenticateWithCredential, sendEmailVerification, signOut } from 'firebase/auth';
@@ -44,6 +45,15 @@ export default function Registration({ asModal = false, onClose }) {
   const [referralStatus, setReferralStatus] = useState('idle'); // 'idle'|'checking'|'valid'|'invalid'
   const referralDebounceRef = useRef(null);
   const { showAlert, AlertComponent } = useAppAlert();
+  // Cambio 6 (modo Chain): fricción anti-bot en el signup. NOTA: a
+  // diferencia de claimChainPick (verificado server-side contra la API de
+  // hCaptcha), createUserWithEmailAndPassword es una llamada directa del
+  // SDK cliente a Firebase Auth -- no hay forma de interceptarla con una
+  // verificación dura antes de que la cuenta se cree. Esto es fricción
+  // client-side (bloquea bots simples que no resuelven captchas), no una
+  // garantía tan fuerte como la del pico diario.
+  const [captchaToken, setCaptchaToken] = useState(null);
+  const [showCaptcha, setShowCaptcha] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -192,6 +202,10 @@ export default function Registration({ asModal = false, onClose }) {
           showAlert(t('registration.passwordsTitle'), t('registration.passwordsBody'));
           return;
         }
+        if (!captchaToken) {
+          setShowCaptcha(true);
+          return;
+        }
         const credUser = await createUserWithEmailAndPassword(auth, (email || '').trim(), password || '');
         u = credUser.user;
         try { await callSendVerificationEmail(); } catch { try { await sendEmailVerification(u); } catch {} }
@@ -309,6 +323,14 @@ export default function Registration({ asModal = false, onClose }) {
       setSaving(false);
     }
   };
+
+  // Cambio 6 (modo Chain): una vez resuelto el captcha, reintenta el submit
+  // automáticamente (ya no lo vuelve a pedir porque captchaToken ya tiene
+  // valor).
+  useEffect(() => {
+    if (captchaToken) onSave();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [captchaToken]);
 
   const ensurePermissions = async () => {
     const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -650,6 +672,12 @@ export default function Registration({ asModal = false, onClose }) {
       </Modal>
 
       {AlertComponent}
+
+      <CaptchaModal
+        visible={showCaptcha}
+        onClose={() => setShowCaptcha(false)}
+        onSuccess={(token) => { setCaptchaToken(token); setShowCaptcha(false); }}
+      />
 
       <Modal visible={showVerifyModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>

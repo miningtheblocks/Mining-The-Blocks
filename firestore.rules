@@ -100,6 +100,18 @@ service cloud.firestore {
         allow read: if request.auth != null && request.auth.uid == uid;
         allow write: if false; // only Cloud Functions (admin)
       }
+      // Cambio 6 (modo Chain, cubo invertido): picos, racha y contribución
+      // $ del usuario en ese modo. Mismo patrón que chainAccess.
+      match /blockchainAccess/{doc} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false; // only Cloud Functions (admin)
+      }
+      // Cambio 7 (cierre de cadena): ledger de reparto por cadena cerrada
+      // (SIN movimiento real de plata todavía, ver closeChainAndArchive).
+      match /blockchainPayouts/{doc} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false; // only Cloud Functions (admin)
+      }
       // notifications: in-app notifications (referral bonus, etc.)
       match /notifications/{notifId} {
         allow read: if request.auth != null && request.auth.uid == uid;
@@ -134,6 +146,27 @@ service cloud.firestore {
         allow read: if request.auth != null;
         allow write: if false;
       }
+    }
+
+    // Cambio 6 (modo Chain, cubo invertido): estado global del cubo único
+    // (capa actual, pool acumulado) + cubos colocados. Lectura pública
+    // (autenticado) para mostrar el pool/progreso en tiempo real, escritura
+    // solo desde placeCube (Cloud Function, admin).
+    match /blockchainState/{doc} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      match /placed/{cubeNumber} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+    }
+
+    // Cambio 7 (cierre de cadena): archivo de cadenas cerradas del modo
+    // Chain -- lectura pública (autenticado), solo Cloud Functions escribe.
+    match /blockchainHistory/{doc} {
+      allow read: if request.auth != null;
+      allow write: if false;
     }
 
     // Server chains: authenticated users can read chain data and write history entries

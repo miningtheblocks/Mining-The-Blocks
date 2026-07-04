@@ -10,6 +10,7 @@ import HowToPlay from '../screens/HowToPlay';
 import BuyCredits from '../screens/BuyCredits';
 import ReportProblem from './ReportProblem';
 import CreateCustomServer from '../screens/CreateCustomServer';
+import ChainMode from '../screens/ChainMode';
 import { useServer } from '../utils/serverContext';
 
 // CQ-013: Subscribe.js eliminado — duplicaba la funcionalidad de Login.js
@@ -32,6 +33,7 @@ const INITIAL_VISIBLE = {
   buyCredits: false,
   report: false,
   createCustomServer: false,
+  chain: false,
 };
 
 export function OverlayModalsProvider({ children }) {
@@ -103,6 +105,13 @@ export function OverlayModalsProvider({ children }) {
             el botón que abre este modal ni se muestra si el flag está apagado). */}
         <ModalShell visible={visible.createCustomServer} onClose={() => closeModal('createCustomServer')} titleKey="drawer.createCustomServer">
           {visible.createCustomServer && <CreateCustomServer onClose={() => closeModal('createCustomServer')} />}
+        </ModalShell>
+
+        {/* Cambio 6: modo Chain -- experimental, solo aparece si
+            config/app.blockchainModeEnabled está activo (gate en
+            DynamicCube201.js, el botón del menú ni se muestra si está apagado). */}
+        <ModalShell visible={visible.chain} onClose={() => closeModal('chain')} titleKey="drawer.chain">
+          {visible.chain && <ChainMode />}
         </ModalShell>
       </View>
     </OverlayModalsContext.Provider>
