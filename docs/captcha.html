@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verificación</title>
+<script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #0a0a0a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+</style>
+</head>
+<body>
+<!--
+  Cambio 8 (fix captcha "invalid data", 2026-07-05): hCaptcha valida el
+  sitekey contra un dominio registrado en su dashboard. El WebView de la
+  app cargaba antes un HTML inline (source={{ html: ... }}), sin origen
+  real -- hCaptcha lo rechazaba. Este archivo se sirve en
+  https://miningtheblocks.com/captcha.html (GitHub Pages, mismo sitio que
+  privacy.html/terms.html), un dominio real que se puede registrar en el
+  sitekey. El sitekey se pasa por query string (?sitekey=...) para no
+  hardcodear la key pública acá -- se sigue controlando desde el cliente.
+-->
+<div id="captchaBox" class="h-captcha" data-callback="onCaptchaSuccess" data-error-callback="onCaptchaError"></div>
+<script>
+  function getSiteKey() {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('sitekey') || '';
+  }
+  document.getElementById('captchaBox').setAttribute('data-sitekey', getSiteKey());
+
+  function onCaptchaSuccess(token) {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'success', token }));
+    }
+  }
+  function onCaptchaError() {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error' }));
+    }
+  }
+</script>
+</body>
+</html>
