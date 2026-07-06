@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ad</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  iframe { border: none; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<!--
+  Fix "el anuncio abre el navegador" (2026-07-05): ad-frame.html (dominio
+  ads.miningtheblocks.com, gestionado aparte) se cargaba directo como
+  documento principal del WebView -- el script de Adsterra corre ahí con
+  privilegios de navegación de nivel superior, y dispara un redirect
+  automático (~1s, sin necesidad de tap) que el WebView de Android no
+  siempre logra bloquear via onShouldStartLoadWithRequest (limitación
+  conocida con navegaciones originadas en iframes anidados).
+
+  Este wrapper carga ad-frame.html DENTRO de un iframe con sandbox SIN
+  allow-popups ni allow-top-navigation -- el motor del navegador bloquea
+  esos intentos de raíz, a nivel de spec de iframes sandboxed, sin
+  depender de que nuestro código los detecte. allow-same-origin se
+  mantiene para que el ad-network conserve su propio origen (cookies/
+  frequency capping en SU dominio) -- eso no le da ningún acceso al
+  origen padre ni permiso de navegación.
+-->
+<script>
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    var type = params.get('type') === 'banner' ? 'banner' : 'social';
+    var iframe = document.createElement('iframe');
+    iframe.sandbox = 'allow-scripts allow-same-origin allow-forms';
+    iframe.src = 'https://ads.miningtheblocks.com/ad-frame.html?type=' + type;
+    document.body.appendChild(iframe);
+  })();
+</script>
+</body>
+</html>
