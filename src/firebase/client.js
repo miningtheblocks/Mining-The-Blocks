@@ -5,9 +5,26 @@ import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from 'firebase/fir
 import { getStorage } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Your web app's Firebase configuration
+// Firebase configuration.
+// Round 2 smoke-test fix (2026-06-16):
+// - apiKey original `AIzaSyDRCpXkNW...` (Browser key, HTTP Referer restricted):
+//   rechazaba con `auth/requests-from-referer-<empty>-are-blocked` porque RN
+//   nativo no manda header Referer.
+// - Probamos `AIzaSyAtC4ItAQ5...` (Android key, package + SHA-1 restricted):
+//   rechazaba con `auth/requests-from-this-android-client-application-<empty>`
+//   porque el Firebase JS SDK no manda los headers X-Android-Package +
+//   X-Android-Cert que GCP usa para validar attestation (esos los manda solo
+//   el SDK nativo via Google Play Services).
+// - Solución temporal: 3ra API key `AIzaSyCwvPai1S...` con
+//   `Application restrictions: None` + `API restrictions` limitadas a
+//   Identity Toolkit + Firestore + Storage + Cloud Functions + Installations.
+//   La defensa real son las Firestore Security Rules + Auth — la key embebida
+//   en el APK nunca fue secret.
+// - Plan v1.2.0: migrar a @react-native-firebase nativo + App Check con Play
+//   Integrity. Cuando se haga, esta key se borra y se vuelve a la Android key.
+//   Ver RUNBOOK.md → sección "Migración a @react-native-firebase + App Check".
 const firebaseConfig = {
-  apiKey: 'AIzaSyDRCpXkNWupz2PmoOG6XcuFENYaU5xIUps',
+  apiKey: 'AIzaSyCwvPai1SixwhvYfIovfA0ovm3NCuu2nPk',
   authDomain: 'miningtheblocks-669f6.firebaseapp.com',
   projectId: 'miningtheblocks-669f6',
   storageBucket: 'miningtheblocks-669f6.firebasestorage.app',

@@ -29,6 +29,13 @@ export default function UpdateModal({ visible, forceUpdate, latestVersion, downl
       if (raw) {
         const u = new URL(raw);
         if (u.protocol !== 'https:') throw new Error('scheme');
+        // Round 2 Agente #4 ALTO-FE-11: rechazar URLs con userinfo / port
+        // custom. `https://attacker.com@miningtheblocks.com/evil.apk` parsea
+        // como hostname=miningtheblocks.com pero algunos clientes (incluido
+        // ciertos versiones de Android Linking) navegan al userinfo en lugar
+        // del host. Rechazar cualquier URL con username/password/port no-default.
+        if (u.username || u.password) throw new Error('userinfo');
+        if (u.port && u.port !== '443' && u.port !== '') throw new Error('port');
         const okHost = u.hostname === 'miningtheblocks.com' ||
                        u.hostname === 'www.miningtheblocks.com' ||
                        u.hostname === 'miningtheblocks.github.io';

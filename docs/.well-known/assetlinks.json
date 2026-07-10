@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.bissi.miningtheblocks",
+      "sha256_cert_fingerprints": [
+        "BF:8F:25:AC:C3:CC:CF:9B:DA:F7:63:53:FC:E5:DE:B2:25:11:89:16:9E:1C:32:20:6E:75:52:55:4D:AB:7D:C1"
+      ]
+    }
+  }
+]

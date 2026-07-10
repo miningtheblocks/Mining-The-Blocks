@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Switch, TextInput, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Switch, TextInput, Image, Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useOverlayModals } from '../components/OverlayModalsProvider';
 import { auth, db } from '../firebase/client';
 import { doc, setDoc } from 'firebase/firestore';
-import { signInWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, signOut } from 'firebase/auth';
+import { signInWithEmailAndPassword, sendEmailVerification, signOut } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useI18n } from '../utils/i18n';
 import { StorageKeys } from '../constants';
+import { callRequestPasswordReset } from '../firebase/functions';
 
 export default function Login() {
   const navigation = useNavigation && typeof useNavigation === 'function' ? useNavigation() : null;
@@ -43,6 +44,12 @@ export default function Login() {
         showError(t('login.emailNotVerified'));
         setShowResend(true);
         await signOut(auth);
+        // Round 2 Agente #4 ALTO-FE-15: clear password ASAP. signOut termina
+        // la sesión Firebase pero `password` queda en React state hasta el
+        // próximo render o unmount. Si el user deja la app en background
+        // con el password en memoria, otra app maliciosa con memory dump
+        // capability puede leerlo. Best-effort en JS (no hay SecureString).
+        setPassword('');
         return;
       }
       setShowResend(false);
@@ -54,6 +61,10 @@ export default function Login() {
           await setDoc(ref, { settings: { keepSignedIn: !!remember } }, { merge: true });
         }
       } catch {}
+      // Round 2 Agente #4 ALTO-FE-15: clear password post-success (el componente
+      // se desmonta cuando RootApp re-renderiza con user no-null, pero por las
+      // dudas best-effort clear durante el handoff).
+      setPassword('');
     } catch (e) {
       console.warn('email login error', e);
       const code = e?.code || '';
@@ -113,6 +124,9 @@ export default function Login() {
           style={[styles.langBtn, language === 'en' && styles.langBtnActive]}
           onPress={() => setLanguage('en')}
           activeOpacity={0.85}
+          accessibilityLabel={t('config.english')}
+          accessibilityState={{ selected: language === 'en' }}
+          hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
         >
           <Text style={[styles.langTxt, language === 'en' && styles.langTxtActive]}>{t('config.english')}</Text>
         </TouchableOpacity>
@@ -120,6 +134,9 @@ export default function Login() {
           style={[styles.langBtn, language === 'es' && styles.langBtnActive]}
           onPress={() => setLanguage('es')}
           activeOpacity={0.85}
+          accessibilityLabel={t('config.spanish')}
+          accessibilityState={{ selected: language === 'es' }}
+          hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
         >
           <Text style={[styles.langTxt, language === 'es' && styles.langTxtActive]}>{t('config.spanish')}</Text>
         </TouchableOpacity>
@@ -134,10 +151,11 @@ export default function Login() {
         value={email}
         onChangeText={setEmail}
         placeholder={t('login.email')}
-        placeholderTextColor="#555"
+        placeholderTextColor="#888"
         autoCapitalize="none"
         keyboardType="email-address"
         textContentType="emailAddress"
+        accessibilityLabel={t('login.email')}
       />
 
       {/* Password */}
@@ -146,9 +164,10 @@ export default function Login() {
         value={password}
         onChangeText={setPassword}
         placeholder={t('login.password')}
-        placeholderTextColor="#555"
+        placeholderTextColor="#888"
         secureTextEntry
         textContentType="password"
+        accessibilityLabel={t('login.password')}
       />
 
       {/* Remember switch */}
@@ -180,6 +199,8 @@ export default function Login() {
         onPress={onEmailLogin}
         activeOpacity={isValid ? 0.85 : 1}
         disabled={loading || !isValid}
+        accessibilityLabel={t('login.signIn')}
+        accessibilityState={{ disabled: loading || !isValid, busy: loading }}
       >
         <Text style={[styles.primaryTxt, isValid ? styles.primaryTxtEnabled : styles.primaryTxtDisabled]}>
           {loading ? t('login.signingIn') : t('login.signIn')}
@@ -188,7 +209,9 @@ export default function Login() {
 
       {/* Forgot password */}
       <TouchableOpacity
-        style={{ alignSelf: 'center', marginTop: 8 }}
+        style={{ alignSelf: 'center', marginTop: 4, paddingVertical: 12, paddingHorizontal: 16 }}
+        accessibilityLabel={t('login.forgot')}
+        hitSlop={{ top: 8, bottom: 8, left: 16, right: 16 }}
         onPress={async () => {
           // ALTO-45: NO distinguir entre éxito y "user-not-found" para
           // evitar user enumeration. SIEMPRE mostramos el mismo mensaje
@@ -199,10 +222,15 @@ export default function Login() {
             return;
           }
           try {
-            await sendPasswordResetEmail(auth, em);
+            // CRIT (Round 2 Agente #6): usamos requestPasswordReset (CF) en
+            // lugar de sendPasswordResetEmail directo. El CF revoca tokens
+            // activos antes de mandar el link, notifica al user real con
+            // texto explícito "tus sesiones fueron cerradas", y rate-limita
+            // por email para anti-enumeration.
+            await callRequestPasswordReset(em);
           } catch (e) {
             try { (await import('../utils/logError')).default('Login.forgot', e); } catch {}
-            // No re-throw — silenciamos al usuario.
+            // No re-throw — silenciamos al usuario (anti-enumeration).
           }
           showError(t('login.emailSentBody'));
         }}
@@ -223,6 +251,17 @@ export default function Login() {
         activeOpacity={0.8}
       >
         <Text style={styles.reportTxt}>⚠ {t('login.report')}</Text>
+      </TouchableOpacity>
+
+      {/* Status page público — para que users durante incidentes sepan
+          si es problema de la app o de su internet. */}
+      <TouchableOpacity
+        style={styles.statusBtn}
+        onPress={() => Linking.openURL('https://status.miningtheblocks.com').catch(() => {})}
+        activeOpacity={0.8}
+        accessibilityLabel={t('login.status')}
+      >
+        <Text style={styles.statusTxt}>📊 {t('login.status')}</Text>
       </TouchableOpacity>
     </View>
   );
@@ -270,4 +309,6 @@ const styles = StyleSheet.create({
   resendTxt: { color: '#ff8866', fontWeight: '700', fontSize: 13 },
   reportBtn: { marginTop: 20, alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 16 },
   reportTxt: { color: '#444', fontWeight: '700', fontSize: 13 },
+  statusBtn: { marginTop: 6, alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 16 },
+  statusTxt: { color: '#444', fontWeight: '700', fontSize: 13 },
 });

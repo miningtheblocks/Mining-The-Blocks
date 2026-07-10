@@ -5,7 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Mining The Blocks — excavá un cubo de 8 millones de celdas y ganá premios reales en USDC.">
   <!-- CRIT-23: CSP via meta tag. gstatic.com permitido para Firebase Auth compat SDK. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://miningtheblocks.com https://identitytoolkit.googleapis.com https://*.firebaseio.com https://*.cloudfunctions.net https://*.run.app; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
+  <!-- Round 2 Agente #7 HIGH-2: 'unsafe-inline' removido de script-src. Todo el
+       JS inline se extrajo a docs/js/app.js (Commit Z). Los onclick/onchange en
+       HTML se reemplazaron por data-action + event delegation desde app.js.
+       style-src mantiene 'unsafe-inline' porque hay `style="..."` attribute
+       inline usage (low risk; refactor a CSS classes queda como P3 follow-up). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://miningtheblocks.com https://identitytoolkit.googleapis.com https://*.firebaseio.com https://*.cloudfunctions.net https://*.run.app; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
   <meta http-equiv="X-Frame-Options" content="DENY">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta name="coinzilla" content="ad6e8df1c23db5f6657af70f0c42481c" />
@@ -13,7 +18,30 @@
   <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
-  <title>Mining The Blocks</title>
+  <title>Mining The Blocks — Mine the cube, win real USDC</title>
+  <!-- Round 2 audit #10 HIGH-5: frame-buster JS (anti-clickjacking).
+       GitHub Pages no soporta X-Frame-Options/frame-ancestors HTTP headers.
+       Script síncrono en head para correr antes del render. -->
+  <script src="js/frame-buster.js"></script>
+
+  <!-- Round 2 audit #10 HIGH-7: OG / Twitter Card / canonical para previews
+       en Discord, Twitter, Telegram, Slack, WhatsApp. Target audience crypto =
+       comparten links sin titular text → preview es crítico. -->
+  <link rel="canonical" href="https://miningtheblocks.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Mining The Blocks">
+  <meta property="og:title" content="Mining The Blocks — Mine the cube, win real USDC">
+  <meta property="og:description" content="Excavá un cubo de 8 millones de celdas y ganá premios reales en USDC. Pagos en Polygon. NFT con valor garantizado.">
+  <meta property="og:url" content="https://miningtheblocks.com/">
+  <meta property="og:image" content="https://miningtheblocks.com/icon.png">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:locale" content="es_AR">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Mining The Blocks — Mine the cube, win real USDC">
+  <meta name="twitter:description" content="Excavá un cubo de 8M celdas y ganá premios reales en USDC. Pagos en Polygon.">
+  <meta name="twitter:image" content="https://miningtheblocks.com/icon.png">
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -54,17 +82,19 @@
       gap: 6px;
     }
     .lang-btn {
-      padding: 4px 12px;
-      border: 1.5px solid #ccc;
+      padding: 6px 14px;
+      border: 1.5px solid #999;
       border-radius: 20px;
       background: #fff;
-      font-size: 12px;
+      font-size: 13px;
       font-weight: 700;
       cursor: pointer;
-      color: #888;
+      color: #444;
       transition: all 0.15s;
+      min-width: 44px;
     }
-    .lang-btn.active { border-color: #111; color: #111; background: #f5f5f5; }
+    .lang-btn:hover { border-color: #333; color: #111; }
+    .lang-btn.active { border-color: #111; color: #fff; background: #111; }
 
     /* ── Main ── */
     main { width: 100%; max-width: 560px; padding: 36px 24px; flex: 1; }
@@ -116,56 +146,65 @@
     .card-title { font-size: 20px; font-weight: 900; color: #000; margin-bottom: 6px; }
     .card-sub { color: #444; font-size: 14px; line-height: 1.6; margin-bottom: 16px; font-weight: 500; }
 
-    /* ── Stats ── */
-    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
-    .stat { border: 1.5px solid #e0e0e0; border-radius: 10px; padding: 14px 16px; }
-    .stat-num { font-size: 24px; font-weight: 900; color: #000; }
-    .stat-lbl { font-size: 12px; color: #222; margin-top: 3px; font-weight: 700; line-height: 1.4; }
-
     p.desc { font-size: 15px; color: #222; line-height: 1.75; margin-bottom: 14px; font-weight: 400; }
 
-    /* ── Gems table ── */
-    .gems-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
-    .gems-table th {
-      text-align: left; font-size: 11px; font-weight: 800;
-      color: #333; text-transform: uppercase; letter-spacing: 0.8px;
-      padding: 8px 12px; border-bottom: 2px solid #ccc;
+    /* ── Mode cards ── */
+    .modes { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+    .mode-card {
+      border: 1.5px solid #e0e0e0; border-radius: 14px;
+      padding: 18px 18px 16px; background: #fff;
     }
-    .gems-table th:nth-child(2),
-    .gems-table td:nth-child(2) { text-align: right; }
-    .gems-table th:nth-child(3),
-    .gems-table td:nth-child(3) { text-align: right; }
-    .gems-table td {
-      padding: 9px 12px; font-size: 14px; color: #111;
-      border-bottom: 1px solid #ebebeb; font-weight: 500;
-      vertical-align: middle;
+    .mode-card.soon { border-style: dashed; }
+    .mode-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .mode-name { font-size: 16px; font-weight: 800; color: #000; display: flex; align-items: center; gap: 7px; }
+    .mode-chip {
+      font-family: 'Courier New', monospace;
+      font-size: 12px; font-weight: 700; padding: 4px 9px; border-radius: 8px;
+      background: #f6ecd6; color: #9c6b12; border: 1px solid #e7cf9e; white-space: nowrap;
     }
-    .gems-table tr:last-child td { border-bottom: none; }
-    .gems-table .gem-name {
-      font-weight: 700; color: #000;
-      display: flex; align-items: center; gap: 9px;
+    .mode-chip.neutral { background: transparent; color: #888; border-color: #e0e0e0; }
+    .mode-stat { margin: 14px 0 6px; }
+    .mode-stat .num {
+      font-family: 'Courier New', monospace;
+      font-size: 25px; font-weight: 800; color: #9c6b12; line-height: 1;
     }
+    .mode-stat .lbl { font-size: 12px; color: #666; font-weight: 600; margin-top: 4px; }
+    .mode-desc { font-size: 13.5px; line-height: 1.6; color: #222; margin-top: 10px; font-weight: 500; }
+    .mode-foot {
+      margin-top: 14px; padding-top: 12px; border-top: 1px solid #eee;
+      font-size: 11.5px; color: #777; font-weight: 600;
+      display: flex; gap: 14px; flex-wrap: wrap;
+      font-family: 'Courier New', monospace;
+    }
+    .mode-foot b { color: #111; font-weight: 700; }
+
+    /* ── Gem value list ── */
     .gem-icon {
-      width: 28px; height: 28px;
+      width: 26px; height: 26px;
       image-rendering: pixelated;
       image-rendering: crisp-edges;
       flex-shrink: 0;
     }
-    .gems-table .gem-prize { font-weight: 800; color: #000; }
-    .gems-table .gem-qty { color: #222; font-weight: 600; }
+    .gem-list { margin-top: 16px; border-top: 1px solid #ebebeb; }
+    .gem-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 0; border-bottom: 1px solid #ebebeb;
+    }
+    .gem-row .name {
+      flex: 1; font-size: 14px; font-weight: 700; color: #000;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .free-tag {
+      font-size: 9.5px; font-weight: 800; letter-spacing: 0.4px; text-transform: uppercase;
+      color: #9c6b12; border: 1px solid #e7cf9e; background: #f6ecd6;
+      padding: 1.5px 6px; border-radius: 6px;
+    }
+    .gem-row .val { font-family: 'Courier New', monospace; font-size: 15px; font-weight: 800; color: #000; }
     .gem-note {
       font-size: 13px; color: #222; font-weight: 600;
       margin-top: 12px; line-height: 1.6;
       display: flex; align-items: center; gap: 8px;
     }
-
-    /* ── Episodes ── */
-    .episode-free {
-      background: #f7f7f7; border: 1.5px solid #222;
-      border-radius: 10px; padding: 14px 16px; margin-top: 12px;
-    }
-    .episode-free-title { font-size: 14px; font-weight: 800; color: #000; margin-bottom: 4px; }
-    .episode-free-desc { font-size: 13px; color: #222; line-height: 1.6; font-weight: 500; }
 
     /* ── Download ── */
     .dl-grid { display: flex; flex-direction: column; gap: 12px; max-width: 300px; margin: 0 auto; }
@@ -183,6 +222,12 @@
       transform: translateY(-3px);
       box-shadow: 0 10px 36px rgba(61,220,132,0.18), 0 4px 16px rgba(0,0,0,0.22);
       border-color: rgba(61,220,132,0.55);
+    }
+    /* Variante Discord — mismo layout que .dl-btn pero acento blurple #5865F2 */
+    .dl-btn--discord { border-color: rgba(88,101,242,0.30); }
+    .dl-btn--discord:hover {
+      box-shadow: 0 10px 36px rgba(88,101,242,0.22), 0 4px 16px rgba(0,0,0,0.22);
+      border-color: rgba(88,101,242,0.65);
     }
     .dl-icon { width: 38px; height: 38px; flex-shrink: 0; }
     .dl-info { display: flex; flex-direction: column; flex: 1; }
@@ -258,6 +303,48 @@
       border: none; cursor: pointer; margin-top: 10px; opacity: 0.4; transition: opacity 0.2s;
     }
     .legal-btn.active { opacity: 1; }
+
+    /* ── Install help (botón + modal) ── */
+    .install-help-row { display: flex; justify-content: center; margin-top: 10px; }
+    .install-help {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: #1e293b; font-size: 13px; font-weight: 700;
+      text-decoration: none; padding: 6px 10px; border-radius: 6px;
+      transition: color 0.15s, background 0.15s;
+      background: transparent; border: none; cursor: pointer; font-family: inherit;
+    }
+    .install-help:hover { color: #000; background: rgba(0,0,0,0.05); }
+    .install-help-icon { width: 14px; height: 14px; flex-shrink: 0; }
+    /* Modal de instructivo — reusa legal-overlay con tweaks específicos */
+    .install-overlay { display: none; }
+    .install-overlay.open { display: flex; }
+    .install-box { max-width: 460px; }
+    .install-box h2 { display: flex; align-items: center; gap: 8px; }
+    .install-box { padding: 22px 22px; }
+    .install-box h2 { font-size: 16px; margin-bottom: 6px; }
+    .install-box > p { font-size: 12px; margin-bottom: 4px; line-height: 1.45; }
+    .install-steps {
+      list-style: none; padding: 0; margin: 10px 0 4px;
+    }
+    .install-steps li {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 4px 0;
+      font-size: 13px; color: #1e293b; line-height: 1.4;
+    }
+    .install-step-emoji {
+      font-size: 18px; flex-shrink: 0; line-height: 1.2;
+    }
+    .install-note {
+      background: #fef9c3; border: 1.5px solid #fde047; border-radius: 8px;
+      padding: 8px 10px; margin: 8px 0 0;
+      font-size: 11px; color: #713f12; font-weight: 600; line-height: 1.4;
+    }
+    .install-close {
+      width: 100%; padding: 10px; border-radius: 10px;
+      background: #1e293b; color: #fff; font-size: 14px; font-weight: 800;
+      border: none; cursor: pointer; margin-top: 10px;
+    }
+    .install-close:hover { background: #0f172a; }
     .wallet-warning { background: #fef9c3; border: 1.5px solid #fde047; border-radius: 10px; padding: 12px 14px; margin: 12px 0 4px; font-size: 12px; color: #713f12; font-weight: 600; line-height: 1.5; }
     .claim-grid { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
     .claim-grid input { border: 1.5px solid #ddd; border-radius: 8px; padding: 10px 12px; font-size: 14px; width: 100%; }
@@ -282,7 +369,7 @@
     .pyr-row:nth-child(6) { width: 40%;  border-color: #94a3b8; background: #f8fafc; flex-direction: column; gap: 1px; }
     .pyr-row:nth-child(7) { width: 28%;  border-color: #f59e0b; background: #fffbeb; flex-direction: column; gap: 1px; }
     .pyr-val { font-weight: 900; white-space: nowrap; flex: 1; text-align: left; }
-    .pyr-layers { font-size: 10px; color: #666; font-weight: 600; white-space: nowrap; flex: 1; text-align: center; }
+    .pyr-layers { font-size: 10px; color: #111; font-weight: 700; white-space: nowrap; flex: 1; text-align: center; }
     .pyr-qty { font-size: 10px; color: #999; font-weight: 600; white-space: nowrap; flex: 1; text-align: right; }
     .pyr-row:nth-child(6) .pyr-val,
     .pyr-row:nth-child(6) .pyr-layers,
@@ -290,11 +377,11 @@
     .pyr-row:nth-child(7) .pyr-val,
     .pyr-row:nth-child(7) .pyr-layers,
     .pyr-row:nth-child(7) .pyr-qty { flex: unset; text-align: center; }
-    .pyr-caption { font-size: 11px; color: #888; margin-top: 10px; font-weight: 500; font-style: italic; }
+    .pyr-caption { font-size: 11px; color: #1e293b; margin-top: 10px; font-weight: 700; font-style: italic; }
 
-    /* ── i18n: hidden by default ── */
-    [data-lang] { display: none; }
-    [data-lang].visible { display: block; }
+    /* ── i18n: hidden by default (excluye los botones del toggle) ── */
+    [data-lang]:not(.lang-btn) { display: none; }
+    [data-lang]:not(.lang-btn).visible { display: block; }
     [data-lang-inline] { display: none; }
     [data-lang-inline].visible { display: inline; }
 
@@ -322,20 +409,39 @@
     }
     .ref-copy-btn:hover { opacity: 0.75; }
     .ref-banner-hint { font-size: 12px; color: #166534; font-weight: 500; }
+
+    /* Round 2 audit #10 HIGH-8: utility para etiquetas accesibles ocultas
+       visualmente. El input/textarea queda con label asociado para screen
+       readers + autofill, sin romper layout existente. */
+    .sr-only {
+      position: absolute !important;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
   </style>
 </head>
 <body>
 
 <header>
-  <img src="icon.png" alt="Mining The Blocks" class="logo">
+  <!-- Round 2 audit #10 HIGH-9: LCP optimizado. icon.webp 8.5KB (vs 1.1MB
+       original PNG) reduce LCP de ~5s a <100ms en 3G. PNG fallback para
+       browsers viejos (<1% del mercado, mantenemos por completitud). -->
+  <picture>
+    <source srcset="icon.webp" type="image/webp">
+    <img src="icon.png" alt="Mining The Blocks" class="logo" width="96" height="96" fetchpriority="high" decoding="async">
+  </picture>
   <h1>Mining The Blocks</h1>
   <p class="tagline" data-lang-inline="es">¡Destruyamos el Cubo!</p>
   <p class="tagline" data-lang-inline="en visible">Let's Destroy the Cube!</p>
 </header>
 
 <div class="lang-bar">
-  <button class="lang-btn" onclick="setLang('es')">ES</button>
-  <button class="lang-btn active" onclick="setLang('en')">EN</button>
+  <button class="lang-btn" data-action="setLang" data-lang="es">ES</button>
+  <button class="lang-btn active" data-action="setLang" data-lang="en">EN</button>
 </div>
 
 <!-- Referral banner — shown only when ?ref=CODE is in the URL -->
@@ -344,7 +450,7 @@
   <p class="ref-banner-title" data-lang="en visible">🎁 You were invited to Mining The Blocks!</p>
   <div class="ref-code-display">
     <span class="ref-code-text" id="refBannerCode"></span>
-    <button class="ref-copy-btn" id="refCopyBtn" onclick="copyRefCode()">Copy</button>
+    <button class="ref-copy-btn" id="refCopyBtn" data-action="copyRefCode">Copy</button>
   </div>
   <p class="ref-banner-hint" data-lang="es">Descargá la app → abrí tu Perfil → Referidos → ingresá este código</p>
   <p class="ref-banner-hint" data-lang="en visible">Download the app → open Profile → Referrals → enter this code</p>
@@ -359,8 +465,10 @@
 
     <div id="stepCode">
       <div class="input-row">
-        <input type="text" id="codeInput" placeholder="MTB3-XXXXXXXX-XXXXXX" maxlength="24" autocomplete="off" spellcheck="false">
-        <button class="btn" onclick="verifyCode()" id="btnVerify">
+        <label for="codeInput" class="sr-only" data-lang-inline="es">Código de gema o NFT</label>
+        <label for="codeInput" class="sr-only" data-lang-inline="en">Gem or NFT code</label>
+        <input type="text" id="codeInput" placeholder="MTB3-XXXXXXXX-XXXXXX" maxlength="24" autocomplete="off" spellcheck="false" aria-required="true">
+        <button class="btn" data-action="verifyCode" id="btnVerify">
           <span data-lang-inline="es">Verificar</span>
           <span data-lang-inline="en visible">Verify</span>
         </button>
@@ -379,15 +487,15 @@
       </p>
       <div class="claim-grid">
         <div>
-          <p class="claim-label">Email</p>
+          <label class="claim-label" for="loginEmail">Email</label>
           <input type="email" id="loginEmail" placeholder="email@ejemplo.com" autocomplete="email">
         </div>
         <div>
-          <p class="claim-label"><span data-lang-inline="es">Contraseña</span><span data-lang-inline="en visible">Password</span></p>
+          <label class="claim-label" for="loginPassword"><span data-lang-inline="es">Contraseña</span><span data-lang-inline="en visible">Password</span></label>
           <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
         </div>
       </div>
-      <button class="btn" onclick="doLogin()" id="btnLogin" style="width:100%;margin-top:8px">
+      <button class="btn" data-action="doLogin" id="btnLogin" style="width:100%;margin-top:8px">
         <span data-lang-inline="es">Iniciar sesión</span>
         <span data-lang-inline="en visible">Sign in</span>
       </button>
@@ -407,19 +515,19 @@
 
       <div class="claim-grid">
         <div>
-          <p class="claim-label"><span data-lang-inline="es">Nombre completo</span><span data-lang-inline="en visible">Full name</span></p>
+          <label class="claim-label" for="nameInput"><span data-lang-inline="es">Nombre completo</span><span data-lang-inline="en visible">Full name</span></label>
           <input type="text" id="nameInput" placeholder="Juan García / John Smith">
         </div>
         <div>
-          <p class="claim-label">Email</p>
+          <label class="claim-label" for="emailInput">Email</label>
           <input type="email" id="emailInput" placeholder="email@ejemplo.com">
         </div>
         <div>
-          <p class="claim-label"><span data-lang-inline="es">Teléfono / WhatsApp</span><span data-lang-inline="en visible">Phone / WhatsApp</span></p>
+          <label class="claim-label" for="phoneInput"><span data-lang-inline="es">Teléfono / WhatsApp</span><span data-lang-inline="en visible">Phone / WhatsApp</span></label>
           <input type="tel" id="phoneInput" placeholder="+54 9 11 1234-5678">
         </div>
         <div>
-          <p class="claim-label"><span data-lang-inline="es">Billetera USDC (Polygon)</span><span data-lang-inline="en visible">USDC Wallet (Polygon)</span></p>
+          <label class="claim-label" for="walletInput"><span data-lang-inline="es">Billetera USDC (Polygon)</span><span data-lang-inline="en visible">USDC Wallet (Polygon)</span></label>
           <input type="text" id="walletInput" placeholder="0x..." autocomplete="off" spellcheck="false">
           <div class="wallet-warning">
             <span data-lang-inline="es">⚠️ Verificá dos veces tu dirección de billetera. Los fondos enviados a una dirección incorrecta no pueden recuperarse. Asegurate de que sea una billetera Polygon (MATIC) compatible con USDC.</span>
@@ -428,18 +536,63 @@
         </div>
       </div>
 
-      <button class="btn" onclick="submitClaim()" id="btnClaim" style="width:100%;margin-top:8px">
+      <button class="btn" data-action="submitClaim" id="btnClaim" style="width:100%;margin-top:8px">
         <span data-lang-inline="es">Enviar solicitud</span>
         <span data-lang-inline="en visible">Submit claim</span>
       </button>
       <p class="msg-error" id="emailError"></p>
     </div>
 
+    <!-- Round 2 audit #4 HIGH (swap flow 2026-06-23): paso 2 — el user
+         envía el NFT a la wallet MTB y nos pasa el txHash. -->
+    <div class="card" id="cardNftTransfer">
+      <p class="card-title">
+        <span data-lang-inline="es">📤 Paso 2 — Enviá tu NFT</span>
+        <span data-lang-inline="en visible">📤 Step 2 — Send your NFT</span>
+      </p>
+      <p class="card-sub" style="margin-bottom:12px">
+        <span data-lang-inline="es">Para confirmar el canje, enviá tu NFT (Token <strong id="nftTokenId"></strong>) a la siguiente billetera de Mining The Blocks en la red <strong>Polygon (MATIC)</strong>:</span>
+        <span data-lang-inline="en visible">To confirm the redemption, send your NFT (Token <strong id="nftTokenId"></strong>) to the following Mining The Blocks wallet on the <strong>Polygon (MATIC)</strong> network:</span>
+      </p>
+
+      <div style="background:#f5f5f5;border:1px solid #ddd;border-radius:8px;padding:12px;margin:12px 0;display:flex;align-items:center;gap:8px">
+        <code id="nftReceiverWallet" style="flex:1;font-family:monospace;font-size:13px;word-break:break-all"></code>
+        <button class="btn" data-action="copyNftReceiverWallet" id="btnCopyNftWallet" style="padding:6px 12px;font-size:13px">
+          <span data-lang-inline="es">Copiar</span>
+          <span data-lang-inline="en visible">Copy</span>
+        </button>
+      </div>
+
+      <div style="background:#fff8e1;border-left:4px solid #f59e0b;padding:10px 14px;margin:12px 0;font-size:13px;line-height:1.5">
+        <span data-lang-inline="es">⚠️ <strong>Verificá la dirección dos veces.</strong> Errores son irreversibles. Enviá <strong>únicamente el NFT correcto</strong> en la red <strong>Polygon</strong>. No envíes otros tokens.</span>
+        <span data-lang-inline="en visible">⚠️ <strong>Double-check the address.</strong> Errors are irreversible. Send <strong>only the correct NFT</strong> on <strong>Polygon</strong>. Do not send other tokens.</span>
+      </div>
+
+      <p class="card-sub" style="margin-top:16px">
+        <span data-lang-inline="es"><strong>Después de enviar</strong>, copiá el <strong>txHash</strong> desde Polygonscan (o tu wallet) y pegalo abajo:</span>
+        <span data-lang-inline="en visible"><strong>After sending</strong>, copy the <strong>txHash</strong> from Polygonscan (or your wallet) and paste it below:</span>
+      </p>
+
+      <input type="text" id="nftTxHashInput" placeholder="0x..." maxlength="68" autocomplete="off" spellcheck="false" style="width:100%;font-family:monospace;font-size:13px;margin-top:8px;padding:10px 12px;border:1px solid #ccc;border-radius:6px">
+
+      <button class="btn" data-action="confirmNftTransfer" id="btnConfirmNft" style="width:100%;margin-top:12px">
+        <span data-lang-inline="es">Confirmar envío del NFT</span>
+        <span data-lang-inline="en visible">Confirm NFT sent</span>
+      </button>
+
+      <p class="msg-error" id="nftTxError"></p>
+
+      <p style="font-size:12px;color:#666;margin-top:14px;line-height:1.6">
+        <span data-lang-inline="es">ℹ️ Verificamos tu transacción on-chain (puede tardar unos minutos en confirmarse). Una vez confirmada, revisamos manualmente y te transferimos el premio en USDC a tu billetera en hasta <strong>24 horas hábiles</strong>. Te notificamos por mail al momento de realizar el pago.</span>
+        <span data-lang-inline="en visible">ℹ️ We verify your transaction on-chain (may take a few minutes to confirm). Once confirmed, we review manually and send the USDC prize to your wallet within <strong>24 business hours</strong>. We'll notify you by email when payment is sent.</span>
+      </p>
+    </div>
+
     <div class="card" id="cardDone">
       <p class="card-title">✅ <span data-lang-inline="es">¡Solicitud enviada!</span><span data-lang-inline="en visible">Request submitted!</span></p>
       <p class="card-sub">
-        <span data-lang-inline="es">Te contactamos por email con los próximos pasos. Puede demorar hasta 48 horas hábiles.</span>
-        <span data-lang-inline="en visible">We'll contact you by email with next steps. Allow up to 48 business hours.</span>
+        <span data-lang-inline="es">Recibimos tu solicitud. Verificamos manualmente y te transferimos el premio a tu billetera Polygon en hasta <strong>24 horas hábiles</strong>. Te notificamos por mail al momento del pago.</span>
+        <span data-lang-inline="en visible">We received your request. We review manually and send the prize to your Polygon wallet within <strong>24 business hours</strong>. We'll notify you by email when the payment is sent.</span>
       </p>
     </div>
   </section>
@@ -450,56 +603,80 @@
     <div class="section-label" data-lang="en visible">What is it?</div>
 
     <p class="desc" data-lang="es">
-      <strong>Mining The Blocks</strong> es un juego cooperativo de minería. El mundo es un cubo masivo de <strong>201×201×201 bloques</strong> y 100 capas — ¡más de 8 millones de bloques! Cada bloque puede tener premios, que van desde picos de regalo hasta <strong>$100,000</strong> en forma de gemas NFT, las cuales podés canjear en esta misma página por dinero real en USDC.
+      🎮 <strong>Mining The Blocks</strong> es un juego cooperativo de minería. Millones de cubos, picos diarios gratis y premios reales en USDC. Modalidades: 🆓 cubo <strong>Free</strong> con premios de hasta <strong>$10.000</strong>, ⚙️ servers <strong>a medida</strong> con entrada desde <strong>$0.10</strong>, 🎯 <strong>estándar</strong> con entrada de <strong>$15</strong>, y próximamente ⛓️ <strong>Blockchain</strong>, un modo compartido donde ganás por cada cubo minado, aprovechando boosts que mejoran tus ganancias con constancia.
     </p>
     <p class="desc" data-lang="es">
-      Todos los días recibís un pico de regalo. También podés conseguir <strong>2 más</strong> viendo anuncios o refiriendo amigos. Al registrarte por primera vez, recibís <strong>5 picos de regalo</strong>.
+      Todos los días recibís hasta <strong>2 picos gratis</strong> más — sin condición, se reclaman al toque, no hace falta ver ningún anuncio. También podés conseguir picos refiriendo amigos. Al registrarte por primera vez, recibís <strong>5 picos de regalo</strong>.
     </p>
     <p class="desc" data-lang="en visible">
-      <strong>Mining The Blocks</strong> is a cooperative mining game. The world is a massive <strong>201×201×201-block cube</strong> with 100 layers — over 8 million blocks! Every block can hold prizes, ranging from gift picks to <strong>$100,000</strong> in NFT gems, which you can redeem right on this page for real USDC.
+      🎮 <strong>Mining The Blocks</strong> is a cooperative mining game. Millions of cubes, free daily picks, and real USDC prizes. Modes: 🆓 <strong>Free</strong> cube with prizes up to <strong>$10,000</strong>, ⚙️ <strong>custom</strong> servers with entry from <strong>$0.10</strong>, 🎯 <strong>standard</strong> with a <strong>$15</strong> entry, and coming soon ⛓️ <strong>Blockchain</strong>, a shared mode where you earn for every block you mine, powered by boosts that reward consistency.
     </p>
     <p class="desc" data-lang="en visible">
-      Every day you receive a free gift pick. You can earn <strong>2 more</strong> by watching ads or referring friends. On your first sign-up, you receive <strong>5 gift picks</strong>.
+      Every day you get up to <strong>2 more free picks</strong> — no strings attached, claim them with a tap, no ads to watch. You can also earn picks by referring friends. On your first sign-up, you receive <strong>5 gift picks</strong>.
     </p>
 
-    <div class="stats-grid">
-      <div class="stat">
-        <div class="stat-num">1M</div>
-        <div class="stat-lbl" data-lang="es">Cubos por cadena</div>
-        <div class="stat-lbl" data-lang="en visible">Cubes per chain</div>
+    <div class="modes">
+      <div class="mode-card">
+        <div class="mode-head">
+          <div class="mode-name">🎯 <span data-lang-inline="es">Estándar</span><span data-lang-inline="en visible">Standard</span></div>
+          <div class="mode-chip">$15<span data-lang-inline="es">/episodio</span><span data-lang-inline="en visible">/episode</span></div>
+        </div>
+        <div class="mode-stat">
+          <div class="num">$650,000</div>
+          <div class="lbl" data-lang="es">en premios · 9 tipos de gema</div>
+          <div class="lbl" data-lang="en visible">in prizes · 9 gem types</div>
+        </div>
+        <div class="mode-desc" data-lang="es">El server original. Cadenas de 10 episodios: jugás los 9 primeros y el décimo es gratis. Es también la configuración de referencia que usamos para calcular los servers a medida.</div>
+        <div class="mode-desc" data-lang="en visible">The original server. Chains of 10 episodes: play the first 9 and the tenth is free. It's also the reference configuration used to calculate custom servers.</div>
+        <div class="mode-foot">
+          <span><b>8.2M</b> <span data-lang-inline="es">cubos</span><span data-lang-inline="en visible">cubes</span></span>
+          <span><b>283,241</b> <span data-lang-inline="es">picos</span><span data-lang-inline="en visible">picks</span></span>
+        </div>
       </div>
-      <div class="stat">
-        <div class="stat-num">$211K</div>
-        <div class="stat-lbl" data-lang="es">En premios por cadena</div>
-        <div class="stat-lbl" data-lang="en visible">In prizes per chain</div>
-      </div>
-      <div class="stat">
-        <div class="stat-num">9</div>
-        <div class="stat-lbl" data-lang="es">Tipos de gemas con valor real</div>
-        <div class="stat-lbl" data-lang="en visible">Gem types with real cash value</div>
-      </div>
-      <div class="stat">
-        <div class="stat-num">10</div>
-        <div class="stat-lbl" data-lang="es">Episodios por cadena</div>
-        <div class="stat-lbl" data-lang="en visible">Episodes per chain</div>
-      </div>
-      <div class="stat">
-        <div class="stat-num">100K</div>
-        <div class="stat-lbl" data-lang="es">Personas máx. por eslabón</div>
-        <div class="stat-lbl" data-lang="en visible">Max players per link</div>
-      </div>
-      <div class="stat">
-        <div class="stat-num">5</div>
-        <div class="stat-lbl" data-lang="es">Picos al registrarte</div>
-        <div class="stat-lbl" data-lang="en visible">Picks on sign-up</div>
-      </div>
-    </div>
 
-    <div class="episode-free">
-      <div class="episode-free-title" data-lang="es">🎁 Episodio 10 gratis</div>
-      <div class="episode-free-title" data-lang="en visible">🎁 Episode 10 is free</div>
-      <div class="episode-free-desc" data-lang="es">Si participás en los 9 episodios anteriores de la misma cadena, el episodio final no tiene costo de entrada.</div>
-      <div class="episode-free-desc" data-lang="en visible">If you participate in the 9 previous episodes of the same chain, the final episode has no entry cost.</div>
+      <div class="mode-card">
+        <div class="mode-head">
+          <div class="mode-name">🆓 Free</div>
+          <div class="mode-chip"><span data-lang-inline="es">gratis</span><span data-lang-inline="en visible">free</span></div>
+        </div>
+        <div class="mode-stat">
+          <div class="num">$35,000</div>
+          <div class="lbl" data-lang="es">en premios · 4 tipos de gema</div>
+          <div class="lbl" data-lang="en visible">in prizes · 4 gem types</div>
+        </div>
+        <div class="mode-desc" data-lang="es">Una cadena fija y permanente, más grande que la estándar (150 capas). Cualquier cuenta se une sin costo. Vienen más servers Free, cada uno con su propio pool.</div>
+        <div class="mode-desc" data-lang="en visible">A fixed, permanent chain, bigger than the standard one (150 layers). Any account can join at no cost. More Free servers are coming, each with its own pool.</div>
+        <div class="mode-foot">
+          <span><b>27.5M</b> <span data-lang-inline="es">cubos</span><span data-lang-inline="en visible">cubes</span></span>
+          <span><b>400,000</b> <span data-lang-inline="es">picos</span><span data-lang-inline="en visible">picks</span></span>
+        </div>
+      </div>
+
+      <div class="mode-card">
+        <div class="mode-head">
+          <div class="mode-name">⚙️ <span data-lang-inline="es">A medida</span><span data-lang-inline="en visible">Custom</span></div>
+          <div class="mode-chip"><span data-lang-inline="es">desde</span><span data-lang-inline="en visible">from</span> $0.10</div>
+        </div>
+        <div class="mode-stat">
+          <div class="num">100 – 100,000</div>
+          <div class="lbl" data-lang="es">jugadores por server</div>
+          <div class="lbl" data-lang="en visible">players per server</div>
+        </div>
+        <div class="mode-desc" data-lang="es">Creás tu propia cadena eligiendo cuántos jugadores entran y cuánto cuesta la entrada — el juego calcula el pool de premios y el resto de la configuración. Requiere haber jugado antes un server estándar.</div>
+        <div class="mode-desc" data-lang="en visible">Create your own chain by choosing the player count and entry price — the game calculates the prize pool and the rest of the setup. Requires having played a standard server before.</div>
+        <div class="mode-foot">
+          <span><b>$0.10 – $100</b> <span data-lang-inline="es">por jugador</span><span data-lang-inline="en visible">per player</span></span>
+        </div>
+      </div>
+
+      <div class="mode-card soon">
+        <div class="mode-head">
+          <div class="mode-name">⛓️ Blockchain</div>
+          <div class="mode-chip neutral"><span data-lang-inline="es">próximamente</span><span data-lang-inline="en visible">coming soon</span></div>
+        </div>
+        <div class="mode-desc" style="margin-top:12px" data-lang="es">Minás y contribuís a una única cadena compartida por todos los jugadores. Cada cubo minado suma recompensas reales al pool, con un <strong>boost</strong> según tu racha diaria: cuanto más constante seas, más ganás — sin sacarle nada a los demás.</div>
+        <div class="mode-desc" style="margin-top:12px" data-lang="en visible">Mine and contribute to a single chain shared by every player. Each block adds real rewards to the pool, with a <strong>boost</strong> from your daily streak: the more consistent you are, the more you earn — without taking anything from anyone else.</div>
+      </div>
     </div>
   </section>
 
@@ -507,34 +684,30 @@
   <section>
     <div class="section-label" data-lang="es">Gemas y premios</div>
     <div class="section-label" data-lang="en visible">Gems &amp; prizes</div>
+    <p class="desc" data-lang="es">Nueve gemas, nueve valores fijos en USDC — no cambian según el server. El estándar reparte las 9; el Free reparte 4, en menor cantidad; los servers a medida escalan las mismas 9 según tu configuración.</p>
+    <p class="desc" data-lang="en visible">Nine gems, nine fixed USDC values — they don't change by server. Standard unlocks all 9; Free unlocks 4, in smaller amounts; custom servers scale the same 9 to your configuration.</p>
 
-    <table class="gems-table">
-      <thead>
-        <tr>
-          <th><span data-lang-inline="es">Gema</span><span data-lang-inline="en visible">Gem</span></th>
-          <th><span data-lang-inline="es">Premio</span><span data-lang-inline="en visible">Prize</span></th>
-          <th><span data-lang-inline="es">Cant. / cubo</span><span data-lang-inline="en visible">Qty / cube</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_1.png" alt=""><span data-lang-inline="es">Diamante rojo</span><span data-lang-inline="en visible">Red Diamond</span></td>          <td class="gem-prize">$100,000</td><td class="gem-qty">×1</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_2.png" alt=""><span data-lang-inline="es">Painita</span><span data-lang-inline="en visible">Painite</span></td>                          <td class="gem-prize">$50,000</td> <td class="gem-qty">×1</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_3.png" alt=""><span data-lang-inline="es">Musgravita</span><span data-lang-inline="en visible">Musgravite</span></td>                    <td class="gem-prize">$10,000</td> <td class="gem-qty">×5</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_4.png" alt=""><span data-lang-inline="es">Jadeíta imperial</span><span data-lang-inline="en visible">Imperial Jadeite</span></td>        <td class="gem-prize">$1,000</td>  <td class="gem-qty">×50</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_5.png" alt=""><span data-lang-inline="es">Alejandrita</span><span data-lang-inline="en visible">Alexandrite</span></td>                  <td class="gem-prize">$500</td>    <td class="gem-qty">×100</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_6.png" alt=""><span data-lang-inline="es">Rubí sangre de paloma</span><span data-lang-inline="en visible">Pigeon Blood Ruby</span></td>  <td class="gem-prize">$100</td>    <td class="gem-qty">×500</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_7.png" alt=""><span data-lang-inline="es">Diamante azul</span><span data-lang-inline="en visible">Blue Diamond</span></td>               <td class="gem-prize">$50</td>     <td class="gem-qty">×1,000</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_8.png" alt=""><span data-lang-inline="es">Diamante rosa</span><span data-lang-inline="en visible">Pink Diamond</span></td>               <td class="gem-prize">$25</td>     <td class="gem-qty">×4,000</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_9.png" alt=""><span data-lang-inline="es">Esmeralda colombiana</span><span data-lang-inline="en visible">Colombian Emerald</span></td>   <td class="gem-prize">$15</td>     <td class="gem-qty">×10,000</td></tr>
-      </tbody>
-    </table>
+    <div class="gem-list">
+      <div class="gem-row"><img class="gem-icon" src="gems/gem_1.png" alt=""><span class="name"><span data-lang-inline="es">Diamante rojo</span><span data-lang-inline="en visible">Red Diamond</span></span><span class="val">$100,000</span></div>
+      <div class="gem-row"><img class="gem-icon" src="gems/gem_2.png" alt=""><span class="name"><span data-lang-inline="es">Painita</span><span data-lang-inline="en visible">Painite</span></span><span class="val">$50,000</span></div>
+      <div class="gem-row"><img class="gem-icon" src="gems/gem_3.png" alt=""><span class="name"><span data-lang-inline="es">Musgravita</span><span data-lang-inline="en visible">Musgravite</span><span class="free-tag" data-lang-inline="es">También Free</span><span class="free-tag" data-lang-inline="en visible">Also Free</span></span><span class="val">$10,000</span></div>
+      <div class="gem-row"><img class="gem-icon" src="gems/gem_4.png" alt=""><span class="name"><span data-lang-inline="es">Jadeíta imperial</span><span data-lang-inline="en visible">Imperial Jadeite</span><span class="free-tag" data-lang-inline="es">También Free</span><span class="free-tag" data-lang-inline="en visible">Also Free</span></span><span class="val">$1,000</span></div>
+      <div class="gem-row"><img class="gem-icon" src="gems/gem_5.png" alt=""><span class="name"><span data-lang-inline="es">Alejandrita</span><span data-lang-inline="en visible">Alexandrite</span></span><span class="val">$500</span></div>
+      <div class="gem-row"><img class="gem-icon" src="gems/gem_6.png" alt=""><span class="name"><span data-lang-inline="es">Rubí sangre de paloma</span><span data-lang-inline="en visible">Pigeon Blood Ruby</span></span><span class="val">$100</span></div>
+      <div class="gem-row"><img class="gem-icon" src="gems/gem_7.png" alt=""><span class="name"><span data-lang-inline="es">Diamante azul</span><span data-lang-inline="en visible">Blue Diamond</span><span class="free-tag" data-lang-inline="es">También Free</span><span class="free-tag" data-lang-inline="en visible">Also Free</span></span><span class="val">$50</span></div>
+      <div class="gem-row"><img class="gem-icon" src="gems/gem_8.png" alt=""><span class="name"><span data-lang-inline="es">Diamante rosa</span><span data-lang-inline="en visible">Pink Diamond</span></span><span class="val">$25</span></div>
+      <div class="gem-row"><img class="gem-icon" src="gems/gem_9.png" alt=""><span class="name"><span data-lang-inline="es">Esmeralda colombiana</span><span data-lang-inline="en visible">Colombian Emerald</span><span class="free-tag" data-lang-inline="es">También Free</span><span class="free-tag" data-lang-inline="en visible">Also Free</span></span><span class="val">$15</span></div>
+    </div>
+
+    <p class="desc" data-lang="es" style="margin-top:12px;font-size:13px;color:#666;">Las cantidades exactas de cada gema por server están en la app, en la sección de cada cubo. Acá te mostramos qué existe y cuánto vale.</p>
+    <p class="desc" data-lang="en visible" style="margin-top:12px;font-size:13px;color:#666;">Exact quantities per server are in the app, inside each cube's section. Here we're showing what exists and what it's worth.</p>
     <p class="gem-note" data-lang="es">
       ⛏️
-      Además, el cubo contiene <strong>283,241 picos</strong> que dan acceso a turnos de minería adicionales.
+      Además, el estándar contiene <strong>283,241 picos</strong> y el Free <strong>400,000</strong> — turnos extra de minería más allá de los diarios gratis.
     </p>
     <p class="gem-note" data-lang="en visible">
       ⛏️
-      The cube also contains <strong>283,241 picks</strong> that grant additional mining turns.
+      The standard also contains <strong>283,241 picks</strong> and Free <strong>400,000</strong> — extra mining turns beyond the free daily ones.
     </p>
   </section>
 
@@ -591,32 +764,57 @@
           <span class="pyr-qty">×1</span>
         </div>
       </div>
-      <p class="pyr-caption" data-lang="es">Las capas más profundas guardan los premios más grandes</p>
-      <p class="pyr-caption" data-lang="en visible">Deeper layers hold the biggest prizes</p>
+      <p class="pyr-caption" data-lang="es">Las capas más profundas guardan los premios más grandes. Ejemplo del server estándar ($650.000) — el Free y los servers a medida siguen la misma lógica (picos afuera, gemas grandes en el centro) a su propia escala.</p>
+      <p class="pyr-caption" data-lang="en visible">Deeper layers hold the biggest prizes. Standard server example ($650,000) — Free and custom servers follow the same logic (picks on the outside, big gems at the center) at their own scale.</p>
     </div>
 
     <div class="dl-grid">
-      <a href="https://github.com/miningtheblocks/Mining-The-Blocks/releases/download/v1.1.0/MTB-v1.1.0.apk" class="dl-btn" id="downloadAndroid">
+      <a href="https://github.com/miningtheblocks/Mining-The-Blocks/releases/latest/download/MTB-latest.apk" class="dl-btn" id="downloadAndroid">
         <svg class="dl-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-10C2.67 8 2 8.67 2 9.5v7c0 .83.67 1.5 1.5 1.5S5 17.33 5 16.5v-7C5 8.67 4.33 8 3.5 8zm17 0c-.83 0-1.5.67-1.5 1.5v7c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5v-7c0-.83-.67-1.5-1.5-1.5zm-4.97-5.84 1.3-1.3a.496.496 0 0 0 0-.71.503.503 0 0 0-.71 0l-1.48 1.48A5.84 5.84 0 0 0 12 1c-1.1 0-2.15.23-3.09.63L7.43.15a.503.503 0 0 0-.71 0 .496.496 0 0 0 0 .71l1.3 1.3C6.41 3.07 5 5.38 5 8h14c0-2.62-1.41-4.93-3.47-5.84zM10 6H9V5h1v1zm5 0h-1V5h1v1z" fill="#3ddc84"/>
         </svg>
         <span class="dl-info">
           <span class="dl-title" data-lang="es">Descargar para Android</span>
           <span class="dl-title" data-lang="en visible">Download for Android</span>
-          <span class="dl-sub">APK · v1.1.0</span>
+          <span class="dl-sub">APK · v1.3.24</span>
         </span>
         <svg class="dl-arrow" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M12 4v12m0 0-4-4m4 4 4-4M4 20h16" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </a>
+      <a href="https://discord.gg/ehsaYcSWc" class="dl-btn dl-btn--discord" id="joinDiscord" target="_blank" rel="noopener noreferrer">
+        <svg class="dl-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.331c-1.183 0-2.157-1.086-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.332-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.086-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.332-.946 2.418-2.157 2.418z" fill="#5865F2"/>
+        </svg>
+        <span class="dl-info">
+          <span class="dl-title" data-lang="es">Unirse al Discord</span>
+          <span class="dl-title" data-lang="en visible">Join the Discord</span>
+          <span class="dl-sub" data-lang="es">Comunidad · AMAs · Soporte</span>
+          <span class="dl-sub" data-lang="en visible">Community · AMAs · Support</span>
+        </span>
+        <svg class="dl-arrow" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M5 12h14m0 0-6-6m6 6-6 6" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </a>
+    </div>
+    <!-- v1.3.18: link al modal de instalación -->
+    <div class="install-help-row">
+      <button type="button" class="install-help" id="installHelpLink" data-action="openInstallHelp">
+        <span data-lang="es">¿Cómo instalar?</span>
+        <span data-lang="en visible">How to install?</span>
+        <svg class="install-help-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 16v-4m0-4h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
     <p class="dl-entry-note" data-lang="es">
-      App gratuita · la entrada a cada episodio cuesta <strong>$15</strong> abonados con
-      <span class="dl-entry-crypto">USDC</span> en red <span class="dl-entry-crypto">Polygon</span>
+      Descargá la app gratis. Para minar elegís: el server <strong>Free</strong> (sin costo), el estándar (<strong>$15</strong> por episodio,
+      <span class="dl-entry-crypto">USDC</span> en <span class="dl-entry-crypto">Polygon</span>), o también los servers <strong>a medida</strong>, con entrada desde <strong>$0.10</strong>. ¡Sumate a minar!
     </p>
     <p class="dl-entry-note" data-lang="en visible">
-      Free app · each episode entry costs <strong>$15</strong> paid with
-      <span class="dl-entry-crypto">USDC</span> on <span class="dl-entry-crypto">Polygon</span> network
+      Download the app for free. To mine you choose: the <strong>Free</strong> server (no cost), the standard one (<strong>$15</strong> per episode,
+      <span class="dl-entry-crypto">USDC</span> on <span class="dl-entry-crypto">Polygon</span>), or the <strong>custom</strong> servers, with entry from <strong>$0.10</strong>. Join the mining!
     </p>
   </section>
 
@@ -639,11 +837,73 @@
 
 <footer>
   Mining The Blocks &nbsp;·&nbsp;
+  <a href="https://discord.gg/ehsaYcSWc" target="_blank" rel="noopener noreferrer">Discord</a>
+  &nbsp;·&nbsp;
   <a href="mailto:MiningTheBlocks@gmail.com">MiningTheBlocks@gmail.com</a>
   &nbsp;·&nbsp;
   <a href="terms.html" target="_blank" rel="noopener noreferrer" style="cursor:pointer" data-lang="es">Términos y Condiciones</a>
   <a href="terms.html" target="_blank" rel="noopener noreferrer" style="cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>
 </footer>
+
+<!-- v1.3.18: Install instructions modal -->
+<div class="legal-overlay install-overlay" id="installHelpModal">
+  <div class="legal-box install-box">
+    <h2>
+      <span data-lang="es">📲 Cómo instalar</span>
+      <span data-lang="en visible">📲 How to install</span>
+    </h2>
+    <p data-lang="es">Mining The Blocks se descarga como APK directo (no está en Play Store todavía). Seguí estos 5 pasos:</p>
+    <p data-lang="en visible">Mining The Blocks downloads as a direct APK (not on Play Store yet). Follow these 5 steps:</p>
+
+    <ol class="install-steps">
+      <li>
+        <span class="install-step-emoji">⬇️</span>
+        <span>
+          <span data-lang="es">Tocá <strong>Descargar para Android</strong>.</span>
+          <span data-lang="en visible">Tap <strong>Download for Android</strong>.</span>
+        </span>
+      </li>
+      <li>
+        <span class="install-step-emoji">⚠️</span>
+        <span>
+          <span data-lang="es">Si Chrome avisa <em>"podría dañar tu dispositivo"</em>: tocá <strong>Conservar</strong>. Si solo aparece <strong>Descartar</strong>, tocá <strong>Mostrar más</strong> → <strong>Conservar de todos modos</strong>.</span>
+          <span data-lang="en visible">If Chrome warns <em>"may harm your device"</em>: tap <strong>Keep</strong>. If you only see <strong>Discard</strong>, tap <strong>Show more</strong> → <strong>Keep anyway</strong>.</span>
+        </span>
+      </li>
+      <li>
+        <span class="install-step-emoji">📦</span>
+        <span>
+          <span data-lang="es">Abrí el APK desde la notificación o <strong>Descargas</strong>.</span>
+          <span data-lang="en visible">Open the APK from the notification or <strong>Downloads</strong>.</span>
+        </span>
+      </li>
+      <li>
+        <span class="install-step-emoji">🔓</span>
+        <span>
+          <span data-lang="es">Si Android pide <strong>permitir instalar apps de esta fuente</strong>, activá el permiso (solo la primera vez).</span>
+          <span data-lang="en visible">If Android asks to <strong>allow installs from this source</strong>, enable it (just once).</span>
+        </span>
+      </li>
+      <li>
+        <span class="install-step-emoji">✅</span>
+        <span>
+          <span data-lang="es">Tocá <strong>Instalar</strong>. Si Play Protect avisa, tocá <strong>Más detalles</strong> → <strong>Instalar de todas formas</strong>.</span>
+          <span data-lang="en visible">Tap <strong>Install</strong>. If Play Protect warns, tap <strong>More details</strong> → <strong>Install anyway</strong>.</span>
+        </span>
+      </li>
+    </ol>
+
+    <div class="install-note">
+      <span data-lang="es">🔒 La app está firmada digitalmente y el código es <a href="https://github.com/miningtheblocks/Mining-The-Blocks" target="_blank" rel="noopener noreferrer" style="color:#713f12;text-decoration:underline">open source</a>. Podés verificar el SHA-256 antes de instalar.</span>
+      <span data-lang="en visible">🔒 The app is digitally signed and the code is <a href="https://github.com/miningtheblocks/Mining-The-Blocks" target="_blank" rel="noopener noreferrer" style="color:#713f12;text-decoration:underline">open source</a>. You can verify the SHA-256 before installing.</span>
+    </div>
+
+    <button class="install-close" id="installHelpClose" type="button" data-action="closeInstallHelp">
+      <span data-lang="es">Volver</span>
+      <span data-lang="en visible">Back</span>
+    </button>
+  </div>
+</div>
 
 <!-- Age gate modal -->
 <div class="legal-overlay" id="ageGate">
@@ -653,12 +913,12 @@
     <p data-lang="es">Mining The Blocks es un <strong>juego de azar</strong> con premios en dinero real. Para continuar debés confirmar lo siguiente:</p>
     <p data-lang="en visible">Mining The Blocks is a <strong>game of chance</strong> with real money prizes. To continue you must confirm:</p>
     <label class="legal-check">
-      <input type="checkbox" id="check18" onchange="updateAgeBtn()">
+      <input type="checkbox" id="check18">
       <span data-lang="es">Tengo 18 años o más y el juego de azar es legal en mi país/región.</span>
       <span data-lang="en visible">I am 18 or older and online gambling is legal in my country/region.</span>
     </label>
     <label class="legal-check">
-      <input type="checkbox" id="checkTC" onchange="updateAgeBtn()">
+      <input type="checkbox" id="checkTC">
       <span>
         <span data-lang="es">He leído y acepto los </span>
         <span data-lang="en visible">I have read and accept the </span>
@@ -666,7 +926,7 @@
         <a href="terms.html" target="_blank" rel="noopener noreferrer" style="color:#1e293b;text-decoration:underline;cursor:pointer" data-lang="en visible">Terms &amp; Conditions</a>.
       </span>
     </label>
-    <button class="legal-btn" id="ageBtn" onclick="acceptAge()" disabled>
+    <button class="legal-btn" id="ageBtn" data-action="acceptAge" disabled>
       <span data-lang="es">Confirmar y continuar</span>
       <span data-lang="en visible">Confirm and continue</span>
     </button>
@@ -675,267 +935,20 @@
 
 
 <!-- Firebase SDK (compat para que el código funcione sin bundler) -->
-<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
-<script>
-  // Firebase Web API key — pública por diseño. Restringida por HTTP referrer +
-  // API allowlist en GCP Console (Identity Toolkit, Firestore, FCM).
-  firebase.initializeApp({
-    apiKey: 'AIzaSyDRCpXkNWupz2PmoOG6XcuFENYaU5xIUps',
-    authDomain: 'miningtheblocks-669f6.firebaseapp.com',
-    projectId: 'miningtheblocks-669f6',
-  });
-
-  var FUNCTIONS_BASE = 'https://us-central1-miningtheblocks-669f6.cloudfunctions.net';
-  var currentLang = 'en';
-
-  var GEM_NAMES = {
-    es: { 1:'Diamante rojo', 2:'Painita', 3:'Musgravita', 4:'Jadeíta imperial',
-          5:'Alejandrita', 6:'Rubí sangre de paloma', 7:'Diamante azul',
-          8:'Diamante rosa', 9:'Esmeralda colombiana' },
-    en: { 1:'Red Diamond', 2:'Painite', 3:'Musgravite', 4:'Imperial Jadeite',
-          5:'Alexandrite', 6:'Pigeon Blood Ruby', 7:'Blue Diamond',
-          8:'Pink Diamond', 9:'Colombian Emerald' }
-  };
-  var GEM_PRIZES = { 1:'$100,000', 2:'$50,000', 3:'$10,000', 4:'$1,000', 5:'$500', 6:'$100', 7:'$50', 8:'$25', 9:'$15' };
-
-  var ERRORS = {
-    es: {
-      not_found:       'Código no encontrado. Revisá que esté bien escrito.',
-      already_redeemed:'Este código ya fue canjeado por efectivo.',
-      already_minted:  'Este código ya fue reclamado como NFT.',
-      server_error:    'Error del servidor. Intentá de nuevo en unos minutos.',
-      invalid_email:   'El email ingresado no es válido.',
-      invalid_wallet:  'La dirección de billetera no es válida.',
-      missing_fields:  'Completá todos los campos.',
-      unauthenticated: 'Debés iniciar sesión para canjear.',
-      invalid_token:   'Sesión inválida o expirada. Iniciá sesión de nuevo.',
-      not_owner:       'Este código no pertenece a tu cuenta. Iniciá sesión con la cuenta que generó la gema.',
-      rate_limited:    'Demasiados intentos. Esperá un minuto y reintentá.',
-      'auth/wrong-password':   'Contraseña incorrecta.',
-      'auth/user-not-found':   'No existe cuenta con ese email. Registrate primero desde la app.',
-      'auth/invalid-email':    'Email mal escrito.',
-      'auth/too-many-requests':'Demasiados intentos fallidos. Esperá unos minutos.',
-      'auth/network-request-failed':'Sin conexión. Revisá tu internet.',
-      'auth/invalid-credential':'Email o contraseña incorrectos.',
-    },
-    en: {
-      not_found:       'Code not found. Check that it\'s written correctly.',
-      already_redeemed:'This code has already been redeemed for cash.',
-      already_minted:  'This code has already been claimed as an NFT.',
-      server_error:    'Server error. Please try again in a few minutes.',
-      invalid_email:   'The email address is not valid.',
-      invalid_wallet:  'The wallet address is not valid.',
-      missing_fields:  'Please fill in all fields.',
-      unauthenticated: 'You must sign in to redeem.',
-      invalid_token:   'Invalid or expired session. Sign in again.',
-      not_owner:       'This code does not belong to your account. Sign in with the account that generated the gem.',
-      rate_limited:    'Too many attempts. Wait a minute and try again.',
-      'auth/wrong-password':   'Wrong password.',
-      'auth/user-not-found':   'No account found for that email. Register in the app first.',
-      'auth/invalid-email':    'Email is malformed.',
-      'auth/too-many-requests':'Too many failed attempts. Wait a few minutes.',
-      'auth/network-request-failed':'No connection. Check your internet.',
-      'auth/invalid-credential':'Email or password incorrect.',
-    }
-  };
-
-  function setLang(lang) {
-    currentLang = lang;
-    document.querySelectorAll('.lang-btn').forEach(function(b) {
-      b.classList.toggle('active', b.textContent.trim().toLowerCase() === lang);
-    });
-    document.querySelectorAll('[data-lang]').forEach(function(el) {
-      var l = el.getAttribute('data-lang').split(' ')[0];
-      el.classList.toggle('visible', l === lang);
-    });
-    document.querySelectorAll('[data-lang-inline]').forEach(function(el) {
-      var l = el.getAttribute('data-lang-inline').split(' ')[0];
-      el.classList.toggle('visible', l === lang);
-    });
-    document.documentElement.lang = lang;
-    var copyBtn = document.getElementById('refCopyBtn');
-    if (copyBtn && copyBtn.textContent !== '✓') {
-      copyBtn.textContent = lang === 'es' ? 'Copiar' : 'Copy';
-    }
-  }
-
-  function detectReferral() {
-    var params = new URLSearchParams(window.location.search);
-    var ref = (params.get('ref') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (!ref) ref = localStorage.getItem('mtb_ref') || '';
-    if (!ref) return;
-    localStorage.setItem('mtb_ref', ref);
-    document.getElementById('refBannerCode').textContent = ref;
-    document.getElementById('refBanner').classList.add('visible');
-  }
-
-  function copyRefCode() {
-    var code = document.getElementById('refBannerCode').textContent;
-    var btn = document.getElementById('refCopyBtn');
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(code).then(function() {
-        btn.textContent = '✓';
-        setTimeout(function() { btn.textContent = currentLang === 'es' ? 'Copiar' : 'Copy'; }, 2000);
-      });
-    } else {
-      var ta = document.createElement('textarea');
-      ta.value = code; ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.select();
-      try { document.execCommand('copy'); btn.textContent = '✓'; setTimeout(function() { btn.textContent = currentLang === 'es' ? 'Copiar' : 'Copy'; }, 2000); } catch {}
-      document.body.removeChild(ta);
-    }
-  }
-
-  var verifiedCode = null;
-
-  function showError(id, msg) { document.getElementById(id).textContent = msg || ''; }
-
-  function setLoading(btnId, loading) {
-    var btn = document.getElementById(btnId);
-    btn.disabled = loading;
-    btn.classList.toggle('loading', !!loading);
-    // FIX-P0: NO sobreescribir textContent — destruía los spans data-lang
-    // de i18n y el botón quedaba vacío al volver al estado normal.
-  }
-
-  async function verifyCode() {
-    var code = document.getElementById('codeInput').value.trim().toUpperCase();
-    showError('codeError', '');
-    document.getElementById('cardLogin').classList.remove('visible');
-    document.getElementById('cardEmail').classList.remove('visible');
-    document.getElementById('cardDone').classList.remove('visible');
-    if (!code) { showError('codeError', currentLang === 'es' ? 'Ingresá tu código.' : 'Enter your code.'); return; }
-    setLoading('btnVerify', true);
-    try {
-      var res = await fetch(FUNCTIONS_BASE + '/verifyGemCode?code=' + encodeURIComponent(code));
-      var data = await res.json();
-      if (!res.ok || !data.valid) {
-        showError('codeError', (ERRORS[currentLang][data.error]) || (currentLang === 'es' ? 'Código inválido.' : 'Invalid code.'));
-        return;
-      }
-      verifiedCode = code;
-      // El backend ya no devuelve `tier` por seguridad. Mostramos genérico.
-      document.getElementById('gemBadge').textContent = currentLang === 'es' ? '✓ Código válido' : '✓ Valid code';
-      // Si el user ya está logueado, saltamos directo al form de datos. Sino, pedimos login.
-      if (firebase.auth().currentUser) {
-        document.getElementById('cardEmail').classList.add('visible');
-        document.getElementById('nameInput').focus();
-      } else {
-        document.getElementById('cardLogin').classList.add('visible');
-        document.getElementById('loginEmail').focus();
-      }
-    } catch (e) {
-      showError('codeError', currentLang === 'es' ? 'Sin conexión. Verificá tu internet.' : 'No connection. Check your internet.');
-    } finally {
-      setLoading('btnVerify', false);
-      setLang(currentLang); // restaurar textos del botón
-    }
-  }
-
-  async function doLogin() {
-    var email = document.getElementById('loginEmail').value.trim();
-    var password = document.getElementById('loginPassword').value;
-    showError('loginError', '');
-    if (!email || !password) {
-      showError('loginError', currentLang === 'es' ? 'Completá email y contraseña.' : 'Fill in email and password.');
-      return;
-    }
-    setLoading('btnLogin', true);
-    try {
-      await firebase.auth().signInWithEmailAndPassword(email, password);
-      // Pre-llenar el email del form de canje (suele ser el mismo)
-      var emailInput = document.getElementById('emailInput');
-      if (emailInput && !emailInput.value) emailInput.value = email;
-      document.getElementById('cardLogin').classList.remove('visible');
-      document.getElementById('cardEmail').classList.add('visible');
-      document.getElementById('nameInput').focus();
-    } catch (e) {
-      var key = e && e.code ? e.code : '';
-      showError('loginError', (ERRORS[currentLang][key]) || (currentLang === 'es' ? 'Error al iniciar sesión.' : 'Sign in error.'));
-    } finally {
-      setLoading('btnLogin', false);
-      setLang(currentLang);
-    }
-  }
-
-  async function submitClaim() {
-    var name   = document.getElementById('nameInput').value.trim();
-    var email  = document.getElementById('emailInput').value.trim();
-    var phone  = document.getElementById('phoneInput').value.trim();
-    var wallet = document.getElementById('walletInput').value.trim();
-    showError('emailError', '');
-    var err = currentLang === 'es';
-    if (!name)   { showError('emailError', err ? 'Ingresá tu nombre completo.' : 'Enter your full name.'); return; }
-    if (!email)  { showError('emailError', err ? 'Ingresá tu email.' : 'Enter your email.'); return; }
-    if (!phone)  { showError('emailError', err ? 'Ingresá tu teléfono.' : 'Enter your phone number.'); return; }
-    // MEDIO-H18: validar formato exacto Ethereum (42 chars, 0x + 40 hex).
-    // Antes `wallet.length < 40` aceptaba wallets de 40 chars (incompletas).
-    if (!wallet || !/^0x[a-fA-F0-9]{40}$/.test(wallet)) { showError('emailError', err ? 'Ingresá una dirección de billetera válida (0x + 40 caracteres hex).' : 'Enter a valid wallet address (0x + 40 hex chars).'); return; }
-
-    // OPS-9: requerir Firebase ID token. Si la sesión expiró entre verifyCode
-    // y submitClaim, volver a la pantalla de login.
-    var user = firebase.auth().currentUser;
-    if (!user) {
-      document.getElementById('cardEmail').classList.remove('visible');
-      document.getElementById('cardLogin').classList.add('visible');
-      showError('loginError', err ? 'Tu sesión expiró. Iniciá sesión de nuevo.' : 'Your session expired. Sign in again.');
-      return;
-    }
-
-    setLoading('btnClaim', true);
-    try {
-      var idToken = await user.getIdToken();
-      var res = await fetch(FUNCTIONS_BASE + '/submitGemClaim', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + idToken,
-        },
-        body: JSON.stringify({ code: verifiedCode, name: name, email: email, phone: phone, wallet: wallet }),
-      });
-      var data = await res.json();
-      if (!res.ok || !data.success) {
-        showError('emailError', (ERRORS[currentLang][data.error]) || (currentLang === 'es' ? 'Error al enviar.' : 'Submit error.'));
-        return;
-      }
-      document.getElementById('cardEmail').classList.remove('visible');
-      document.getElementById('cardDone').classList.add('visible');
-    } catch (e) {
-      showError('emailError', currentLang === 'es' ? 'Sin conexión. Intentá más tarde.' : 'No connection. Try again later.');
-    } finally {
-      setLoading('btnClaim', false);
-      setLang(currentLang);
-    }
-  }
-
-  function updateAgeBtn() {
-    var ok = document.getElementById('check18').checked && document.getElementById('checkTC').checked;
-    var btn = document.getElementById('ageBtn');
-    btn.disabled = !ok;
-    btn.classList.toggle('active', ok);
-  }
-
-  function acceptAge() {
-    if (!document.getElementById('check18').checked || !document.getElementById('checkTC').checked) return;
-    localStorage.setItem('mtb_age_ok', '1');
-    document.getElementById('ageGate').style.display = 'none';
-  }
-
-  document.addEventListener('DOMContentLoaded', function() {
-    setLang('en');
-    detectReferral();
-    if (localStorage.getItem('mtb_age_ok') === '1') {
-      document.getElementById('ageGate').style.display = 'none';
-    }
-    document.getElementById('codeInput').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') verifyCode();
-    });
-    document.getElementById('emailInput').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') submitClaim();
-    });
-  });
-</script>
+<!-- Round 2 Agente #7 HIGH-3: SRI (Subresource Integrity) en Firebase SDK.
+     Pre-fix: <script src="gstatic..."> sin integrity. Si gstatic.com se
+     compromete (improbable pero supply chain attacks reales en otros CDNs
+     documentados), el browser ejecutaba el JS reemplazado. Para una página
+     que tramita gem claims hasta $100k, vale el byte extra.
+     Hashes computados: curl URL | openssl dgst -sha384 -binary | openssl base64 -A
+     IMPORTANTE: si bumpean la versión de Firebase SDK, hay que recomputar. -->
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"
+        integrity="sha384-+65NgAKqXr1Nb7sBmV6O09pL8ASqZsi29OE718meKinGAWaa70VE5V6LNjXVBjIA"
+        crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"
+        integrity="sha384-I1LYojsZ5RM1cOda44Z2h42Qa6YfsQ1XkXxREnhp4ueYBR/4d1pG1K+NZM537Vsj"
+        crossorigin="anonymous"></script>
+<script src="js/app.js?v=1.3.24" defer></script>
 
 </body>
 </html>

@@ -13,7 +13,6 @@ const {getFirestore, FieldValue, Timestamp, FieldPath} = require("firebase-admin
 const {getAuth} = require("firebase-admin/auth");
 const {getMessaging} = require("firebase-admin/messaging");
 const nodemailer = require("nodemailer");
-const crypto = require("crypto");
 
 // OPS-8: reducir CPU por función para entrar en el quota de Cloud Run.
 // Con 31 funciones × 1 vCPU = 31 vCPUs reservados, agotaba el quota default.
@@ -27,6 +26,10 @@ setGlobalOptions({ cpu: 0.5, memory: "256MiB", maxInstances: 10 });
 const companyWalletKey = defineSecret("COMPANY_WALLET_KEY");
 const gmailAppPassword = defineSecret("GMAIL_APP_PASSWORD");
 const serverSeed = defineSecret("SERVER_SEED");
+// Cambio 6 (modo Chain): anti-bot en claimChainPick + registro. Configurar
+// con `firebase functions:secrets:set HCAPTCHA_SECRET` una vez que el
+// usuario cree la cuenta en hCaptcha y tenga site key + secret key.
+const hcaptchaSecret = defineSecret("HCAPTCHA_SECRET");
 
 try {
   admin.initializeApp();
@@ -44,7 +47,9 @@ const {
   GEM_TOKEN_URIS,
   MTBGEMS_CONTRACT,
   DAY_MS,
+  CHAIN_PICK_COOLDOWN_MS,
   PAYMENT_WALLET,
+  NFT_RECEIVER_WALLET,
   USDC_CONTRACTS,
   USDC_ABI,
   CREDIT_PRICE_USD,
@@ -55,17 +60,35 @@ const {
 
 const {
   shellTotalCubes,
+  shellSizeDedup,
+  cumSumDedup,
   cubeNumberToFaceGridForK,
   getRewardForCube,
   getGemForCube,
+  getLayerUnlockThreshold,
+  isLayerUnlocked,
   generateReferralCode,
   generateGemCode,
   toMillis,
-  buildStatus,
+  buildChainStatus,
   esc,
-  setCorsHeaders,
+  // Round 2 Agente #7: setCorsHeaders (wildcard *) removido del import.
+  // verifyGemCode (único caller) migró a setRestrictedCorsHeaders en Commit K.
   setRestrictedCorsHeaders,
 } = require("./helpers");
+
+const { FREE_CONFIG, FREE_LAYER_COUNT } = require("./freeServerConfig");
+const {
+  validateServerConfig,
+  validateDerivedConfig,
+  deriveServerConfig,
+  applyManualDistribution,
+} = require("./serverConfig");
+const {
+  BLOCKCHAIN_LAYER_COUNT,
+  BLOCKCHAIN_CHAIN_NAME,
+  rateForStreakDays,
+} = require("./blockchainConfig");
 
 // BAJO-H18: validar formato + tamaño de IDs (serverId, chainId, gemId, etc.).
 // Antes el código solo verificaba !id (truthy) — un id de 1500 bytes pasaba
@@ -77,13 +100,25 @@ function assertValidId(id, label) {
   }
 }
 
+// CRIT (Round 2 Agente #6): whitelist explícito de providers. Antes era
+// blacklist ("rechazar anonymous"); si Firebase habilita un nuevo provider
+// (Anonymous Auth desde Console, OIDC custom, Identity Platform blocking
+// function que devuelve cualquier provider), el flow lo aceptaba por default.
+// Con whitelist, default-deny: si un provider desconocido aparece, se rechaza
+// la operación con un código identificable para audit.
+//
+// Si en el futuro suman Google/Apple Sign-In real (todavía solo
+// signInWithEmailAndPassword en Login.js), agregar acá.
+const ALLOWED_PROVIDERS = new Set(["password", "google.com", "apple.com"]);
 function requireRegistered(request) {
   if (!request.auth || !request.auth.uid) throw new HttpsError("unauthenticated", "Login required");
   const provider = request.auth.token && request.auth.token.firebase && request.auth.token.firebase.sign_in_provider;
-  if (provider === "anonymous") throw new HttpsError("permission-denied", "Registro requerido para jugar");
+  if (!ALLOWED_PROVIDERS.has(provider)) {
+    throw new HttpsError("permission-denied", `provider_not_allowed:${provider || "unknown"}`);
+  }
   // ALTO-30: exigir email verificado en operaciones de juego (mining, payments,
-  // gem claim). Providers OAuth (google.com, etc.) ya verifican email upstream,
-  // se aceptan sin recheck. Solo email/password necesita el flag.
+  // gem claim). Providers OAuth (google.com, apple.com) ya verifican email
+  // upstream, se aceptan sin recheck. Solo email/password necesita el flag.
   if (provider === "password" && request.auth.token && request.auth.token.email_verified === false) {
     throw new HttpsError("permission-denied", "email_not_verified");
   }
@@ -122,11 +157,108 @@ async function requireAdminFresh(request) {
   }
 }
 
+// CRIT (Round 2 Agente #6): checkRevoked en operaciones financieras críticas.
+// El runtime de Firebase Functions decodea el JWT pero NO chequea si los
+// tokens del user fueron revocados (revokeRefreshTokens). Sin esto, un token
+// robado o una sesión post-password-reset sigue válido hasta el TTL JWT
+// (~60min) — ventana completa de account takeover para submitGemClaim,
+// claimGemNFT, createCryptoPayment.
+//
+// Patrón: comparar `auth_time` del JWT decodeado contra `tokensValidAfterTime`
+// del user. Equivalente funcional a `verifyIdToken(token, true)` pero sin
+// tener que extraer el raw token de `rawRequest.headers.authorization` (que
+// en onCall existe pero es frágil ante cambios del runtime). Bonus: también
+// chequea `disabled` (ban via Firebase Console). Costo: ~1 Auth Admin call
+// extra por invocación, requireAdminFresh tiene el mismo patrón.
+//
+// NO aplicado a mineCube (hot path, costo amortizado prohibitivo a ~100 calls
+// por sesión); el daño de un mineCube con token revocado está acotado por
+// picks remanentes del user.
+async function assertFreshToken(request) {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Login required");
+  }
+  const uid = request.auth.uid;
+  const authTimeSec = request.auth.token && request.auth.token.auth_time;
+  if (!authTimeSec) {
+    throw new HttpsError("unauthenticated", "invalid_auth_time");
+  }
+  const authTimeMs = authTimeSec * 1000;
+  let user;
+  try {
+    user = await getAuth().getUser(uid);
+  } catch (e) {
+    console.error("assertFreshToken getUser error:", e && e.message);
+    throw new HttpsError("internal", "user_lookup_failed");
+  }
+  if (user.disabled) {
+    throw new HttpsError("permission-denied", "account_disabled");
+  }
+  const validAfterMs = user.tokensValidAfterTime ? new Date(user.tokensValidAfterTime).getTime() : 0;
+  if (validAfterMs > 0 && authTimeMs < validAfterMs) {
+    throw new HttpsError("unauthenticated", "token_revoked");
+  }
+}
+
 // ─── Activity Feed ───────────────────────────────────────────────────────────
 
+// CRIT (Round 2 Agente #12 + #11 HIGH-11-40): TTL en activityFeed para evitar
+// cumulative growth + cost amplification. Pre-fix: cada gem_found/layer_complete/
+// player_joined era 1 write → broadcast a TODOS los clientes con ActivityScreen
+// abierta, sin policy de borrado. Crecimiento infinito + PII histórica accesible.
+// Fix: agregar `expiresAt` Timestamp; Firestore TTL Console borra docs viejos
+// automáticamente. 7 días es suficiente para "feed activo" (los users solo ven
+// los últimos 50-100 events).
+const ACTIVITY_FEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Round 2 audit #4 HIGH-R1: cap de bonificaciones de referido al referidor.
+// Pre-fix: un referrer con 1000 invitaciones legítimas (o farm de cuentas
+// falsas) acumulaba 5000 picks → minería gratuita masiva → eventualmente
+// NFTs tier-1 ($100k c/u). Cap de 50 invitados rewarded limita el daño a
+// 250 picks lifetime — sigue siendo generoso pero acotado. El referido SÍ
+// recibe sus 5 picks (cap solo se aplica al referrer; el referido es 1×
+// per-user via referralBonusPaid). Documentado en TOS §6.2 (program rules).
+const REFERRER_BONUS_CAP = 50;
+
+// Audit feedback 2026-06-23+: ventana de canje 90 días desde el cierre del
+// episodio. Pre-fix: gemCodes válidos para SIEMPRE → liability eterna sobre
+// MTB + speculation a largo plazo de users esperando recompra a precio fijo.
+// Alineado con TOS §19 que ya menciona "90 days" como ventana mínima.
+// El expiresAt NO se almacena en el gem doc (evita batch updates) — se DERIVA
+// de episodeCompletedAt + GEM_REDEEM_WINDOW_MS al validar canje. Mientras el
+// episodio sigue activo (no cerrado), el premio NO expira.
+const GEM_REDEEM_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+
+// Helper compartido por los 3 entry points de canje (submitGemClaim,
+// confirmGemNftSent, markGemRedeemed). Lanza HttpsError("failed-precondition",
+// "expired:<ts>") si la ventana de canje pasó. Si no se puede determinar el
+// estado del episodio (RPC error, episode doc faltante), favor user — no
+// bloquea. Single source of truth: serverChains/{chainId}/episodes/{n}.completedAt.
+async function assertGemNotExpired(gem) {
+  if (!gem || !gem.chainId || !gem.episodeNumber) return;
+  try {
+    const epDoc = await db.collection("serverChains").doc(gem.chainId)
+        .collection("episodes").doc(String(gem.episodeNumber)).get();
+    if (!epDoc.exists) return;
+    const completedAt = (epDoc.data() && epDoc.data().completedAt) || 0;
+    if (!completedAt) return;
+    const expiresAt = completedAt + GEM_REDEEM_WINDOW_MS;
+    if (Date.now() > expiresAt) {
+      throw new HttpsError("failed-precondition", `expired:${expiresAt}`);
+    }
+  } catch (e) {
+    if (e instanceof HttpsError) throw e;
+    console.warn("assertGemNotExpired RPC warning:", e && e.message);
+  }
+}
 async function writeActivity(type, data) {
   try {
-    await db.collection("activityFeed").add({ type, ts: Date.now(), ...data });
+    await db.collection("activityFeed").add({
+      type,
+      ts: Date.now(),
+      expiresAt: Timestamp.fromMillis(Date.now() + ACTIVITY_FEED_TTL_MS),
+      ...data,
+    });
   } catch (e) {
     console.warn("writeActivity failed:", e.message);
   }
@@ -137,7 +269,10 @@ async function writeActivity(type, data) {
 // Crea el siguiente episodio dentro de una cadena existente
 async function startNextEpisode(chainRef, chainData, prevServerId) {
   const nextEpisode = chainData.currentEpisode + 1;
-  const K = STARTING_LAYER;
+  // Cambio 2/3 (server Free / servers a medida): capas propias por config,
+  // default = STARTING_LAYER global para cadenas estándar sin config.
+  const config = chainData.config || null;
+  const K = (config && config.layerCount) || STARTING_LAYER;
   const totalCubes = shellTotalCubes(K);
 
   const serverRef = db.collection("servers").doc();
@@ -157,6 +292,9 @@ async function startNextEpisode(chainRef, chainData, prevServerId) {
     episodeNumber: nextEpisode,
     prevServerId,
     episodeStartAt: Date.now(), // marca para reset lazy de picos al iniciar episodio
+    // Denormalizado desde la cadena para que mineCube no pague un read extra
+    // a serverChains en el hot path (Fase 0).
+    ...(config ? { config } : {}),
   });
 
   // Layer inicial del episodio
@@ -253,7 +391,10 @@ async function closeEpisode(chainRef, serverRef, serverData, winnerUid, totalMin
     totalMined: totalMinedFinal,
   });
 
-  const isLastEpisode = episodeNumber >= MAX_EPISODES;
+  // Cambio 2 (server Free): nunca hay "último episodio" -- reinicia para
+  // siempre, la cadena no llega jamás a status:'completed'.
+  const isFreeServer = !!(serverData.config && serverData.config.isFreeServer);
+  const isLastEpisode = !isFreeServer && episodeNumber >= MAX_EPISODES;
 
   if (isLastEpisode) {
     // Cadena completa — cerrar definitivamente
@@ -268,6 +409,26 @@ async function closeEpisode(chainRef, serverRef, serverData, winnerUid, totalMin
   }
 
   return { isLastEpisode, nextEpisode: isLastEpisode ? null : episodeNumber + 1 };
+}
+
+// Cambio 3 (Fase 4, pedido explícito del usuario): crear un server a medida
+// requiere haber jugado ANTES en algún server real (paga o legacy) -- unirse
+// solo al Free no alcanza, porque es gratis e ilimitado y no demuestra
+// ningún compromiso real con el juego antes de dejarlo crear su propia
+// cadena. Se implementa como query (no scan limitado): busca CUALQUIER
+// serverAccess con chainId != freeServerChainId, así funciona sin importar
+// cuántas veces haya vuelto a jugar el Free (que genera un serverAccess por
+// episodio, podrían ser muchos). Un solo filtro de desigualdad sobre un
+// campo no necesita índice compuesto en Firestore.
+async function requirePriorNonFreeServerJoin(uid) {
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  const freeChainId = appConfigSnap.exists ? appConfigSnap.data().freeServerChainId : null;
+  const accessCol = db.collection("users").doc(uid).collection("serverAccess");
+  const q = freeChainId ? accessCol.where("chainId", "!=", freeChainId).limit(1) : accessCol.limit(1);
+  const snap = await q.get();
+  if (snap.empty) {
+    throw new HttpsError("failed-precondition", "must_join_server_first");
+  }
 }
 
 // ─── Helpers de créditos ─────────────────────────────────────────────────────
@@ -378,8 +539,14 @@ exports.createServer = onCall(async (request) => {
       role: 'creator',
     });
 
-    // Bienvenida: 5 picos al pagar la entrada
-    tx.set(userRef, { picks: FieldValue.increment(5) }, { merge: true });
+    // Bienvenida: 5 picos al pagar la entrada. Cambio 1: van directo al
+    // pool de la cadena recién creada (nunca existía chainAccess para esta
+    // chain todavía, es literalmente la primera vez).
+    tx.set(userRef.collection("chainAccess").doc(chainRef.id), {
+      chainId: chainRef.id,
+      picks: 5,
+      createdAt: Date.now(),
+    });
   });
 
   writeActivity("player_joined", {
@@ -391,9 +558,220 @@ exports.createServer = onCall(async (request) => {
   return { ok: true, serverId: serverRef.id, chainId: chainRef.id, welcomePicks: 5 };
 });
 
-// Unirse a un server existente (consume 1 crédito)
-exports.joinServer = onCall(async (request) => {
+// Cambio 2 (Fase 3): crea la cadena "Free" fija (150 capas, $35.000, entrada
+// gratis) UNA sola vez y la pinea via config/app.freeServerChainId. Acción
+// admin, no forma parte del flujo público de creación de servers (createServer
+// sigue siendo solo para cadenas estándar de pago). Reintentarla es un no-op
+// seguro si la cadena ya existe (idempotente por el guard de config/app).
+exports.bootstrapFreeServer = onCall(async (request) => {
+  await requireAdminFresh(request);
+
+  const appConfigRef = db.collection("config").doc("app");
+  const appConfigSnap = await appConfigRef.get();
+  const existingChainId = appConfigSnap.exists ? appConfigSnap.data().freeServerChainId : null;
+  if (existingChainId) {
+    return { ok: true, alreadyExists: true, chainId: existingChainId };
+  }
+
+  const K = FREE_LAYER_COUNT;
+  const totalCubes = shellTotalCubes(K);
+  const chainRef = db.collection("serverChains").doc();
+  const serverRef = db.collection("servers").doc();
+
+  const batch = db.batch();
+  batch.set(chainRef, {
+    name: "Free",
+    createdBy: null,
+    createdAt: Date.now(),
+    status: 'active',
+    currentEpisode: 1,
+    currentServerId: serverRef.id,
+    completedAt: null,
+    config: FREE_CONFIG,
+  });
+  batch.set(serverRef, {
+    name: "Free",
+    createdBy: null,
+    createdAt: Date.now(),
+    status: 'active',
+    currentLayer: K,
+    totalMined: 0,
+    winner: null,
+    completedAt: null,
+    memberCount: 0,
+    chainId: chainRef.id,
+    episodeNumber: 1,
+    prevServerId: null,
+    episodeStartAt: Date.now(),
+    config: FREE_CONFIG,
+  });
+  batch.set(serverRef.collection("layers").doc(String(K)), {
+    K,
+    totalCubes,
+    stats: { mined: 0 },
+    winRate: 0.50,
+  });
+  batch.set(appConfigRef, { freeServerChainId: chainRef.id }, { merge: true });
+  await batch.commit();
+
+  writeActivity("player_joined", {
+    chainId: chainRef.id,
+    chainName: "Free",
+    serverId: serverRef.id,
+  });
+
+  return { ok: true, alreadyExists: false, chainId: chainRef.id, serverId: serverRef.id };
+});
+
+// Cambio 3 (Fase 4): servers a medida (jugadores + precio configurables).
+// SE ENTREGA COMPLETO PERO INACTIVO -- gateado por
+// config/app.paramServerCreationEnabled (default false/ausente). Función
+// separada de createServer (no toca el flujo estándar ya probado en
+// producción); activar el flag es un cambio de datos en Firestore, no
+// requiere redeploy. Pensado para probarse primero en el emulador local/LAN.
+//
+// Modelo matemático completo y su verificación en functions/serverConfig.js
+// (ratio premio/recaudación SIEMPRE 43,3% ± redondeo, nunca configurable
+// directamente -- ver comentario de cabecera de ese archivo).
+exports.createServerCustom = onCall(async (request) => {
   requireRegistered(request);
+  const uid = request.auth.uid;
+
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  const flagEnabled = appConfigSnap.exists && appConfigSnap.data().paramServerCreationEnabled === true;
+  if (!flagEnabled) {
+    throw new HttpsError("failed-precondition", "feature_disabled");
+  }
+
+  // Pedido explícito del usuario: hay que haber jugado antes en un server
+  // real (el Free no cuenta) antes de poder crear el propio.
+  await requirePriorNonFreeServerJoin(uid);
+
+  const name = String((request.data && request.data.name) || '').trim().slice(0, 40);
+  if (!name) throw new HttpsError("invalid-argument", "Server name required");
+  const N = Number(request.data && request.data.maxMembers);
+  const P = Number(request.data && request.data.creditPriceUSD);
+
+  const rangeErrors = validateServerConfig(N, P);
+  if (rangeErrors.length) throw new HttpsError("invalid-argument", rangeErrors.join(","));
+
+  const baseConfig = deriveServerConfig(N, P);
+  const baseErrors = validateDerivedConfig(baseConfig);
+  if (baseErrors.length) throw new HttpsError("invalid-argument", baseErrors.join(","));
+
+  // D7/D8: distribución manual opcional de premios por tier (si no se manda,
+  // se usa el auto-escalado de baseConfig tal cual).
+  let finalConfig = baseConfig;
+  const tierQuantitiesRaw = request.data && request.data.tierQuantities;
+  if (Array.isArray(tierQuantitiesRaw)) {
+    const result = applyManualDistribution(baseConfig, tierQuantitiesRaw);
+    if (!result.ok) throw new HttpsError("invalid-argument", result.errors.join(","));
+    finalConfig = result.config;
+  }
+
+  const K = finalConfig.layerCount;
+  const totalCubes = shellTotalCubes(K);
+  const chainRef = db.collection("serverChains").doc();
+  const serverRef = db.collection("servers").doc();
+  const userRef = db.collection("users").doc(uid);
+
+  await db.runTransaction(async (tx) => {
+    // Mismo patrón que createServer: 1 crédito, mismo bonus de bienvenida.
+    await consumeServerCredit(uid, tx);
+
+    tx.set(chainRef, {
+      name,
+      createdBy: uid,
+      createdAt: Date.now(),
+      status: 'active',
+      currentEpisode: 1,
+      currentServerId: serverRef.id,
+      completedAt: null,
+      config: finalConfig,
+    });
+
+    tx.set(serverRef, {
+      name,
+      createdBy: uid,
+      createdAt: Date.now(),
+      status: 'active',
+      currentLayer: K,
+      totalMined: 0,
+      winner: null,
+      completedAt: null,
+      memberCount: 1,
+      chainId: chainRef.id,
+      episodeNumber: 1,
+      prevServerId: null,
+      config: finalConfig,
+    });
+
+    tx.set(serverRef.collection("layers").doc(String(K)), {
+      K, totalCubes, stats: { mined: 0 }, winRate: 0.50,
+    });
+
+    tx.set(userRef.collection("serverAccess").doc(serverRef.id), {
+      serverId: serverRef.id,
+      chainId: chainRef.id,
+      joinedAt: Date.now(),
+      role: 'creator',
+    });
+
+    // Cambio 1: bienvenida de 5 picos directo al pool de la cadena recién creada.
+    tx.set(userRef.collection("chainAccess").doc(chainRef.id), {
+      chainId: chainRef.id,
+      picks: 5,
+      createdAt: Date.now(),
+    });
+  });
+
+  writeActivity("player_joined", { chainId: chainRef.id, chainName: name, serverId: serverRef.id });
+
+  return {
+    ok: true,
+    serverId: serverRef.id,
+    chainId: chainRef.id,
+    welcomePicks: 5,
+    config: finalConfig,
+  };
+});
+
+// Cambio 3: preview de solo lectura (sin crear nada) para que el formulario
+// del frontend pueda mostrar el Premio Total / capas / distribución en vivo
+// mientras el usuario ajusta N y P, sin necesidad de replicar la fórmula
+// completa en el cliente. Gateada por el mismo flag que createServerCustom.
+exports.previewServerConfig = onCall(async (request) => {
+  requireRegistered(request);
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  const flagEnabled = appConfigSnap.exists && appConfigSnap.data().paramServerCreationEnabled === true;
+  if (!flagEnabled) throw new HttpsError("failed-precondition", "feature_disabled");
+
+  const N = Number(request.data && request.data.maxMembers);
+  const P = Number(request.data && request.data.creditPriceUSD);
+  const rangeErrors = validateServerConfig(N, P);
+  if (rangeErrors.length) throw new HttpsError("invalid-argument", rangeErrors.join(","));
+
+  const baseConfig = deriveServerConfig(N, P);
+  const baseErrors = validateDerivedConfig(baseConfig);
+  if (baseErrors.length) throw new HttpsError("invalid-argument", baseErrors.join(","));
+
+  const tierQuantitiesRaw = request.data && request.data.tierQuantities;
+  if (Array.isArray(tierQuantitiesRaw)) {
+    const result = applyManualDistribution(baseConfig, tierQuantitiesRaw);
+    if (!result.ok) return { ok: false, errors: result.errors, autoConfig: baseConfig };
+    return { ok: true, config: result.config };
+  }
+  return { ok: true, config: baseConfig };
+});
+
+// Unirse a un server existente (consume 1 crédito)
+exports.joinServer = onCall({ secrets: [hcaptchaSecret] }, async (request) => {
+  requireRegistered(request);
+  // HIGH-06 (audit Round 2 / fix 2026-06-23+): checkRevoked en joinServer.
+  // Pre-fix: token revocado podía consumir el serverCredit del user durante
+  // los ~60min de JWT TTL post-revoke. Si user revoca por sospecha de robo
+  // de token, los créditos quedaban vulnerables. Acción incremental: assertFreshToken.
+  await assertFreshToken(request);
   const uid = request.auth.uid;
 
   const serverId = String((request.data && request.data.serverId) || '');
@@ -402,8 +780,35 @@ exports.joinServer = onCall(async (request) => {
   const serverRef = db.collection("servers").doc(serverId);
   const userRef = db.collection("users").doc(uid);
 
+  // Cambio 16 (captcha de desbloqueo único, 2026-07-06): el Free exige
+  // verificación humana la PRIMERA vez que se entra -- no en cada join.
+  // Se verifica ANTES de la transacción (llamada HTTP externa a hCaptcha,
+  // no debe vivir dentro de una tx que Firestore puede reintentar
+  // automáticamente ante conflictos, lo que consumiría el token de un
+  // solo uso más de una vez). Servers pagos (estándar y a medida) no
+  // piden captcha -- ya cobran entrada, ver Cambio 15 (sin ads tampoco).
+  // Backfill implícito: si `serverAccess/{serverId}` YA existe, el usuario
+  // ya entró antes (con o sin captcha, en versiones viejas) -- no se le
+  // vuelve a pedir. Esto también es exactamente lo que ya hace la
+  // transacción de abajo (`if (accessSnap.exists) return`), así que este
+  // chequeo solo se cumple la primera vez real.
+  const preServerSnap = await serverRef.get();
+  if (preServerSnap.exists && preServerSnap.data().config && preServerSnap.data().config.isFreeServer) {
+    const preAccessSnap = await userRef.collection("serverAccess").doc(serverId).get();
+    if (!preAccessSnap.exists) {
+      const captchaToken = String((request.data && request.data.captchaToken) || "");
+      await verifyCaptcha(captchaToken, hcaptchaSecret.value());
+    }
+  }
+
   // Track whether this was an actual new (paid) join vs already-had-access
   let wasNewPaidJoin = false;
+  // Cambio 1: capturado dentro de la TX para usarlo después en el bonus de
+  // referido (picks van a la cadena recién unida, no al pool global).
+  let joinedChainId = null;
+  // Cambio 2: para no devolver welcomePicks:5 en el join al server Free
+  // (ahí no se regala nada, los picos vienen solo de anuncios).
+  let isFreeServerJoin = false;
 
   await db.runTransaction(async (tx) => {
     const serverSnap = await tx.get(serverRef);
@@ -417,9 +822,19 @@ exports.joinServer = onCall(async (request) => {
 
     const serverData = serverSnap.data();
     const serverChainId = serverData.chainId || null;
+    // Cambio 1 (picos por cadena): leer ANTES de cualquier write en esta TX
+    // (consumeServerCredit más abajo ya escribe) -- Firestore exige todos los
+    // reads antes que cualquier write dentro de una transacción.
+    const chainAccessRef = serverChainId ? userRef.collection("chainAccess").doc(serverChainId) : null;
+    const chainAccessSnap = chainAccessRef ? await tx.get(chainAccessRef) : null;
 
-    // Verificar límite de jugadores por eslabon
-    if ((serverData.memberCount || 0) >= MAX_MEMBERS_PER_SERVER) {
+    // Cambio 2 (server Free): sin límite de miembros (config.maxMembers=null),
+    // resto de servers mantiene el máximo global de siempre.
+    const isFreeServer = !!(serverData.config && serverData.config.isFreeServer);
+    const maxMembers = serverData.config && serverData.config.maxMembers !== undefined ?
+      serverData.config.maxMembers :
+      MAX_MEMBERS_PER_SERVER;
+    if (maxMembers != null && (serverData.memberCount || 0) >= maxMembers) {
       throw new HttpsError("resource-exhausted", "server_full");
     }
 
@@ -428,6 +843,18 @@ exports.joinServer = onCall(async (request) => {
     // Servers legacy (sin chainId) son de acceso libre
     if (!serverChainId) {
       tx.set(accessRef, { serverId, chainId: null, episodeNumber, joinedAt: Date.now(), role: 'member' });
+      return;
+    }
+
+    // Cambio 2: server Free -- entrada siempre gratis (sin consumeServerCredit)
+    // y sin picos de bienvenida (acá los picos vienen solo de anuncios, no hay
+    // regalo inicial). El único gate es requireRegistered (ya corrido arriba).
+    if (isFreeServer) {
+      tx.set(accessRef, { serverId, chainId: serverChainId, episodeNumber, joinedAt: Date.now(), role: 'member' });
+      tx.set(serverRef, { memberCount: (serverData.memberCount || 0) + 1 }, { merge: true });
+      wasNewPaidJoin = true; // reusa el flag para disparar el bonus de referido (sigue teniendo sentido en el Free)
+      joinedChainId = serverChainId;
+      isFreeServerJoin = true;
       return;
     }
 
@@ -456,13 +883,19 @@ exports.joinServer = onCall(async (request) => {
     // Registrar acceso
     tx.set(accessRef, { serverId, chainId: serverChainId, episodeNumber, joinedAt: Date.now(), role: 'member' });
 
-    // Bienvenida: 5 picos al pagar la entrada
-    tx.set(userRef, { picks: FieldValue.increment(5) }, { merge: true });
+    // Bienvenida: 5 picos al pagar la entrada -- van al pool de la cadena
+    // (chainAccessSnap ya leído arriba, antes del write de consumeServerCredit).
+    if (chainAccessSnap.exists) {
+      tx.set(chainAccessRef, { picks: FieldValue.increment(5) }, { merge: true });
+    } else {
+      tx.set(chainAccessRef, { chainId: serverChainId, picks: 5, createdAt: Date.now() });
+    }
 
     // Incrementar memberCount
     tx.set(serverRef, { memberCount: (serverData.memberCount || 0) + 1 }, { merge: true });
 
     wasNewPaidJoin = true;
+    joinedChainId = serverChainId;
   });
 
   // If user already had access, just let them in — no welcome picks, no bonus
@@ -479,19 +912,55 @@ exports.joinServer = onCall(async (request) => {
 
   // SEC-M1: referral bonus con check DENTRO de la TX (anteriormente se leía
   // referralBonusPaid afuera y dos joins concurrentes podían duplicar el bonus).
+  // Cambio 1: el bonus del REFERIDO (uid) va a la cadena que acaba de unirse
+  // (joinedChainId) -- contexto inequívoco, va a minar ahí seguro. El bonus
+  // del REFERIDOR en cambio se mantiene en el campo global: no sabemos a qué
+  // cadena pertenece el referidor (puede no estar ni siquiera en esta), así
+  // que atribuírselo a joinedChainId lo dejaría en una cadena donde tal vez
+  // ni juega. Se recupera vía la migración lazy "grandfather" la próxima vez
+  // que el referidor entre a una cadena nueva.
+  // SEC-review 2026-07-02: el bonus de referido requería históricamente que
+  // el referido pagara 1 crédito real ($15) para unirse a un server -- ese
+  // costo era el control anti-sybil implícito detrás de REFERRER_BONUS_CAP
+  // (ver su comentario: protege contra "farm de cuentas falsas... minería
+  // gratuita masiva → eventualmente NFTs tier-1 ($100k c/u)"). La rama del
+  // server Free reusa wasNewPaidJoin (entrada gratis e ilimitada) para
+  // disparar el resto del flujo post-join, pero NO debe disparar el bonus de
+  // referido -- sin este `!isFreeServerJoin`, cualquiera podía crear cuentas
+  // descartables gratis, unirlas al Free vía un código de referido, y cobrar
+  // hasta 250 picos gratis (50 referidos × 5), sin el costo que sostenía el
+  // cap. El referido igual puede jugar el Free gratis con normalidad, solo
+  // que esa acción puntual no otorga el bonus.
   const referredBy = userData.referredBy || null;
-  if (referredBy) {
+  if (referredBy && !isFreeServerJoin) {
     try {
       let bonusGranted = false;
       await db.runTransaction(async (tx) => {
         const uRef = db.collection("users").doc(uid);
         const rRef = db.collection("users").doc(referredBy);
-        const freshU = await tx.get(uRef);
+        const uChainRef = uRef.collection("chainAccess").doc(joinedChainId);
+        // Round 2 audit #4 HIGH-R1: leer referrer ANTES de cualquier write
+        // (Firestore exige reads-before-writes en TX). Si está capeado, el
+        // referido igual cobra sus 5 picks pero el referrer no.
+        const [freshU, freshR, uChainSnap] = await Promise.all([
+          tx.get(uRef), tx.get(rRef), tx.get(uChainRef),
+        ]);
         if (!freshU.exists) return;
         const fud = freshU.data();
         if (fud.referralBonusPaid) return; // ya pagado
-        tx.set(uRef, { picks: FieldValue.increment(5), referralBonusPaid: true }, { merge: true });
-        tx.set(rRef, { picks: FieldValue.increment(5) }, { merge: true });
+        tx.set(uRef, { referralBonusPaid: true }, { merge: true });
+        if (uChainSnap.exists) {
+          tx.set(uChainRef, { picks: FieldValue.increment(5) }, { merge: true });
+        } else {
+          tx.set(uChainRef, { chainId: joinedChainId, picks: 5, createdAt: Date.now() });
+        }
+        const referrerRewardedSoFar = (freshR.exists && Number(freshR.data().referralsRewarded || 0)) || 0;
+        if (referrerRewardedSoFar < REFERRER_BONUS_CAP) {
+          tx.set(rRef, {
+            picks: FieldValue.increment(5),
+            referralsRewarded: FieldValue.increment(1),
+          }, { merge: true });
+        }
         bonusGranted = true;
       });
       if (bonusGranted) {
@@ -517,7 +986,11 @@ exports.joinServer = onCall(async (request) => {
     serverId,
   });
 
-  return { ok: true, serverId, welcomePicks: 5 };
+  // Cambio 2: sin welcomePicks para el join al server Free (no se regala nada
+  // ahí, evita que el frontend muestre el modal "¡recibiste 5 picos!" en falso).
+  return isFreeServerJoin ?
+    { ok: true, serverId } :
+    { ok: true, serverId, welcomePicks: 5 };
 });
 
 // Verificar si el usuario tiene acceso a un server (sin consumir crédito)
@@ -553,12 +1026,43 @@ exports.getServers = onCall(async (request) => {
   const PUBLIC_FIELDS = [
     "name", "createdAt", "status", "currentLayer", "totalMined",
     "memberCount", "chainId", "episodeNumber", "winner", "completedAt", "prevServerId",
+    "config", "gemsFoundByTier", "picksAwarded",
   ];
+  // El Free libera tiers por anuncios vistos (serverChains.totalAdViews), no
+  // por memberCount -- ver mismo comentario en mineCube. Traer esos docs de
+  // cadena en batch (normalmente 1, como mucho un puñado de Free chains).
+  const freeChainIds = [...new Set(
+      snap.docs
+          .map((d) => d.data() || {})
+          .filter((data) => data.config && data.config.isFreeServer && data.chainId)
+          .map((data) => data.chainId),
+  )];
+  const freeChainSnaps = await Promise.all(
+      freeChainIds.map((id) => db.collection("serverChains").doc(id).get()),
+  );
+  const adViewsByChainId = {};
+  freeChainIds.forEach((id, i) => {
+    // eslint-disable-next-line security/detect-object-injection -- id viene de chainId propio, no de input de usuario
+    adViewsByChainId[id] = (freeChainSnaps[i].exists && freeChainSnaps[i].data().totalAdViews) || 0;
+  });
+
   const servers = snap.docs.map((d) => {
     const data = d.data() || {};
     const out = { id: d.id };
     // eslint-disable-next-line security/detect-object-injection -- k de whitelist constante PUBLIC_FIELDS
     for (const k of PUBLIC_FIELDS) if (k in data) out[k] = data[k];
+    // Audit feedback 2026-06-23+: anexar unlock status de la capa actual para
+    // que el frontend pueda mostrar el lock modal sin tener que hacer otra
+    // call. layerUnlockThreshold=0 significa "warmup, sin lock".
+    const K = data.currentLayer;
+    if (typeof K === "number") {
+      const threshold = getLayerUnlockThreshold(K, data.config);
+      const isFreeServer = !!(data.config && data.config.isFreeServer);
+
+      const unlockMetric = isFreeServer ? (adViewsByChainId[data.chainId] || 0) : (data.memberCount || 0);
+      out.layerUnlockThreshold = threshold;
+      out.layerUnlocked = threshold === 0 || unlockMetric >= threshold;
+    }
     return out;
   });
   return { servers };
@@ -598,6 +1102,45 @@ exports.getUserGems = onCall(async (request) => {
       .get();
 
   const gems = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  // Audit feedback 2026-06-23+: enriquecer cada gem con expiresAt derivado
+  // del episode doc (completedAt + GEM_REDEEM_WINDOW_MS). Si el episodio no
+  // cerró todavía, expiresAt queda null → no expira. Cache por
+  // (chainId, episodeNumber) para minimizar reads (10-20 episodios únicos
+  // típicos para 100 gemas).
+  const episodeKeys = new Set();
+  for (const g of gems) {
+    if (g.chainId && g.episodeNumber) {
+      episodeKeys.add(`${g.chainId}/${g.episodeNumber}`);
+    }
+  }
+  const episodeCache = new Map();
+  await Promise.all([...episodeKeys].map(async (key) => {
+    const sep = key.indexOf("/");
+    const chainId = key.slice(0, sep);
+    const epNum = key.slice(sep + 1);
+    try {
+      const epDoc = await db.collection("serverChains").doc(chainId)
+          .collection("episodes").doc(epNum).get();
+      if (epDoc.exists) {
+        const ca = epDoc.data() && epDoc.data().completedAt;
+        if (ca) episodeCache.set(key, ca);
+      }
+    } catch (_) {/* skip episode error, gem queda sin expire info */}
+  }));
+  const now = Date.now();
+  for (const g of gems) {
+    if (g.chainId && g.episodeNumber) {
+      const key = `${g.chainId}/${g.episodeNumber}`;
+      const completedAt = episodeCache.get(key);
+      if (completedAt) {
+        g.episodeCompletedAt = completedAt;
+        g.expiresAt = completedAt + GEM_REDEEM_WINDOW_MS;
+        g.expired = now > g.expiresAt;
+      }
+    }
+  }
+
   return { gems };
 });
 
@@ -607,14 +1150,25 @@ exports.getUserGems = onCall(async (request) => {
 // Vincular wallet para recibir el NFT (marca la gema como "minting")
 exports.claimGemNFT = onCall(async (request) => {
   requireRegistered(request);
+  // CRIT (Round 2 Agente #6): checkRevoked + disabled check.
+  await assertFreshToken(request);
   const uid = request.auth.uid;
 
   const gemId = String((request.data && request.data.gemId) || '');
-  const walletAddress = String((request.data && request.data.walletAddress) || '').trim();
-
   assertValidId(gemId, "gemId");
-  if (!/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
-    throw new HttpsError("invalid-argument", "Invalid Ethereum wallet address");
+
+  // CRIT (Round 2 Agentes #1 HIGH-4 + #6 + #8): walletAddress del user doc,
+  // NO del body. Aceptar wallet del body bypasea el cooldown de 24h de
+  // setUserWallet — durante una ventana de account takeover, el atacante
+  // podía claimear NFTs a su propia wallet aunque setUserWallet siga bloqueado.
+  // Ahora la única vía de setear/cambiar wallet pasa por setUserWallet
+  // (que tiene cooldown + valida formato). El parámetro request.data.walletAddress
+  // se ignora silenciosamente por backwards-compat con clientes viejos pre
+  // Round 2 Commit B.
+  const userSnap = await db.collection("users").doc(uid).get();
+  const walletAddress = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
+  if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+    throw new HttpsError("failed-precondition", "wallet_not_set");
   }
 
   const gemRef = db.collection("users").doc(uid).collection("gems").doc(gemId);
@@ -660,6 +1214,16 @@ exports.claimGemNFT = onCall(async (request) => {
 
 exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
   requireRegistered(request);
+  // CRIT (Round 2 Agente #6): checkRevoked + disabled check también en mineCube.
+  // Commit B deferred esto por el costo (~100 Auth Admin calls/sesión típica
+  // de mineo = ~1 invoc por mineCube). Costo real: ~$0.0009/1000 ops
+  // = $0.09 por 1000 users mineando 100 cubos = ~$0-$10/mes a escala
+  // sub-10k DAU. Aceptable para garantizar que un token revocado
+  // (post password reset, post-suspensión admin, post-deleteMyAccount)
+  // no pueda seguir minando + auto-mintando gemas hasta que el JWT TTL
+  // (~60min) expire naturalmente. Daño bounded por picks remanentes
+  // pero la cantidad de daño puede ser significativa (gemas tier-1).
+  await assertFreshToken(request);
   const uid = request.auth.uid;
 
   // SEC-003: Canonicalizar cubeNumber a entero antes de usar como docId.
@@ -684,23 +1248,59 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     if (serverData.status && serverData.status !== 'active') throw new HttpsError("failed-precondition", "Server not active");
 
     const K = serverData.currentLayer;
-    // FIX-FINAL-4: validar K range para evitar NaN propagation y data corruption
-    if (!Number.isInteger(K) || K < 0 || K > 100) {
+    // FIX-FINAL-4: validar K range para evitar NaN propagation y data corruption.
+    // Cambio 2/3: el máximo ya no es 100 fijo -- servers con config propia
+    // (Free, a medida) pueden tener más capas (150 en el Free).
+    const maxK = (serverData.config && serverData.config.layerCount) || STARTING_LAYER;
+    if (!Number.isInteger(K) || K < 0 || K > maxK) {
       throw new HttpsError("failed-precondition", "Invalid layer state");
     }
     const TOTAL_CUBES_K = shellTotalCubes(K);
     if (n > TOTAL_CUBES_K) throw new HttpsError("invalid-argument", "Cube out of range for current layer");
 
-    const minedRef = serverRef.collection("mined").doc(cubeNumber);
+    // CRIT (Round 2 Agente #1 CRIT-1): docId incluye K (capa) para evitar data
+    // mixing entre capas. Pre-fix: `mined/${cubeNumber}` colisionaba cuando el
+    // mismo cubeNumber existe en distintas K (K=100 tiene N en [1..242406];
+    // K=50 tiene N en [1..61206]; ambos pueden incluir N=5). Sin K en el path,
+    // mineCube de N=5 en K=99 sobrescribía mined/5 que era de K=100.
+    // Pre-launch: 0 mines reales en producción → safe forward-only change.
+    const minedRef = serverRef.collection("mined").doc(`${K}_${cubeNumber}`);
     const layerRef = serverRef.collection("layers").doc(String(K));
     const accessRef = userRef.collection("serverAccess").doc(serverId);
+    // Cambio 1 (picos por cadena): chainId siempre se conoce server-side desde
+    // serverData, sin depender de que el cliente lo mande — mineCube no
+    // necesita ningún cambio de compatibilidad hacia atrás para esto.
+    const chainId = serverData.chainId || null;
+    const chainPicksRef = chainId ? userRef.collection("chainAccess").doc(chainId) : null;
+    // El Free no cobra entrada -- no hay recaudación que la fórmula 1,25×costo
+    // pueda proteger, así que ahí la liberación de tiers se cubre con
+    // anuncios vistos (serverChains/{chainId}.totalAdViews, incrementado en
+    // claimAdSession) en vez de memberCount. Ver freeServerConfig.js.
+    const isFreeServer = !!(serverData.config && serverData.config.isFreeServer);
+    const chainRef = (isFreeServer && chainId) ? db.collection("serverChains").doc(chainId) : null;
 
-    const [minedSnap, userSnap, layerSnap, accessSnap] = await Promise.all([
+    const [minedSnap, userSnap, layerSnap, accessSnap, chainPicksSnap, chainSnap] = await Promise.all([
       tx.get(minedRef), tx.get(userRef), tx.get(layerRef), tx.get(accessRef),
+      chainPicksRef ? tx.get(chainPicksRef) : Promise.resolve(null),
+      chainRef ? tx.get(chainRef) : Promise.resolve(null),
     ]);
 
     // Enforce payment — user must have joined (paid) this server
     if (!accessSnap.exists) throw new HttpsError("permission-denied", "No server access. Join the server first.");
+
+    // Audit feedback 2026-06-23+: capa locked si el server no llega al
+    // threshold de miembros (o, en el Free, de anuncios vistos) para los
+    // premios de la capa actual. Defensa server-side (el frontend muestra
+    // modal y bloquea, pero un cliente modificado podría llamar mineCube
+    // igual). Error code "layer_locked" con formato current/required para
+    // que el frontend pueda parsearlo.
+    const memberCountForUnlock = isFreeServer ?
+      ((chainSnap && chainSnap.exists && chainSnap.data().totalAdViews) || 0) :
+      (serverData.memberCount || 0);
+    if (!isLayerUnlocked(K, memberCountForUnlock, serverData.config)) {
+      const required = getLayerUnlockThreshold(K, serverData.config);
+      throw new HttpsError("failed-precondition", `layer_locked:${memberCountForUnlock}/${required}`);
+    }
 
     // SEC-009: Rate limit ANTES del check alreadyMined. Sin esto, un atacante
     // que ya tenga serverAccess podría sondear cubos sin costo (oracle).
@@ -721,16 +1321,43 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
       return { ok: true, alreadyMined: true };
     }
 
-    let picks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
+    // Cambio 1 (picos por cadena): el pool de picos vive en
+    // users/{uid}/chainAccess/{chainId} en vez del campo global
+    // users/{uid}.picks. Servers legacy sin chainId ("de acceso libre", ver
+    // joinServer más arriba) siguen 100% con el comportamiento histórico
+    // sobre el campo global -- no hay cadena a la que asociarlos.
+    const chainPicksExists = !!(chainPicksSnap && chainPicksSnap.exists);
+    const chainPicksData = chainPicksExists ? chainPicksSnap.data() : null;
+
+    let picks;
+    let picksLastResetAt;
+    if (chainPicksRef) {
+      if (chainPicksExists) {
+        picks = Number(chainPicksData.picks) || 0;
+        picksLastResetAt = chainPicksData.picksLastResetAt || 0;
+      } else {
+        // Migración lazy "grandfather": primera vez que este user mina en
+        // esta cadena -> arranca con el balance global actual (snapshot
+        // único, NO se resta del global -- riesgo aceptado y documentado:
+        // puede duplicar transitoriamente unos pocos picos si el user ya
+        // juega 2+ cadenas al momento de migrar).
+        picks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
+        picksLastResetAt = 0;
+      }
+    } else {
+      picks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
+      picksLastResetAt = userSnap.exists ? (userSnap.data().picksLastResetAt || 0) : 0;
+    }
     if (!userSnap.exists) {
       tx.set(userRef, { picks: 0, createdAt: Date.now(), referralCode: generateReferralCode() }, { merge: true });
     }
 
-    // Reset lazy de picos: si el servidor inició un nuevo episodio y el usuario no fue reseteado aún
+    // D3: bonus de +5 picos ADITIVO (no reset duro) al arrancar un episodio
+    // nuevo dentro de la misma cadena -- ahora el pool se acumula de punta a
+    // punta en vez de perderse en cada nuevo episodio.
     const episodeStartAt = serverData.episodeStartAt || 0;
-    const picksLastResetAt = userSnap.exists ? (userSnap.data().picksLastResetAt || 0) : 0;
     const needsPicksReset = episodeStartAt > 0 && picksLastResetAt < episodeStartAt;
-    if (needsPicksReset) picks = 5;
+    if (needsPicksReset) picks += 5;
 
     if (picks <= 0) throw new HttpsError("failed-precondition", "No picks");
 
@@ -744,24 +1371,64 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     const episodeComplete = K === 0;
 
     // SEC-B-1: pasar SERVER_SEED a las funciones de cálculo de premios.
+    // CRIT (Round 2 Agentes #1 HIGH-12 + #11 CRIT-11-05): además del seed
+    // crudo, pasamos episodeNumber para que helpers derive effectiveSeed
+    // per (serverId, episode) — limita blast radius de un seed leak.
     const seed = serverSeed.value();
-    const reward = getRewardForCube(serverId, K, cubeNumber, seed);
-    const gem = getGemForCube(serverId, K, cubeNumber, serverData.memberCount || 0, seed);
-
-    const userUpdate = { lastMineAt: Date.now() };
-    if (needsPicksReset) {
-      userUpdate.picks = 4 + reward;
-      userUpdate.picksLastResetAt = episodeStartAt;
-    } else {
-      userUpdate.picks = FieldValue.increment(-1 + reward);
+    const episodeNumberForSeed = serverData.episodeNumber || 1;
+    const reward = getRewardForCube(serverId, K, cubeNumber, seed, episodeNumberForSeed, serverData.config);
+    let gem = getGemForCube(serverId, K, cubeNumber, memberCountForUnlock, seed, episodeNumberForSeed, serverData.config);
+    // D5 (server Free): el cubo que cierra el episodio (K=0) siempre otorga
+    // el 5to premio de $1.000 (tier 4) fijo, sin depender del hash -- los
+    // otros 4 se reparten al azar en K 40-70 (ver FREE_PRIZE_TABLE, count:4).
+    if (isFreeServer && episodeComplete) {
+      gem = 4;
     }
-    tx.set(userRef, userUpdate, { merge: true });
+
+    tx.set(userRef, { lastMineAt: Date.now() }, { merge: true });
+
+    if (chainPicksRef) {
+      if (chainPicksExists) {
+        const chainUpdate = needsPicksReset ?
+          { picks: FieldValue.increment(5 - 1 + reward), picksLastResetAt: episodeStartAt } :
+          { picks: FieldValue.increment(-1 + reward) };
+        tx.set(chainPicksRef, chainUpdate, { merge: true });
+      } else {
+        // Primer doc de esta cadena para este user: valores literales (ya
+        // incluyen el grandfather del global + este mine) -- no hay valor
+        // previo del que partir con FieldValue.increment.
+        tx.set(chainPicksRef, {
+          chainId,
+          createdAt: Date.now(),
+          picks: picks - 1 + reward,
+          picksLastResetAt: needsPicksReset ? episodeStartAt : 0,
+        });
+      }
+    } else {
+      const legacyUpdate = needsPicksReset ?
+        { picks: 4 + reward, picksLastResetAt: episodeStartAt } :
+        { picks: FieldValue.increment(-1 + reward) };
+      tx.set(userRef, legacyUpdate, { merge: true });
+    }
 
     const mapped = cubeNumberToFaceGridForK(n, K) || {};
-    tx.set(minedRef, { by: uid, ts: Date.now(), K, rewardPicks: reward, gem: gem || 0, ...mapped });
+    // CRIT (Round 2 Agentes #2 + #5): schema canónico `minedAt`. Antes se
+    // escribía `ts` pero el index (firestore.indexes.json: mined[K, minedAt DESC])
+    // y el listener realtime de DynamicCube201 ordenan por `minedAt`. Resultado
+    // pre-fix: el feed multiplayer recibía snapshot vacío y sólo aparentaba
+    // funcionar por el optimistic local update del que minó. Fix: renombrar
+    // a `minedAt` (queda alineado con el resto de campos timestamp del proyecto).
+    tx.set(minedRef, { by: uid, minedAt: Date.now(), K, rewardPicks: reward, gem: gem || 0, ...mapped });
     tx.set(layerRef, { K, totalCubes: TOTAL_CUBES_K, stats: { mined: FieldValue.increment(1) } }, { merge: true });
 
     const serverUpdate = { totalMined: FieldValue.increment(1) };
+    // Cambio 6: total de picos otorgados en el episodio — a diferencia de las
+    // gemas, los picos no tienen un presupuesto fijo (getRewardForCube es
+    // probabilístico sin tope), así que el HUD muestra "otorgados hasta
+    // ahora" en vez de "restantes" para este indicador.
+    if (reward > 0) {
+      serverUpdate.picksAwarded = FieldValue.increment(reward);
+    }
 
     if (episodeComplete) {
       serverUpdate.status = 'completed';
@@ -772,12 +1439,114 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
       serverUpdate.currentLayer = K - 1;
     }
 
+    // Cambio 6 (HUD gemas restantes): agregado por tier para que el frontend
+    // pueda mostrar "cuántas quedan" sin tener que contar `mined/*` a mano.
+    // Se incrementa acá (gema probabilística) y de nuevo más abajo si aplica
+    // el bonus de cierre de episodio (tier 6 extra, fuera del budget normal).
+    // El bonus de tier 6 NO aplica al server Free (D5, ver más abajo) -- sin
+    // el `!isFreeServer` acá, el HUD contaría un tier-6 "encontrado" que en
+    // realidad nunca se persiste como gema para esa cadena.
+    // BUG (2026-07-05, mismo patrón que claimAdSlotPick): la clave computada
+    // `gemsFoundByTier.${gem}` con set({merge:true}) se guardaba como campo
+    // LITERAL "gemsFoundByTier.1" (con el punto en el nombre), no como el
+    // mapa anidado gemsFoundByTier:{1:...} que se pretendía -- rompiendo el
+    // HUD de "gemas restantes por tier" (siempre leía el mapa real vacío).
+    // Fix: objeto anidado real bajo una sola clave, mismo pisado de valor
+    // que antes cuando gem===6 coincide con el bonus de cierre (2 en vez
+    // de 1+1 -- Firestore aplica el último valor asignado a esa clave en
+    // el objeto JS, igual que pasaba con las claves de punto).
+    const gemsFoundByTier = {};
+    if (gem) {
+      gemsFoundByTier[gem] = FieldValue.increment(1);
+    }
+    if (episodeComplete && !isFreeServer) {
+      gemsFoundByTier[6] = FieldValue.increment(gem === 6 ? 2 : 1);
+    }
+    if (Object.keys(gemsFoundByTier).length > 0) {
+      serverUpdate.gemsFoundByTier = gemsFoundByTier;
+    }
+
     tx.set(serverRef, serverUpdate, { merge: true });
+
+    // Round 2 audit #4 HIGH-M1: gem creation + auto-pendingMint DENTRO de la TX.
+    // Pre-fix: el gem se persistía con `.add()` después del runTransaction. Si
+    // el process moría entre el TX commit y el .add() (deploy, OOM, timeout,
+    // SIGKILL), el user perdía permanentemente el gem (tier-1 = ~$100k de pérdida
+    // documentada por el whitepaper). Ahora con docId determinístico `${serverId}_${K}_${cubeNumber}`
+    // la operación es atómica: o se commitea TODO (mined + layer + user + gem +
+    // pendingMint) o no se commitea NADA. Además determinismo del ID asegura
+    // idempotencia ante retries del client (mismo cubo → mismo gem doc).
+    const rawWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
+    const userWallet = (rawWallet && /^0x[a-fA-F0-9]{40}$/.test(rawWallet)) ? rawWallet : null;
+    const gemStatus = userWallet ? "minting" : "unclaimed";
+
+    // Helper interno: persiste un gem doc + opcional pendingMint en la TX.
+    // Reusable para la gema probabilística + la gema bonus del episodio.
+    const persistGem = (tier, gemDocSuffix) => {
+      const gemCode = generateGemCode(serverId, K, cubeNumber, tier, uid);
+      const gemDocId = `${serverId}_${K}_${cubeNumber}${gemDocSuffix || ""}`;
+      const gemRef = userRef.collection("gems").doc(gemDocId);
+      tx.set(gemRef, {
+        gemTier: tier,
+        code: gemCode,
+        serverId,
+        chainId: serverData.chainId || null,
+        episodeNumber: serverData.episodeNumber || 1,
+        cubeNumber: Number(cubeNumber),
+        layerK: K,
+        discoveredAt: Date.now(),
+        status: gemStatus,
+        redeemedAt: null,
+        walletAddress: userWallet,
+        priceUSD: GEM_PRICES[tier - 1] || 0,
+        // Marca "bonus por cerrar episodio" para distinguir en UI / analytics.
+        ...(gemDocSuffix === "_winner" ? { episodeWinnerBonus: true } : {}),
+      });
+      if (userWallet) {
+        const pendingMintRef = db.collection("pendingMints").doc(`mint_${gemDocId}`);
+        tx.set(pendingMintRef, {
+          uid,
+          gemId: gemDocId,
+          gemTier: tier,
+          gemCode,
+          walletAddress: userWallet,
+          priceUSD: GEM_PRICES[tier - 1] || 0,
+          createdAt: Date.now(),
+          status: "pending",
+        });
+      }
+    };
+
+    // Round 2 audit #4 HIGH-M1: gem creation + auto-pendingMint DENTRO de la TX.
+    // Pre-fix: el gem se persistía con `.add()` después del runTransaction. Si
+    // el process moría entre el TX commit y el .add() (deploy, OOM, timeout,
+    // SIGKILL), el user perdía permanentemente el gem. docId determinístico
+    // garantiza atomicidad + idempotencia ante retries.
+    if (gem) {
+      persistGem(gem, "");
+    }
+
+    // Audit feedback 2026-06-23+: premio fijo tier 6 ($100) garantizado al
+    // jugador que cierra el episodio (mina la cara final del K=0). Se suma
+    // a la gema probabilística (si la hubo) — el winner puede recibir 2
+    // gemas distintas en la misma mining tx (ej: tier 1 + tier 6 bonus).
+    // El "_winner" suffix en el docId evita colisión con la gema regular.
+    // No aplica al server Free (D5): ahí el premio de cierre de episodio YA
+    // es el tier 4 ($1.000) forzado arriba y persistido como gema normal —
+    // agregar este bonus también sería un premio extra no contemplado en
+    // el total de $35.000.
+    let winnerBonusGem = null;
+    if (episodeComplete && !isFreeServer) {
+      const WINNER_TIER = 6;
+      persistGem(WINNER_TIER, "_winner");
+      winnerBonusGem = WINNER_TIER;
+    }
 
     return {
       ok: true,
       reward,
       gem: gem || null,
+      winnerBonusGem,
       layerComplete,
       episodeComplete,
       currentLayer: layerComplete && !episodeComplete ? K - 1 : K,
@@ -786,53 +1555,6 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
       cubesRemaining: cubesRemaining - 1,
     };
   });
-
-  // Guardar gema en la wallet del usuario (fuera de transacción para no bloquearla)
-  if (result.gem) {
-    try {
-      const gemCode = generateGemCode(serverId, result.currentLayer, cubeNumber, result.gem, uid);
-      const serverSnap = await serverRef.get();
-      const serverData = serverSnap.data() || {};
-
-      // Verificar si el usuario tiene wallet vinculada para auto-mintear el NFT
-      const userSnap = await db.collection("users").doc(uid).get();
-      const rawWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
-      const userWallet = (rawWallet && /^0x[a-fA-F0-9]{40}$/.test(rawWallet)) ? rawWallet : null;
-      const gemStatus = userWallet ? 'minting' : 'unclaimed';
-
-      const gemRef = await db.collection("users").doc(uid).collection("gems").add({
-        gemTier: result.gem,
-        code: gemCode,
-        serverId,
-        chainId: serverData.chainId || null,
-        episodeNumber: serverData.episodeNumber || 1,
-        cubeNumber: Number(cubeNumber),
-        layerK: result.currentLayer,
-        discoveredAt: Date.now(),
-        status: gemStatus,
-        redeemedAt: null,
-        walletAddress: userWallet,
-        priceUSD: GEM_PRICES[result.gem - 1] || 0,
-      });
-
-      // Si tiene wallet, crear el pendingMint automáticamente
-      if (userWallet) {
-        await db.collection("pendingMints").add({
-          uid,
-          gemId: gemRef.id,
-          gemTier: result.gem,
-          gemCode,
-          tokenURI: GEM_TOKEN_URIS[(result.gem - 1)] || null,
-          walletAddress: userWallet,
-          priceUSD: GEM_PRICES[result.gem - 1] || 0,
-          createdAt: Date.now(),
-          status: 'pending',
-        });
-      }
-    } catch (e) {
-      console.warn("Gem save warning:", e.message);
-    }
-  }
 
   // Activity feed: gema encontrada
   if (result.gem) {
@@ -900,143 +1622,507 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
 });
 
 // ─── Peaks ───────────────────────────────────────────────────────────────────
+//
+// Cambio 1 (picos por cadena): antes vivían en users/{uid}.picks (un pool
+// GLOBAL compartido entre todas las cadenas donde juega el usuario — bug si
+// jugaba 2 a la vez). Ahora viven en users/{uid}/chainAccess/{chainId}.
+// `chainId` es REQUERIDO en los 3 endpoints callable de acá (no hay fallback
+// legacy "sin chainId" como en otros cambios): a diferencia de `mineCube`
+// -que siempre puede derivar el chainId server-side desde el server que se
+// está minando-, estos 3 endpoints se llaman desde la pantalla de Picos, que
+// antes era un modal global sin noción de cadena. Mantener un fallback ahí
+// dejaría el pool global (que mineCube ya no toca) completamente desacoplado
+// del pool real usado para minar -> picos "reclamados" que en la práctica se
+// pierden. Se prefiere fallar explícito (invalid-argument) hasta que el
+// cliente actualice (requiere bump de config/app.minVersion al desplegar
+// este cambio) antes que corromper silenciosamente el balance del usuario.
+const DEFAULT_AD_SLOTS = 2;
+
+// Helper: config de una cadena relevante para Picos (cantidad de slots y
+// cooldown por slot). Cambio 14 (2026-07-06): cooldown configurable por
+// cadena -- antes fijo en DAY_MS para todas, ahora el Free puede tener un
+// valor distinto (config.adCooldownMs en serverChains/{chainId}) sin
+// afectar a los servers pagos, que siguen en 24h por default.
+async function getChainPeaksConfig(chainId) {
+  const chainSnap = await db.collection("serverChains").doc(chainId).get();
+  const config = (chainSnap.exists && chainSnap.data().config) || {};
+  return {
+    dailyAdSlots: Number(config.dailyAdSlots) || DEFAULT_AD_SLOTS,
+    adCooldownMs: Number(config.adCooldownMs) || DAY_MS,
+  };
+}
+
+function requireChainId(request) {
+  const chainId = String((request.data && request.data.chainId) || '');
+  if (!chainId) throw new HttpsError("invalid-argument", "chainId required");
+  assertValidId(chainId, "chainId");
+  return chainId;
+}
 
 exports.getPeaksStatus = onCall(async (request) => {
   const uid = request.auth && request.auth.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Login required");
+  const chainId = requireChainId(request);
   const nowMs = Date.now();
   const userRef = db.collection("users").doc(uid);
-  const snap = await userRef.get();
-  if (!snap.exists) {
+  const chainAccessRef = userRef.collection("chainAccess").doc(chainId);
+
+  const [userSnap, accessSnap, { dailyAdSlots, adCooldownMs }] = await Promise.all([
+    userRef.get(), chainAccessRef.get(), getChainPeaksConfig(chainId),
+  ]);
+
+  if (!userSnap.exists) {
     await userRef.set({ picks: 0, createdAt: nowMs, referralCode: generateReferralCode() }, { merge: true });
-    return buildStatus({ picks: 0, createdAt: nowMs }, nowMs);
-  }
-  const data = snap.data() || {};
-  if (!data.referralCode) {
+  } else if (!userSnap.data().referralCode) {
     await userRef.set({ referralCode: generateReferralCode() }, { merge: true });
   }
-  return buildStatus(data, nowMs);
+
+  if (accessSnap.exists) {
+    return buildChainStatus(accessSnap.data(), nowMs, dailyAdSlots, adCooldownMs);
+  }
+  // Migración lazy "grandfather": primera vez que se pide status de esta
+  // cadena -> semillar con el balance global actual (snapshot único, NO se
+  // resta del global).
+  const globalPicks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
+  const seed = { chainId, picks: globalPicks, createdAt: nowMs };
+  await chainAccessRef.set(seed);
+  return buildChainStatus(seed, nowMs, dailyAdSlots, adCooldownMs);
 });
 
-exports.claimDailyPick = onCall(async (request) => {
+// Cambio 5 (compliance anuncios, 2026-07-03): reemplaza el viejo trío
+// claimDailyPick + createAdSession + claimAdSession (timer web de 60s +
+// token de sesión, servía para condicionar el pico a "esperaste viendo el
+// anuncio" — confirmado con soporte de Adsterra que ese patrón es
+// "incentivized traffic" y viola sus términos). Ahora el pico se entrega
+// incondicional al tocar el botón; el banner/Social Bar que se muestre en
+// esa pantalla es puramente pasivo, sin ninguna relación server-side con
+// este claim. Mismo modelo de datos que antes (ads[index] por slot,
+// dailyAdSlots por cadena) para no romper el histórico de cooldowns.
+exports.claimAdSlotPick = onCall(async (request) => {
   requireRegistered(request);
   const uid = request.auth.uid;
+  const chainId = requireChainId(request);
+  const index = Number(request.data && request.data.index);
   const nowMs = Date.now();
+  const { dailyAdSlots, adCooldownMs } = await getChainPeaksConfig(chainId);
+  if (!Number.isInteger(index) || index < 1 || index > dailyAdSlots) {
+    throw new HttpsError("invalid-argument", `index must be between 1 and ${dailyAdSlots}`);
+  }
+
   const userRef = db.collection("users").doc(uid);
+  const chainAccessRef = userRef.collection("chainAccess").doc(chainId);
   const result = await db.runTransaction(async (tx) => {
-    const snap = await tx.get(userRef);
-    const data = snap.exists ? (snap.data() || {}) : { picks: 0, createdAt: nowMs };
-    if (!snap.exists) tx.set(userRef, data, { merge: true });
-    const status = buildStatus(data, nowMs);
-    if (nowMs < status.nextDailyAt) throw new HttpsError("failed-precondition", "Daily not ready");
-    tx.set(userRef, { picks: FieldValue.increment(1), lastDailyAt: nowMs }, { merge: true });
-    const updated = Object.assign({}, data, { picks: (data.picks || 0) + 1, lastDailyAt: nowMs });
-    return buildStatus(updated, nowMs);
+    const [userSnap, accessSnap] = await Promise.all([tx.get(userRef), tx.get(chainAccessRef)]);
+    const data = accessSnap.exists ?
+      accessSnap.data() :
+      { chainId, picks: userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0, createdAt: nowMs };
+    const ads = data.ads || {};
+    // eslint-disable-next-line security/detect-object-injection -- index validado 1..dailyAdSlots arriba
+    const lastVal = toMillis(ads[index]) || 0;
+    if (nowMs < lastVal + adCooldownMs) throw new HttpsError("failed-precondition", `Slot ${index} not ready`);
+
+    if (accessSnap.exists) {
+      // BUG (2026-07-05): la clave computada `ads.${index}` con set({merge:true})
+      // se guardaba como campo LITERAL "ads.1"/"ads.2" (con el punto en el
+      // nombre), no como el mapa anidado ads:{1:...} que espera la lectura
+      // de arriba (`data.ads || {}`). Resultado: `ads` leído siempre vacío,
+      // cualquier slot parecía "nunca reclamado" -- reclamar CUALQUIER slot
+      // reseteaba el cooldown visible del otro. Fix: objeto anidado real,
+      // Firestore mergea profundo dentro del mapa `ads` existente.
+      tx.set(chainAccessRef, { picks: FieldValue.increment(1), ads: { [index]: nowMs } }, { merge: true });
+    } else {
+      tx.set(chainAccessRef, { chainId, createdAt: nowMs, picks: (data.picks || 0) + 1, ads: { [index]: nowMs } });
+    }
+    // Contador agregado de "views" de la cadena — usado por el server Free
+    // para liberar tiers de premio en vez de recaudación (el Free no cobra
+    // entrada, así que no hay $ que la fórmula 1,25×costo pueda proteger;
+    // acá el "costo cubierto" se mide en claims × AD_VIEW_VALUE_USD, ver
+    // freeServerConfig.js). Barato/inofensivo incrementarlo para toda
+    // cadena, no solo Free. Ya no está condicionado a haber visto un
+    // anuncio real — se cuenta con que al menos un slot se reclamó.
+    const chainRef = db.collection("serverChains").doc(chainId);
+    tx.set(chainRef, { totalAdViews: FieldValue.increment(1) }, { merge: true });
+
+    const updatedAds = Object.assign({}, ads, { [index]: nowMs });
+    const updated = Object.assign({}, data, { picks: (data.picks || 0) + 1, ads: updatedAds });
+    return buildChainStatus(updated, nowMs, dailyAdSlots, adCooldownMs);
   });
   return result;
 });
 
-// claimAdPick removed — ad picks are now issued exclusively through the
-// createAdSession → web timer page → claimAdSession flow.
+// ─── Modo Chain (cubo invertido, MTB coin) ───────────────────────────────────
+// Cambio 6 (2026-07-03): modo nuevo, SE ENTREGA COMPLETO PERO INACTIVO --
+// gateado por config/app.blockchainModeEnabled (default false/ausente),
+// mismo patrón que createServerCustom/paramServerCreationEnabled. Un solo
+// cubo global (blockchainState/main), sin episodios -- las capas se AGREGAN
+// a medida que se completan (arranca en K=0, shellSizeDedup(0)=1), al
+// revés del cubo estándar/Free que las destruye de afuera hacia adentro.
+//
+// Economía: no hay premios en gemas. Cada cubo colocado aporta una tarifa
+// en USD (según la racha de días consecutivos de quien lo coloca, ver
+// blockchainConfig.js) al pool compartido Y al crédito propio de ese
+// usuario -- el reparto final es proporcional a $ contribuido, no a
+// cantidad de cubos, para que la racha de uno no le saque % a nadie más.
 
-// ─── Ad timer page (web interstitial) ────────────────────────────────────────
-// Crea una sesión para la página de anuncios web (timer de 45s).
-// La página llama a claimAdSession vía HTTP para acreditar el pick.
-exports.createAdSession = onCall(async (request) => {
+function requireBlockchainModeEnabled(appConfigSnap) {
+  const enabled = appConfigSnap.exists && appConfigSnap.data().blockchainModeEnabled === true;
+  if (!enabled) throw new HttpsError("failed-precondition", "feature_disabled");
+}
+
+// Día calendario en UTC, formato "YYYY-MM-DD" -- para comparar rachas sin
+// depender de zona horaria del cliente.
+function utcDayKey(ms) {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function daysBetweenUtc(aMs, bMs) {
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const a = Date.UTC(...new Date(aMs).toISOString().slice(0, 10).split("-").map(Number));
+  const b = Date.UTC(...new Date(bMs).toISOString().slice(0, 10).split("-").map(Number));
+  return Math.round((b - a) / MS_PER_DAY);
+}
+
+// Verifica un token de hCaptcha contra su API siteverify. Lanza si no está
+// configurado el secret (falla cerrado -- sin captcha configurado, este
+// modo no puede operar, mejor que aceptar todo sin validar).
+async function verifyCaptcha(token, secretValue) {
+  if (!token || typeof token !== "string") {
+    throw new HttpsError("invalid-argument", "captcha_required");
+  }
+  const secret = secretValue;
+  if (!secret) {
+    console.error("HCAPTCHA_SECRET not configured");
+    throw new HttpsError("failed-precondition", "captcha_not_configured");
+  }
+  const params = new URLSearchParams({ secret, response: token });
+  const res = await fetch("https://hcaptcha.com/siteverify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  });
+  const data = await res.json();
+  if (!data || data.success !== true) {
+    throw new HttpsError("permission-denied", "captcha_failed");
+  }
+}
+
+// Status de solo lectura del cubo global + del usuario que consulta.
+exports.getChainBlockchainStatus = onCall(async (request) => {
+  const uid = request.auth && request.auth.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Login required");
+
+  const stateRef = db.collection("blockchainState").doc("main");
+  const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
+  const [stateSnap, accessSnap] = await Promise.all([stateRef.get(), accessRef.get()]);
+
+  // Cambio 9 (2026-07-05): mecánica estándar (igual que servers) -- el cubo
+  // arranca COMPLETO en BLOCKCHAIN_LAYER_COUNT y se mina hacia el centro
+  // (K decrece), no al revés. Default cuando no existe el doc todavía:
+  // capa inicial = BLOCKCHAIN_LAYER_COUNT (antes era 0, mecánica invertida
+  // descartada por complejidad de render 3D sin beneficio real).
+  const state = stateSnap.exists ? stateSnap.data() : { currentLayer: BLOCKCHAIN_LAYER_COUNT, placedInCurrentLayer: 0, poolUSD: 0 };
+  const access = accessSnap.exists ? accessSnap.data() : { picks: 0, streakDays: 0, totalContributedUSD: 0 };
+  const nowMs = Date.now();
+  // Cambio 13 (2026-07-06): el cooldown arranca al USAR el pico (placeCube
+  // setea lastUsedAt), no al reclamarlo -- lastPickAt ya no determina
+  // pickNextAt. Si ya tiene un pico sin usar (picks>=1), no hay nada que
+  // esperar todavía (el bloqueo real es "picks>=1", no el tiempo) --
+  // pickNextAt refleja cuándo se habilita el PRÓXIMO reclamo después de
+  // usar el actual.
+  const lastUsedAt = toMillis(access.lastUsedAt) || 0;
+  const currentLayer = state.currentLayer != null ? state.currentLayer : BLOCKCHAIN_LAYER_COUNT;
+
+  return {
+    name: state.name || BLOCKCHAIN_CHAIN_NAME,
+    currentLayer,
+    layerCount: BLOCKCHAIN_LAYER_COUNT,
+    placedInCurrentLayer: state.placedInCurrentLayer || 0,
+    layerSize: shellSizeDedup(currentLayer),
+    poolUSD: state.poolUSD || 0,
+    picks: access.picks || 0,
+    streakDays: access.streakDays || 0,
+    totalContributedUSD: access.totalContributedUSD || 0,
+    currentRatePerCube: rateForStreakDays(access.streakDays || 0),
+    pickNextAt: lastUsedAt ? lastUsedAt + CHAIN_PICK_COOLDOWN_MS : 0,
+    serverNow: nowMs,
+    // Cambio 16 (captcha de desbloqueo único): true si ya pasó el gate de
+    // entrada (unlockChain). El cliente usa esto para decidir si el botón
+    // de la lista dice "Desbloquear" (primera vez) o "Minar" (ya verificado).
+    unlocked: !!access.unlockVerifiedAt,
+  };
+});
+
+// Cambio 16 (captcha de desbloqueo único, 2026-07-06): gate de entrada a
+// Chain -- se llama UNA vez, la primera vez que el usuario toca "Desbloquear"
+// en la lista, ANTES de dejarlo entrar al cubo por primera vez. Distinto de
+// claimChainPick (que sigue pidiendo captcha en CADA reclamo de pico, sin
+// cambios). Si ya está desbloqueado, no-op (idempotente, el cliente no
+// debería llamarlo de nuevo, pero no rompe nada si lo hace).
+exports.unlockChain = onCall({ secrets: [hcaptchaSecret] }, async (request) => {
   requireRegistered(request);
   const uid = request.auth.uid;
-  const index = Number(request.data && request.data.index);
-  if (index !== 1 && index !== 2) throw new HttpsError("invalid-argument", "index must be 1 or 2");
 
-  // Verificar límite diario antes de crear la sesión
-  const userRef = db.collection("users").doc(uid);
-  const userSnap = await userRef.get();
-  if (userSnap.exists) {
-    const data = userSnap.data() || {};
-    const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
-    // eslint-disable-next-line security/detect-object-injection -- lastKey de literal whitelist
-    const lastVal = toMillis(data[lastKey]) || 0;
-    if (Date.now() < lastVal + DAY_MS) throw new HttpsError("failed-precondition", `Ad ${index} not ready`);
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  requireBlockchainModeEnabled(appConfigSnap);
+
+  const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
+  const accessSnap = await accessRef.get();
+  if (accessSnap.exists && accessSnap.data().unlockVerifiedAt) {
+    return { unlocked: true };
   }
 
-  const token = crypto.randomBytes(24).toString("hex");
-  const sessionId = crypto.randomBytes(16).toString("hex");
-  // OPS-7: expiresAt para TTL — sesiones se borran 1 día después de crear.
-  // El user tiene 30 min reales para ver el ad; después la session sigue
-  // existiendo pero ya no sirve. TTL la limpia para no acumular.
-  const now = Date.now();
-  await db.collection("adSessions").doc(sessionId).set({
-    uid, index, token, createdAt: now, used: false,
-    expiresAt: Timestamp.fromMillis(now + 24 * 60 * 60 * 1000),
-  });
-  return { sessionId, token };
+  const captchaToken = String((request.data && request.data.captchaToken) || "");
+  await verifyCaptcha(captchaToken, hcaptchaSecret.value());
+
+  await accessRef.set({ unlockVerifiedAt: Date.now() }, { merge: true });
+  return { unlocked: true };
 });
 
-// Endpoint HTTP llamado desde la página web después del timer.
-// No requiere auth de Firebase — la seguridad la da el token de un solo uso.
-exports.claimAdSession = onRequest(async (req, res) => {
-  setRestrictedCorsHeaders(req, res);
-  if (req.method === "OPTIONS") {
-    res.status(204).send("");
-    return;
-  }
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "method_not_allowed" });
-    return;
-  }
+// Pico diario incondicional (1 slot, cooldown 2h) -- exige captcha
+// verificado server-side, anti-bot puro, sin relación a ningún anuncio.
+// Reclamar el pico NO cuenta para la racha de colocado (ver placeCube).
+//
+// Cambio 13 (2026-07-06): no se pueden "guardar" picos -- máximo 1 sin
+// usar a la vez (picks>=1 bloquea un nuevo reclamo), y el cooldown de 2h
+// para el PRÓXIMO reclamo arranca cuando el actual se USA (placeCube
+// setea lastUsedAt), no cuando se reclama. Esto ata la frecuencia de
+// impresiones del anuncio del modal de reclamo a cuánto juega el usuario
+// en la práctica, en vez de a cuántas veces puede tocar "reclamar" sin
+// usar nada.
+exports.claimChainPick = onCall({ secrets: [hcaptchaSecret] }, async (request) => {
+  requireRegistered(request);
+  const uid = request.auth.uid;
 
-  const { sessionId, token } = req.body || {};
-  if (!sessionId || !token) {
-    res.status(400).json({ error: "missing_params" });
-    return;
-  }
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  requireBlockchainModeEnabled(appConfigSnap);
 
-  const sessionRef = db.collection("adSessions").doc(String(sessionId));
+  const captchaToken = String((request.data && request.data.captchaToken) || "");
+  await verifyCaptcha(captchaToken, hcaptchaSecret.value());
+
+  const nowMs = Date.now();
+  const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
+
+  const result = await db.runTransaction(async (tx) => {
+    const accessSnap = await tx.get(accessRef);
+    const data = accessSnap.exists ? accessSnap.data() : {};
+    if ((data.picks || 0) >= 1) throw new HttpsError("failed-precondition", "pick_already_held");
+    const lastUsedAt = toMillis(data.lastUsedAt) || 0;
+    if (nowMs < lastUsedAt + CHAIN_PICK_COOLDOWN_MS) throw new HttpsError("failed-precondition", "pick_not_ready");
+
+    const updated = {
+      picks: 1,
+      streakDays: data.streakDays || 0,
+      lastPlacedDay: data.lastPlacedDay || null,
+      totalContributedUSD: data.totalContributedUSD || 0,
+      lastUsedAt: data.lastUsedAt || null,
+    };
+    tx.set(accessRef, updated, { merge: true });
+    return updated;
+  });
+  // pickNextAt: 0 -- el pico recién reclamado todavía no se usó, no hay
+  // cooldown corriendo (arranca en placeCube). El cliente ya sabe que no
+  // puede reclamar de nuevo porque picks>=1 (ver claimChainPick arriba).
+  return { picks: result.picks, pickNextAt: 0 };
+});
+
+// Mina un cubo de la capa actual (mecánica estándar, igual que servers --
+// Cambio 9, 2026-07-05: reemplaza la mecánica invertida original de este
+// modo, que hacía crecer el cubo desde 1 cubo hacia afuera; se descartó
+// por la complejidad/bugs del render 3D para capas chicas sin beneficio
+// real sobre simplemente reusar el mecanismo ya probado de servers).
+// Consume 1 pico, aporta al pool según la racha de días consecutivos de
+// quien mina, y retrocede a la capa interior cuando la actual se completa.
+exports.placeCube = onCall(async (request) => {
+  requireRegistered(request);
+  await assertFreshToken(request);
+  const uid = request.auth.uid;
+
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  requireBlockchainModeEnabled(appConfigSnap);
+
+  const nRaw = (request.data && request.data.cubeNumber);
+  const n = Math.floor(Number(nRaw));
+  if (!Number.isInteger(n) || n < 1) throw new HttpsError("invalid-argument", "cubeNumber required");
+
+  const stateRef = db.collection("blockchainState").doc("main");
+  const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
+  const userRef = db.collection("users").doc(uid);
   const nowMs = Date.now();
 
-  try {
-    await db.runTransaction(async (tx) => {
-      const sessionSnap = await tx.get(sessionRef);
-      if (!sessionSnap.exists) throw new Error("not_found");
-      const session = sessionSnap.data();
-      // BAJO (ESLint security/detect-possible-timing-attacks): comparación
-      // constant-time del token. `!==` short-circuita y leakea info via
-      // timing analysis (no práctico para 192-bit tokens vía internet, pero
-      // defense-in-depth). timingSafeEqual exige Buffers del mismo length.
-      const a = Buffer.from(String(session.token || ''), 'utf8');
-      const b = Buffer.from(String(token || ''), 'utf8');
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-        throw new Error("invalid_token");
-      }
-      if (session.used) throw new Error("already_used");
-      if (nowMs - session.createdAt > 12 * 60 * 1000) throw new Error("expired"); // 12 min
+  const result = await db.runTransaction(async (tx) => {
+    const [stateSnap, accessSnap, userSnap] = await Promise.all([tx.get(stateRef), tx.get(accessRef), tx.get(userRef)]);
+    const state = stateSnap.exists ? stateSnap.data() : { currentLayer: BLOCKCHAIN_LAYER_COUNT, placedInCurrentLayer: 0, poolUSD: 0 };
+    const K = state.currentLayer != null ? state.currentLayer : BLOCKCHAIN_LAYER_COUNT;
+    if (K < 0) throw new HttpsError("failed-precondition", "chain_closed");
 
-      const uid = session.uid;
-      const index = session.index;
-      const userRef = db.collection("users").doc(uid);
-      const userSnap = await tx.get(userRef);
-      const data = userSnap.exists ? (userSnap.data() || {}) : { picks: 0 };
-      const lastKey = index === 1 ? "lastAd1At" : "lastAd2At";
-      // eslint-disable-next-line security/detect-object-injection -- lastKey de literal whitelist
-      const lastVal = toMillis(data[lastKey]) || 0;
-      if (nowMs < lastVal + DAY_MS) throw new Error("not_ready");
+    // El cubeNumber tiene que caer en el rango de la capa K (acumulado
+    // dedup): (cumSumDedup(K-1), cumSumDedup(K)]. Este rango es geometría
+    // estática de la capa K -- no depende de la dirección en que se recorre
+    // el cubo, así que no cambia respecto a la mecánica anterior.
+    const rangeMin = K > 0 ? cumSumDedup(K - 1) : 0;
+    const rangeMax = cumSumDedup(K);
+    if (n <= rangeMin || n > rangeMax) throw new HttpsError("invalid-argument", "cube_out_of_range");
 
-      tx.set(sessionRef, { used: true, claimedAt: nowMs }, { merge: true });
-      tx.set(userRef, { picks: FieldValue.increment(1), [lastKey]: nowMs }, { merge: true });
-    });
-    res.json({ ok: true });
-  } catch (e) {
-    // INF-001: NO devolver e.message al cliente — eso permite enumerar estados
-    // internos (invalid_token, already_used, expired, not_ready, ALREADY_CLOSING).
-    // Mapeamos a un set chico de códigos públicos.
-    const KNOWN_PUBLIC = new Set(["invalid_token", "already_used", "expired", "not_ready", "not_found"]);
-    const code = KNOWN_PUBLIC.has(e && e.message) ? e.message : "bad_request";
-    if (!KNOWN_PUBLIC.has(code)) {
-      console.error("claimAdSession internal error:", e && e.message);
+    const placedRef = stateRef.collection("placed").doc(String(n));
+    const placedSnap = await tx.get(placedRef);
+    if (placedSnap.exists) throw new HttpsError("already-exists", "already_placed");
+
+    const access = accessSnap.exists ? accessSnap.data() : {};
+    const picks = access.picks || 0;
+    if (picks < 1) throw new HttpsError("failed-precondition", "no_picks");
+
+    // Racha: solo avanza/mantiene si mina en un día calendario distinto
+    // al último donde ya había minado (evita inflar la racha minando
+    // 50 cubos el mismo día). Si el gap es de más de 1 día, se corta.
+    const lastPlacedDay = access.lastPlacedDay || null;
+    const todayKey = utcDayKey(nowMs);
+    let streakDays = access.streakDays || 0;
+    if (lastPlacedDay === todayKey) {
+      // ya minó hoy -- racha no cambia, pero sigue minando cubos hoy.
+    } else if (lastPlacedDay) {
+      const gap = daysBetweenUtc(new Date(lastPlacedDay + "T00:00:00Z").getTime(), nowMs);
+      streakDays = gap === 1 ? streakDays + 1 : 1; // gap>1 corta la racha, arranca de nuevo
+    } else {
+      streakDays = 1; // primera vez que mina
     }
-    res.status(400).json({ error: code });
+
+    const rate = rateForStreakDays(streakDays);
+
+    tx.set(placedRef, { uid, placedAt: nowMs, rate });
+    tx.set(accessRef, {
+      picks: picks - 1,
+      streakDays,
+      lastPlacedDay: todayKey,
+      totalContributedUSD: (access.totalContributedUSD || 0) + rate,
+      // Cambio 13 (2026-07-06): acá arranca el cooldown del próximo pico
+      // (2h), no en claimChainPick -- ver comentario ahí.
+      lastUsedAt: nowMs,
+    }, { merge: true });
+
+    const placedInCurrentLayer = (state.placedInCurrentLayer || 0) + 1;
+    const layerSize = shellSizeDedup(K);
+    const layerComplete = placedInCurrentLayer >= layerSize;
+    const historySeq = (state.historySeq || 0) + 1;
+    tx.set(stateRef, {
+      name: state.name || BLOCKCHAIN_CHAIN_NAME,
+      currentLayer: layerComplete ? K - 1 : K,
+      placedInCurrentLayer: layerComplete ? 0 : placedInCurrentLayer,
+      poolUSD: (state.poolUSD || 0) + rate,
+      historySeq,
+    }, { merge: true });
+
+    // Cambio 16 (2026-07-06): historial de actividad ("quién minó qué
+    // cubo y cuándo"), mismo concepto que el evento "mine" de servers
+    // estándar -- a diferencia de ahí (donde el cliente escribe con el
+    // SDK normal y las reglas de Firestore lo bloquean siempre, un bug
+    // preexistente confirmado en logcat de esta sesión: "Failed to
+    // persist mine to Firestore" / permission-denied), acá se escribe
+    // DESDE EL BACKEND con Admin SDK (bypasea las reglas), dentro de la
+    // misma transacción -- nunca falla silenciosamente.
+    const userData = userSnap.exists ? userSnap.data() : {};
+    const displayName = userData.displayName ||
+      (userData.profile && userData.profile.displayName) || null;
+    const histRef = stateRef.collection("history").doc(String(historySeq));
+    tx.set(histRef, {
+      type: "mine",
+      seq: historySeq,
+      ts: nowMs,
+      uid,
+      displayName,
+      cubeNumber: n,
+      layerK: K,
+      rate,
+    });
+
+    return {
+      cubeNumber: n,
+      rate,
+      streakDays,
+      layerComplete,
+      newLayer: layerComplete ? K - 1 : K,
+      chainClosing: layerComplete && K === 0,
+      chainName: state.name || BLOCKCHAIN_CHAIN_NAME,
+      poolUSD: (state.poolUSD || 0) + rate,
+    };
+  });
+
+  // Cambio 7 (cierre de cadena, 2026-07-04): la última capa (K=0, el cubo
+  // central) se acaba de completar con ESTE placeCube -- archivar, repartir
+  // proporcional y arrancar la próxima cadena. Corre DESPUÉS de la
+  // transacción (no adentro -- iterar todos los contribuyentes de la
+  // cadena es un collectionGroup query de tamaño no acotado, no cabe bien
+  // en una transacción de Firestore). Evento rarísimo en la práctica (ver
+  // estimación de tiempo para minar 250 capas), no es un hot path.
+  if (result.chainClosing) {
+    try {
+      await closeChainAndArchive(result.chainName, result.poolUSD);
+    } catch (e) {
+      // No re-lanzar: el cubo YA se colocó y acreditó (arriba). Si el
+      // cierre falla, el estado queda con currentLayer > BLOCKCHAIN_LAYER_COUNT
+      // (placeCube ya rechaza nuevos intentos con chain_closed) y hay que
+      // reintentar el cierre manualmente -- no perder el placement del user.
+      console.error("closeChainAndArchive failed:", e && e.message);
+    }
   }
+
+  return result;
 });
+
+// Archiva la cadena cerrada a blockchainHistory, calcula el % de cada
+// contribuyente sobre el pool final y lo registra como ledger (SIN
+// movimiento real de plata todavía -- ver decisión del usuario 2026-07-03:
+// dejar armado, activar el pago real recién con claridad legal). Arranca
+// la cadena siguiente con un nombre placeholder incremental -- el usuario
+// puede editarlo a mano en Firestore cuando llegue el momento, dado que
+// completar 250 capas tarda muchísimo tiempo real.
+async function closeChainAndArchive(chainName, finalPoolUSD) {
+  const stateRef = db.collection("blockchainState").doc("main");
+  const historyRef = db.collection("blockchainHistory").doc(chainName);
+  const counterRef = db.collection("blockchainState").doc("counter");
+
+  const contributorsSnap = await db.collectionGroup("blockchainAccess")
+      .where("totalContributedUSD", ">", 0)
+      .get();
+
+  const batch = db.batch();
+  let contributorCount = 0;
+  contributorsSnap.forEach((doc) => {
+    const uid = doc.ref.parent.parent.id;
+    const contributed = doc.data().totalContributedUSD || 0;
+    if (contributed <= 0) return;
+    const share = finalPoolUSD > 0 ? contributed / finalPoolUSD : 0;
+    const payoutRef = db.collection("users").doc(uid).collection("blockchainPayouts").doc(chainName);
+    batch.set(payoutRef, {
+      chainName,
+      contributedUSD: contributed,
+      share,
+      amountUSD: finalPoolUSD * share,
+      closedAt: Date.now(),
+    });
+    contributorCount += 1;
+  });
+
+  batch.set(historyRef, {
+    name: chainName,
+    poolUSD: finalPoolUSD,
+    layerCount: BLOCKCHAIN_LAYER_COUNT,
+    contributorCount,
+    closedAt: Date.now(),
+  });
+
+  const counterSnap = await counterRef.get();
+  const closedChains = (counterSnap.exists ? counterSnap.data().closedChains : 0) || 0;
+  const nextName = `${BLOCKCHAIN_CHAIN_NAME}-${closedChains + 2}`; // -2: la primera cadena ya usó el nombre base
+  batch.set(counterRef, { closedChains: closedChains + 1 });
+  batch.set(stateRef, {
+    name: nextName,
+    currentLayer: BLOCKCHAIN_LAYER_COUNT,
+    placedInCurrentLayer: 0,
+    poolUSD: 0,
+  });
+
+  await batch.commit();
+}
 
 // ─── Admin helpers ───────────────────────────────────────────────────────────
 // OPS-8: grantPicksDev / resetAllMinedCubes / sendTestPush / initLayerRewards
@@ -1048,38 +2134,132 @@ exports.claimAdSession = onRequest(async (req, res) => {
 
 // ─── Worker: procesa pendingMints y mintea NFTs en Polygon ───────────────────
 
+// V2 ABI (deploy 2026-06-23): mintGem ya no toma tokenURI_ como argumento — el
+// URI se deriva del tier on-chain (cierra MED-S1 del audit R2: vector "backend
+// comprometido podía mintear con URI fraudulenta"). Caller solo elige tier+code.
 const MTBGEMS_ABI = [
-  "function mintGem(address to, uint8 gemTier, string calldata gemCode, string calldata tokenURI_) external returns (uint256)",
+  "function mintGem(address to, uint8 gemTier, string calldata gemCode) external returns (uint256)",
+  "event GemMinted(uint256 indexed tokenId, address indexed to, uint8 tier, string gemCode)",
 ];
 
 // titles/bodies can be plain strings or {en, es} objects for bilingual support
-async function sendPushToUser(uid, titles, bodies) {
+// Round 2 Agente #10:
+//   - CRIT-10-02: respetar settings.notify* del user (toggles de Config) — los
+//     toggles eran cosméticos pre-fix; backend nunca los leía.
+//   - CRIT-10-03: limpiar pushTokens inválidos cuando FCM responde
+//     "token-not-registered" — sin esto, cross-user leakage en device
+//     compartido + cost amplification de queries.
+//   - HIGH-10-09: data payload para deep-linking al tap del push.
+// Signature: sendPushToUser(uid, titles, bodies, opts?)
+// opts.notifyKey: e.g. 'notifyRewards' — skip si user tiene ese setting false.
+// opts.data: objeto custom serializable (FCM exige string values).
+async function sendPushToUser(uid, titles, bodies, opts) {
   try {
+    const notifyKey = opts && opts.notifyKey;
+    const data = (opts && opts.data) || null;
+    // Round 2 Agente #10 HIGH-10-10: channelId per push para mute granular
+    // en Android. Default a 'default' channel si el caller no especifica.
+    // Valores válidos: 'mint', 'payment', 'referral', 'marketing', 'default'.
+    const channelId = (opts && opts.channelId) || 'default';
     const snap = await db.collection("users").doc(uid).get();
-    const data = snap.exists ? snap.data() : {};
-    const token = data.pushToken || null;
-    const tokenType = data.pushTokenType || 'expo';
+    const userData = snap.exists ? snap.data() : {};
+    const token = userData.pushToken || null;
+    const tokenType = userData.pushTokenType || 'expo';
     if (!token) return;
-    const lang = (data && data.settings && data.settings.language) === 'es' ? 'es' : 'en';
+    // CRIT-10-02: respetar preferencia (default opt-in si undefined).
+    // eslint-disable-next-line security/detect-object-injection -- notifyKey controlado por callers internos
+    if (notifyKey && userData.settings && userData.settings[notifyKey] === false) return;
+    const lang = (userData.settings && userData.settings.language) === 'es' ? 'es' : 'en';
     // eslint-disable-next-line security/detect-object-injection -- lang validado a 'es'|'en' arriba
     const title = typeof titles === 'object' ? (titles[lang] || titles.en) : titles;
     // eslint-disable-next-line security/detect-object-injection -- lang validado a 'es'|'en' arriba
     const body = typeof bodies === 'object' ? (bodies[lang] || bodies.en) : bodies;
     if (tokenType === 'fcm') {
-      await getMessaging().send({
-        token,
-        notification: { title, body },
-        android: { priority: "high", notification: { sound: "default" } },
-      });
+      try {
+        await getMessaging().send({
+          token,
+          notification: { title, body },
+          // FCM exige que todos los values en data sean strings.
+          ...(data ? { data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])) } : {}),
+          android: { priority: "high", notification: { sound: "default", channelId } },
+        });
+      } catch (e) {
+        const code = e && e.code;
+        if (code === "messaging/registration-token-not-registered" ||
+            code === "messaging/invalid-registration-token" ||
+            code === "messaging/mismatched-credential") {
+          // CRIT-10-03: cleanup de token inválido.
+          try {
+            await db.collection("users").doc(uid).set({
+              pushToken: FieldValue.delete(),
+              pushTokenType: FieldValue.delete(),
+            }, { merge: true });
+            console.log(`sendPushToUser: cleaned invalid token for uid=${uid}`);
+          } catch (cleanErr) {
+            console.warn("sendPushToUser cleanup error:", cleanErr.message);
+          }
+        } else {
+          throw e;
+        }
+      }
     } else {
+      // Expo Push API (legacy). Tokens FCM nativos NO funcionan acá — esa es
+      // exactamente la causa de CRIT-10-01 en notifyAllUsers. Mantener por
+      // compat con users pre-V1.1.0 que todavía tengan pushTokenType='expo'.
       await fetch("https://exp.host/--/api/v2/push/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: token, title, body, sound: "default" }),
+        body: JSON.stringify({ to: token, title, body, sound: "default", data: data || undefined }),
       });
     }
   } catch (e) {
     console.error("sendPushToUser error:", e.message);
+  }
+}
+
+// CRIT (Round 2 Agentes #3 + #8): lock distribuido para el mint processor.
+// Sin esto, `processPendingMints` (admin manual) y `mintProcessorScheduled`
+// (cron 5min) pueden correr concurrentes y ambos envían la mintGem() tx con
+// el MISMO nonce de la company wallet → una falla con "nonce too low" o
+// "replacement transaction underpriced", MATIC quemado en fees, race en el
+// doc pendingMints.status=processing, y backlog atascado.
+//
+// La lock vive en runtime/mintProcessor con expiresAt. Si el worker crashea
+// antes del finally, la lock auto-expira en LOCK_TTL_MS y el próximo run la
+// toma. No previene el caso patológico de "nonce stuck por RPC", pero sí el
+// escenario más común (cron vs manual concurrente, o dos crons solapados si
+// uno tardó >5min).
+//
+// Patrón: read snapshot dentro de TX, evaluar expiry, escribir si libre.
+// Las rules ya son default-deny para /runtime/*, por lo que el cliente no
+// puede tocarlo.
+const MINT_LOCK_TTL_MS = 10 * 60 * 1000;
+async function withMintProcessorLock(fn) {
+  const lockRef = db.collection("runtime").doc("mintProcessor");
+  let acquired = false;
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(lockRef);
+      const now = Date.now();
+      if (snap.exists && (snap.data().expiresAt || 0) > now) {
+        return; // otra invocación tiene la lock viva → acquired queda false
+      }
+      tx.set(lockRef, { acquiredAt: now, expiresAt: now + MINT_LOCK_TTL_MS });
+      acquired = true;
+    });
+  } catch (e) {
+    console.error("mintProcessor lock acquire error:", e.message);
+    return { ok: false, processed: 0, failed: 0, skipped: true, reason: "lock_error" };
+  }
+  if (!acquired) {
+    return { ok: true, processed: 0, failed: 0, skipped: true, reason: "lock_held" };
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      await lockRef.delete();
+    } catch (_) {/* TTL backup garantiza limpieza */}
   }
 }
 
@@ -1161,9 +2341,16 @@ async function runMintProcessing() {
           data.walletAddress,
           data.gemTier,
           data.gemCode,
-          data.tokenURI || GEM_TOKEN_URIS[(data.gemTier - 1)],
       );
-      const receipt = await tx.wait();
+      // CRIT (Round 2 Agentes #3 + #8): tx.wait() sin confirmaciones es
+      // vulnerable a reorgs Polygon (PoS Heimdall confirma "checkpoints" cada
+      // ~30 min; reorgs hasta 100 bloques se han observado históricamente).
+      // Sin esperar SAFE_CONFIRMATIONS, podemos marcar status:completed para
+      // un NFT que después desaparece on-chain → user sin NFT y sin recourse.
+      // 30 bloques @ ~2.2s/block ≈ 66s de espera adicional por mint. Aceptable
+      // para un cron 5min con queue chica.
+      const SAFE_CONFIRMATIONS = 30;
+      const receipt = await tx.wait(SAFE_CONFIRMATIONS);
 
       let tokenId = null;
       for (const log of receipt.logs) {
@@ -1192,6 +2379,8 @@ async function runMintProcessing() {
             data.uid,
             { en: "Your NFT arrived! 💎", es: "¡Tu NFT llegó! 💎" },
             { en: `Your gem was minted on Polygon. Token #${tokenId || ''}`, es: `Tu gema fue minteada en Polygon. Token #${tokenId || ''}` },
+            // Round 2 #10: respetar settings.notifyRewards + deep-link a MyGems + channel 'mint'.
+            { notifyKey: "notifyRewards", channelId: "mint", data: { url: "exp+miningtheblocks://gems", type: "mint_complete" } },
         );
       }
       processed++;
@@ -1243,7 +2432,28 @@ async function runMintProcessing() {
 exports.processPendingMints = onCall({ secrets: [companyWalletKey, gmailAppPassword] }, async (request) => {
   // ALTO-31: check admin fresco (Admin SDK), no token cacheado.
   await requireAdminFresh(request);
-  return runMintProcessing();
+  const adminUid = request.auth.uid;
+  // CRIT (Round 2 Agentes #3 + #8): lock distribuido. Si el cron está corriendo
+  // ahora, este onCall retorna skipped:lock_held en vez de competir por nonce.
+  const result = await withMintProcessorLock(() => runMintProcessing());
+  // HIGH (Round 2 Agente #6 HIGH): audit log de la invocación manual. Sin esto,
+  // un admin que dispara el flow no queda registrado en adminActions — solo
+  // sale en Cloud Logging con retención 30d. Para forensic post-incidente
+  // (e.g., "quién aceleró el mint procesando una queue stuck?") esto es esencial.
+  try {
+    await db.collection("adminActions").add({
+      action: "processPendingMints",
+      adminUid,
+      ts: Date.now(),
+      processed: result.processed || 0,
+      failed: result.failed || 0,
+      skipped: !!result.skipped,
+      reason: result.reason || null,
+    });
+  } catch (e) {
+    console.warn("processPendingMints audit log failed:", e && e.message);
+  }
+  return result;
 });
 
 // Scheduler automático — corre cada 5 minutos
@@ -1259,11 +2469,131 @@ exports.mintProcessorScheduled = onSchedule(
         console.log("mintProcessorScheduled: skipped (queue empty)");
         return;
       }
-      const result = await runMintProcessing();
+      // CRIT (Round 2 Agentes #3 + #8): lock distribuido — evita race con
+      // processPendingMints (admin manual). Si el admin disparó el flujo
+      // hace <10min, este cron se autosaltea y reintenta al próximo tick.
+      const result = await withMintProcessorLock(() => runMintProcessing());
       // SEC: solo counts, no JSON completo (puede contener uids/wallet addresses).
-      console.log(`mintProcessorScheduled: processed=${result.processed || 0} failed=${result.failed || 0}`);
+      if (result.skipped) {
+        console.log(`mintProcessorScheduled: skipped reason=${result.reason}`);
+      } else {
+        console.log(`mintProcessorScheduled: processed=${result.processed || 0} failed=${result.failed || 0}`);
+      }
     },
 );
+
+// ─── Notificaciones de picos listos ──────────────────────────────────────────
+// Cambio 16 (2026-07-06): avisa cuando un pico terminó su cooldown y ya se
+// puede reclamar -- Chain, Free y servers pagos, cada uno con su propio
+// notifyKey (toggle en Config.js) y channelId (mute granular en Android).
+// Reusa sendPushToUser (ya existente, arriba) que ya respeta
+// userData.settings[notifyKey] y limpia tokens inválidos -- acá solo hay
+// que detectar QUIÉN está listo y no reenviar la misma notif en cada tick.
+//
+// notifyIfReady centraliza la regla "listo pero no notificado todavía para
+// ESTE ciclo de cooldown" -- lastNotifiedAt se compara contra el momento en
+// que ese cooldown específico terminó (readyAt), no contra "ahora", para
+// poder distinguir un cooldown viejo ya notificado de uno nuevo que arrancó
+// después (ej. el usuario reclamó y usó de nuevo).
+async function notifyIfReady(uid, lastReadyAt, cooldownMs, lastNotifiedAt, notifyKey, channelId, titles, bodies) {
+  if (!lastReadyAt) return null; // nunca usó/reclamó -- no hay cooldown corriendo
+  const readyAt = lastReadyAt + cooldownMs;
+  const nowMs = Date.now();
+  if (nowMs < readyAt) return null; // todavía no está listo
+  if (lastNotifiedAt && lastNotifiedAt >= readyAt) return null; // ya se notificó este ciclo
+  await sendPushToUser(uid, titles, bodies, { notifyKey, channelId });
+  return nowMs;
+}
+
+async function runPickNotificationsCheck() {
+  let sentCount = 0;
+
+  // Chain: blockchainAccess/main, un solo pico, lastUsedAt + cooldown fijo.
+  const chainSnap = await db.collectionGroup("blockchainAccess").get();
+  for (const docSnap of chainSnap.docs) {
+    if (docSnap.id !== "main") continue; // defensivo, por si hubiera otros docs
+    const uid = docSnap.ref.parent.parent.id;
+    const data = docSnap.data();
+    const sentAt = await notifyIfReady(
+        uid,
+        toMillis(data.lastUsedAt) || 0,
+        CHAIN_PICK_COOLDOWN_MS,
+        toMillis(data.lastNotifiedAt) || 0,
+        "notifyChainPick", "chain_pick",
+        {en: "Chain pick ready", es: "Pico de Chain listo"},
+        {en: "Your next Chain pick is ready to claim.", es: "Tu próximo pico de Chain ya está listo para reclamar."},
+    );
+    if (sentAt) {
+      await docSnap.ref.set({lastNotifiedAt: sentAt}, {merge: true});
+      sentCount++;
+    }
+  }
+
+  // Free y servers pagos: chainAccess/{chainId}, hasta dailyAdSlots picos
+  // independientes (ads[i]), cooldown por cadena (Free 6h configurable,
+  // pagos 24h fijo default) -- ver getChainPeaksConfig.
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  const freeChainId = appConfigSnap.exists ? appConfigSnap.data().freeServerChainId : null;
+  const chainConfigCache = new Map();
+
+  const accessSnap = await db.collectionGroup("chainAccess").get();
+  for (const docSnap of accessSnap.docs) {
+    const uid = docSnap.ref.parent.parent.id;
+    const chainId = docSnap.id;
+    const data = docSnap.data();
+    const ads = data.ads || {};
+    const notifiedAds = data.notifiedAds || {};
+    const isFree = chainId === freeChainId;
+
+    let cfg = chainConfigCache.get(chainId);
+    if (!cfg) {
+      cfg = await getChainPeaksConfig(chainId);
+      chainConfigCache.set(chainId, cfg);
+    }
+    const notifyKey = isFree ? "notifyFreePick" : "notifyPaidServerPick";
+    const channelId = isFree ? "free_pick" : "paid_server_pick";
+    const titles = isFree ?
+      {en: "Free pick ready", es: "Pico Free listo"} :
+      {en: "Server pick ready", es: "Pico de server listo"};
+    const bodies = isFree ?
+      {en: "Your free daily pick is ready to claim.", es: "Tu pico diario gratis ya está listo para reclamar."} :
+      {en: "A daily pick is ready to claim.", es: "Tenés un pico diario listo para reclamar."};
+
+    const updatedNotifiedAds = {};
+    let anySent = false;
+    for (let i = 1; i <= cfg.dailyAdSlots; i++) {
+      // eslint-disable-next-line security/detect-object-injection -- i es un contador 1..dailyAdSlots (entero acotado)
+      const sentAt = await notifyIfReady(
+          uid, toMillis(ads[i]) || 0, cfg.adCooldownMs, toMillis(notifiedAds[i]) || 0,
+          notifyKey, channelId, titles, bodies,
+      );
+      if (sentAt) {
+        updatedNotifiedAds[i] = sentAt;
+        anySent = true;
+      }
+    }
+    if (anySent) {
+      await docSnap.ref.set({notifiedAds: Object.assign({}, notifiedAds, updatedNotifiedAds)}, {merge: true});
+      sentCount++;
+    }
+  }
+
+  return sentCount;
+}
+
+exports.pickReadyNotificationsScheduled = onSchedule("every 10 minutes", async () => {
+  const sentCount = await runPickNotificationsCheck();
+  console.log(`pickReadyNotificationsScheduled: sent=${sentCount}`);
+});
+
+// Endpoint de test manual -- dispara el mismo chequeo on-demand sin esperar
+// el cron, para poder probar con cooldowns reales (2h/6h/24h) sin esperar
+// horas. Requiere admin (mismo patrón que otros endpoints admin del archivo).
+exports.testPickNotifications = onCall(async (request) => {
+  await requireAdminFresh(request);
+  const sentCount = await runPickNotificationsCheck();
+  return {sentCount};
+});
 
 // ─── Referidos ────────────────────────────────────────────────────────────────
 
@@ -1305,6 +2635,14 @@ const WALLET_CHANGE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 exports.setUserWallet = onCall(async (request) => {
   requireRegistered(request);
+  // HIGH-06 (audit Round 2 / fix 2026-06-23+): checkRevoked en setUserWallet.
+  // Pre-fix: sin assertFreshToken, un token comprometido sigue válido ~60min
+  // post-revoke (JWT TTL). En esa ventana, atacante puede cambiar la wallet
+  // del user → todos los premios futuros van a la wallet del atacante hasta
+  // que la víctima rote el wallet manualmente (con cooldown 24h después).
+  // Crítico porque setUserWallet es el endpoint que controla dónde se recibe
+  // dinero on-chain ($15 a $100k por canje).
+  await assertFreshToken(request);
   const uid = request.auth.uid;
   const okRate = await _rateLimitFirestore(`suw_${uid}`, 5, 60 * 1000);
   if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
@@ -1376,10 +2714,39 @@ exports.applyReferral = onCall(async (request) => {
 // `pendingByAmount.set` sobreescribe → robo de crédito por colisión.
 exports.createCryptoPayment = onCall(async (request) => {
   requireRegistered(request);
+  // CRIT (Round 2 Agente #6): checkRevoked + disabled check. createCryptoPayment
+  // emite slots de amount únicos — un token revocado podría agotar las 99 slots
+  // del rate-limit global desde una sesión post-revoke ya invalidada.
+  await assertFreshToken(request);
   const uid = request.auth.uid;
   // FIX-FINAL-5: rate-limit para evitar agotar las 99 slots de amount unique
   const okRate = await _rateLimitFirestore(`ccp_${uid}`, 3, 60 * 60 * 1000);
   if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
+
+  // Round 2 audit #2 HIGH-1: bind sender wallet para evitar cross-attribution.
+  // Sin esto, un Transfer USDC de $15.42 de un tercero hacia PAYMENT_WALLET por
+  // CUALQUIER motivo acreditaba el pago waiting del user con amount=15.42. El
+  // matching usaba solo `to + value`, no `from`. Ahora el cliente puede declarar
+  // su wallet origen; si lo hace, el processor exige que el `from` del Transfer
+  // event coincida (case-insensitive). Si el caller no la pasa, fallback a
+  // comportamiento legacy (warn en logs) — pensado como migration window. El
+  // frontend nuevo siempre la incluirá.
+  const senderWalletInput = request.data && request.data.senderWalletAddress;
+  let senderWalletAddress = null;
+  if (typeof senderWalletInput === "string" && senderWalletInput.length > 0) {
+    if (!/^0x[a-fA-F0-9]{40}$/.test(senderWalletInput)) {
+      throw new HttpsError("invalid-argument", "senderWalletAddress must be a 0x-prefixed 40-hex string");
+    }
+    senderWalletAddress = senderWalletInput.toLowerCase();
+  }
+
+  // Audit feedback 2026-06-23+: el user puede tildar "Guardar billetera en
+  // mi cuenta" en el form de payment. Si lo tildó (saveWallet=true), el
+  // processor va a guardar la `from` wallet del Transfer event como
+  // walletAddress del user al confirmar el pago. Opt-in explícito — NO
+  // hacemos auto-save por default (respeta privacy del user que paga desde
+  // wallets temporales / shared).
+  const saveWalletInput = !!(request.data && request.data.saveWallet);
 
   const nowMs = Date.now();
 
@@ -1395,7 +2762,57 @@ exports.createCryptoPayment = onCall(async (request) => {
     return { paymentId: existing.docs[0].id, amount: d.amountDisplay, wallet: PAYMENT_WALLET, expiresAt: d.expiresAt };
   }
 
-  // Loop: probar centavos aleatorios hasta encontrar uno libre (con docId determinístico)
+  // Audit feedback 2026-06-23+: si el cliente declara senderWalletAddress,
+  // saltamos los cents random → cobramos $15.00 redondo. El processor matchea
+  // por `from` address (ya implementado en runCryptoPaymentProcessing) en
+  // lugar del monto. UX claramente más limpia para el 90%+ de users que
+  // tienen 1 wallet única vinculada.
+  if (senderWalletAddress) {
+    const amountUnits = CREDIT_PRICE_USD * 100 * 10000; // $15.00 redondo
+    const amountDisplay = `${CREDIT_PRICE_USD}.00`;
+    // docId basado en sender wallet (1 pending por wallet de origen). Si el
+    // user ya tiene un pending vigente con esa wallet, la check existing al
+    // inicio de la función ya lo habría retornado — pero igualmente
+    // protegemos con TX atómica.
+    const docId = `walletpay_${senderWalletAddress}`;
+    const ref = db.collection("pendingCryptoPayments").doc(docId);
+    const expiresAt = Date.now() + PAYMENT_WINDOW_MS;
+    try {
+      await db.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists) {
+          const data = snap.data() || {};
+          if (data.status === "waiting" && (data.expiresAt || 0) > Date.now()) {
+            // Si ya hay un pending vigente para esta wallet, devolver el mismo
+            // en vez de fallar. Soporta retries del cliente.
+            throw new Error("__reuse__");
+          }
+        }
+        tx.set(ref, {
+          uid, amountUnits, amountDisplay,
+          status: "waiting",
+          createdAt: Date.now(),
+          expiresAt,
+          senderWalletAddress,
+          saveWallet: saveWalletInput,
+        });
+      });
+      return { paymentId: docId, amount: amountDisplay, wallet: PAYMENT_WALLET, expiresAt };
+    } catch (e) {
+      if (e.message === "__reuse__") {
+        // Re-leer y devolver el existing.
+        const fresh = await ref.get();
+        if (fresh.exists) {
+          const d = fresh.data();
+          return { paymentId: docId, amount: d.amountDisplay, wallet: PAYMENT_WALLET, expiresAt: d.expiresAt };
+        }
+      }
+      throw e;
+    }
+  }
+
+  // Fallback (sin senderWalletAddress declarada): cents random para
+  // identificación de pago por amount. Comportamiento legacy.
   for (let attempt = 0; attempt < 30; attempt++) {
     const cents = Math.floor(Math.random() * 99) + 1;
     const amountUnits = (CREDIT_PRICE_USD * 100 + cents) * 10000; // USDC 6 decimales
@@ -1420,6 +2837,9 @@ exports.createCryptoPayment = onCall(async (request) => {
           status: "waiting",
           createdAt: Date.now(),
           expiresAt,
+          // Round 2 audit #2 HIGH-1: null porque el cliente no la declaró.
+          senderWalletAddress: null,
+          saveWallet: saveWalletInput,
         });
       });
       return { paymentId: docId, amount: amountDisplay, wallet: PAYMENT_WALLET, expiresAt };
@@ -1445,14 +2865,53 @@ async function runCryptoPaymentProcessing() {
   const currentBlock = await provider.getBlockNumber();
   // CRIT-02: solo considerar bloques con SAFE_CONFIRMATIONS confirmaciones.
   const safeBlock = currentBlock - SAFE_CONFIRMATIONS;
-  const fromBlock = safeBlock - 200; // ventana de ~6-7 min de bloques en Polygon
+
+  // CRIT (Round 2 Agente #8): usar checkpoint persistido en lugar de ventana
+  // fija de 200 bloques. Sin checkpoint, si el scheduler se atrasa >6.6 min
+  // (publicnode.com outage, cold start lento, function timeout retry...),
+  // los pagos USDC legítimos caen fuera de la ventana → perdidos silencio-
+  // samente (el doc pendingCryptoPayments queda waiting hasta expirar a
+  // los 30min y el user no recibe sus créditos).
+  //
+  // Con checkpoint: cada run procesa desde lastBlockProcessed+1 hasta
+  // safeBlock. Si una query RPC falla, NO se avanza el checkpoint → el
+  // próximo run reintenta. processedTxs/{txHash} previene doble-crédito.
+  const checkpointRef = db.collection("runtime").doc("cryptoPaymentCheckpoint");
+  const checkpointSnap = await checkpointRef.get();
+  const lastProcessed = checkpointSnap.exists ? (checkpointSnap.data().lastBlockProcessed || 0) : 0;
+
+  let fromBlock;
+  if (lastProcessed > 0 && lastProcessed < safeBlock) {
+    fromBlock = lastProcessed + 1;
+    // Defensive cap: si el backlog es absurdo (sistema offline días), evitar
+    // un query gigante a publicnode.com. 5000 bloques ≈ 3h de Polygon.
+    // Si llegamos a esto, hay pagos potencialmente perdidos en el gap —
+    // queda en logs para investigación post-mortem.
+    const MAX_BACKLOG = 5000;
+    if (safeBlock - fromBlock > MAX_BACKLOG) {
+      console.warn(`cryptoPaymentProcessor: gap=${safeBlock - fromBlock} bloques, capando a ${MAX_BACKLOG}. Posibles pagos perdidos en el gap.`);
+      fromBlock = safeBlock - MAX_BACKLOG;
+    }
+  } else {
+    // Primer run (sin checkpoint) o checkpoint adelantado: ventana corta para
+    // no escanear historia gratuitamente.
+    fromBlock = safeBlock - 200;
+  }
+  fromBlock = Math.max(fromBlock, 0);
 
   // Cargar pagos pendientes vigentes
   const pendingSnap = await db.collection("pendingCryptoPayments")
       .where("status", "==", "waiting")
       .where("expiresAt", ">", Date.now())
       .get();
-  if (pendingSnap.empty) return { processed: 0 };
+  if (pendingSnap.empty) {
+    // Avanzar checkpoint igual: si no hay pagos pendientes, no necesitamos
+    // re-escanear estos bloques en runs futuros.
+    if (lastProcessed < safeBlock) {
+      await checkpointRef.set({ lastBlockProcessed: safeBlock, updatedAt: Date.now() }, { merge: true });
+    }
+    return { processed: 0 };
+  }
 
   // SEC-002 defense-in-depth: array por amount (no sobreescribir).
   // Con docId determinístico nuevo, no debería haber colisiones, pero data legacy
@@ -1465,6 +2924,10 @@ async function runCryptoPaymentProcessing() {
   });
 
   let processed = 0;
+  // Round 2 Agente #8: track si TODAS las queries RPC tuvieron éxito. Si
+  // alguna falló, NO avanzamos el checkpoint para reintentar el rango en
+  // el próximo run (processedTxs previene doble-crédito).
+  let rpcQueriesSucceeded = true;
   for (const usdcAddress of USDC_CONTRACTS) {
     const contract = new ethers.Contract(usdcAddress, USDC_ABI, provider);
     let events;
@@ -1479,6 +2942,7 @@ async function runCryptoPaymentProcessing() {
       );
     } catch (e) {
       console.warn("Error querying USDC transfers:", e.message);
+      rpcQueriesSucceeded = false;
       continue;
     }
 
@@ -1486,9 +2950,30 @@ async function runCryptoPaymentProcessing() {
       const amount = Number(event.args.value);
       const docs = pendingByAmount.get(amount);
       if (!docs || docs.length === 0) continue;
-      // FCFS: tomar el más antiguo (createdAt asc) para resolver colisiones legacy
-      docs.sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0));
-      const paymentDoc = docs.shift();
+      const eventFrom = (event.args.from || "").toLowerCase();
+      // Round 2 audit #2 HIGH-1: si algún pending tiene `senderWalletAddress`
+      // declarado, exigimos match. Preferir pendings con sender declarado y
+      // matching; si ninguno matchea, intentar pendings sin sender (legacy).
+      // FCFS dentro de cada grupo (createdAt asc).
+      const sorted = [...docs].sort((a, b) => (a.data().createdAt || 0) - (b.data().createdAt || 0));
+      const matching = sorted.find((d) => {
+        const s = (d.data().senderWalletAddress || "").toLowerCase();
+        return s && s === eventFrom;
+      });
+      const legacy = sorted.find((d) => !d.data().senderWalletAddress);
+      const paymentDoc = matching || legacy;
+      if (!paymentDoc) {
+        // Hay pendings con sender declarado que NO matchean el `from` del event.
+        // Esto es exactamente el ataque cross-attribution bloqueado. Log + skip.
+        console.warn(
+            "USDC Transfer no atribuible (cross-attribution bloqueado):",
+            { txHash: event.transactionHash, from: eventFrom, amount, pendingCount: sorted.length },
+        );
+        continue;
+      }
+      // Quitar del array compartido del Map para que próximos events no lo reusen.
+      const idx = docs.indexOf(paymentDoc);
+      if (idx >= 0) docs.splice(idx, 1);
       const { uid } = paymentDoc.data();
       const txHash = event.transactionHash;
 
@@ -1510,7 +2995,25 @@ async function runCryptoPaymentProcessing() {
             return;
           }
           const userRef = db.collection("users").doc(uid);
-          tx.set(userRef, { serverCredits: FieldValue.increment(1) }, { merge: true });
+          // Audit feedback 2026-06-23+: link de wallet OPT-IN. Solo guardar
+          // automáticamente la `from` wallet si:
+          //   1. El user tildó "Guardar billetera" en el form de pago
+          //      (paymentDoc.saveWallet === true)
+          //   2. NO tiene walletAddress linked todavía (no sobrescribimos)
+          //   3. La `from` del Transfer es una address válida
+          // El cooldown de 24h de setUserWallet NO aplica a la PRIMERA
+          // asignación. Si después el user quiere cambiar la wallet, sigue
+          // requiriendo cooldown via setUserWallet manualmente.
+          const userSnap = await tx.get(userRef);
+          const existingWallet = userSnap.exists ? (userSnap.data().walletAddress || null) : null;
+          const userUpdate = { serverCredits: FieldValue.increment(1) };
+          const saveWalletFlag = !!(paymentDoc.data() && paymentDoc.data().saveWallet);
+          if (saveWalletFlag && !existingWallet && /^0x[a-fA-F0-9]{40}$/.test(eventFrom)) {
+            userUpdate.walletAddress = eventFrom;
+            userUpdate.walletChangedAt = Date.now();
+            userUpdate.walletAutoLinked = true;
+          }
+          tx.set(userRef, userUpdate, { merge: true });
           tx.set(paymentDoc.ref, {
             status: "completed",
             txHash: txHash,
@@ -1541,7 +3044,16 @@ async function runCryptoPaymentProcessing() {
             if (referredBy && !referralBonusPaid) {
               bonusReferredBy = referredBy;
               const referrerRef = db.collection("users").doc(referredBy);
-              tx.set(referrerRef, { picks: FieldValue.increment(5) }, { merge: true });
+              // Round 2 audit #4 HIGH-R1: cap del referrer (50 rewarded). El
+              // referido cobra siempre (1× per-user). Read antes de write.
+              const referrerSnap = await tx.get(referrerRef);
+              const referrerRewardedSoFar = (referrerSnap.exists && Number(referrerSnap.data().referralsRewarded || 0)) || 0;
+              if (referrerRewardedSoFar < REFERRER_BONUS_CAP) {
+                tx.set(referrerRef, {
+                  picks: FieldValue.increment(5),
+                  referralsRewarded: FieldValue.increment(1),
+                }, { merge: true });
+              }
               tx.set(userRef, {
                 picks: FieldValue.increment(5),
                 referralBonusPaid: true,
@@ -1549,7 +3061,13 @@ async function runCryptoPaymentProcessing() {
             }
           });
           if (bonusReferredBy) {
-            await sendPushToUser(bonusReferredBy, { en: "Your referral bought a credit! 🎉", es: "¡Tu referido compró un crédito! 🎉" }, { en: "You both received 5 picks! Keep inviting friends!", es: "¡Ambos recibieron 5 picos! ¡Seguí invitando amigos!" });
+            await sendPushToUser(
+                bonusReferredBy,
+                { en: "Your referral bought a credit! 🎉", es: "¡Tu referido compró un crédito! 🎉" },
+                { en: "You both received 5 picks! Keep inviting friends!", es: "¡Ambos recibieron 5 picos! ¡Seguí invitando amigos!" },
+                // Round 2 #10: respetar settings.notifyRewards + deep-link a Profile + channel 'referral'.
+                { notifyKey: "notifyRewards", channelId: "referral", data: { url: "exp+miningtheblocks://profile", type: "referral_bonus" } },
+            );
             // In-app notification for the referrer
             await db.collection("users").doc(bonusReferredBy).collection("notifications").add({
               type: "referral_bonus",
@@ -1573,13 +3091,14 @@ async function runCryptoPaymentProcessing() {
               uid,
               {en: "Payment received! 💰", es: "¡Pago recibido! 💰"},
               {en: "Your credit was added. You can now join a chain!", es: "Tu crédito fue acreditado. ¡Ya podés unirte a una cadena!"},
+              // Round 2 #10: respetar settings.notifyRewards + deep-link a ServerList + channel 'payment'.
+              { notifyKey: "notifyRewards", channelId: "payment", data: { url: "exp+miningtheblocks://servers", type: "payment_received" } },
           );
         } catch (pushErr) {
           console.warn("Push notification failed:", pushErr.message);
         }
 
-        // Si todavía hay docs legacy con este amount, no borrar el Map entry —
-        // ya hicimos shift(). Si quedó vacío el array, limpiar.
+        // Limpiar el Map si quedó vacío el array para no consumir memoria.
         if (docs.length === 0) pendingByAmount.delete(amount);
         processed++;
       } catch (e) {
@@ -1597,6 +3116,22 @@ async function runCryptoPaymentProcessing() {
     const batch = db.batch();
     expired.docs.forEach((doc) => batch.update(doc.ref, { status: "expired" }));
     await batch.commit();
+  }
+
+  // Round 2 Agente #8: avanzar checkpoint solo si las queries RPC fueron
+  // exitosas en TODOS los contratos USDC. Si alguna falló, el próximo run
+  // reintenta el mismo rango (los processedTxs previenen doble-crédito).
+  if (rpcQueriesSucceeded && safeBlock > lastProcessed) {
+    try {
+      await checkpointRef.set({
+        lastBlockProcessed: safeBlock,
+        updatedAt: Date.now(),
+      }, { merge: true });
+    } catch (e) {
+      // No es fatal: si falla, el próximo run vuelve a escanear desde donde
+      // estaba antes — los processedTxs hacen idempotente el procesamiento.
+      console.warn("cryptoPaymentProcessor checkpoint update failed:", e.message);
+    }
   }
 
   return { processed };
@@ -1619,17 +3154,25 @@ exports.notifyAllUsers = onCall(async (request) => {
   const body = String((request.data && request.data.body) || '').trim().slice(0, 500);
   if (!title || !body) throw new HttpsError("invalid-argument", "title and body required");
 
-  // Recopilar todos los tokens (en lotes de 500 para no agotar memoria)
+  // CRIT (Round 2 Agente #10 CRIT-10-01): antes mandábamos TODOS los tokens
+  // al endpoint Expo Push API, incluyendo los FCM nativos que el cliente
+  // registra desde V1.1.0+ via getDevicePushTokenAsync(). Expo respondía
+  // error sin tirar excepción → log decía "sent=N" cuando en realidad fueron
+  // 0. La única broadcast feature del producto NO entregaba ningún mensaje
+  // y el admin nunca se enteraba.
+  //
+  // Fix: ramificar por pushTokenType. FCM nativos van por
+  // getMessaging().sendEachForMulticast (hasta 500 tokens/call, devuelve
+  // success/error por token). Expo legacy sigue por exp.host. Token cleanup
+  // automático sobre los uids con responses de "not registered".
   const BATCH = 500;
-  const tokens = [];
+  const fcmTokens = [];
+  const fcmTokenUids = []; // paralelo a fcmTokens para cleanup
+  const expoTokens = [];
   let lastDoc = null;
 
   for (;;) {
     // MEDIO-H12: paginar con orderBy explícito para garantizar consistencia.
-    // El where("pushToken","!=",null) impone un orderBy implícito por pushToken;
-    // sin orderBy adicional sobre documentId(), startAfter(lastDoc) puede
-    // saltarse usuarios o repetirlos cuando varios docs comparten el mismo
-    // pushToken value (improbable con tokens únicos pero defensivo).
     let q = db.collection("users")
         .where("pushToken", "!=", null)
         .orderBy("pushToken")
@@ -1639,21 +3182,67 @@ exports.notifyAllUsers = onCall(async (request) => {
     const snap = await q.get();
     if (snap.empty) break;
     snap.docs.forEach((d) => {
-      const token = d.data().pushToken;
-      // MEDIO-F33: validar que es string válido (no objeto raro ni vacío).
-      if (token && typeof token === 'string' && token.length > 10) tokens.push(token);
+      const docData = d.data();
+      const token = docData.pushToken;
+      const type = docData.pushTokenType || 'expo';
+      if (token && typeof token === 'string' && token.length > 10) {
+        if (type === 'fcm') {
+          fcmTokens.push(token);
+          fcmTokenUids.push(d.id);
+        } else {
+          expoTokens.push(token);
+        }
+      }
     });
     if (snap.size < BATCH) break;
     lastDoc = snap.docs[snap.docs.length - 1];
   }
 
-  if (tokens.length === 0) return { ok: true, sent: 0 };
+  const total = fcmTokens.length + expoTokens.length;
+  if (total === 0) return { ok: true, sent: 0, total: 0 };
 
-  // Expo Push API acepta hasta 100 por request
   let sent = 0;
-  const CHUNK = 100;
-  for (let i = 0; i < tokens.length; i += CHUNK) {
-    const chunk = tokens.slice(i, i + CHUNK).map((to) => ({
+  let failed = 0;
+  const invalidUids = new Set();
+
+  // 1) FCM via sendEachForMulticast (hasta 500 tokens por call)
+  const FCM_CHUNK = 500;
+  for (let i = 0; i < fcmTokens.length; i += FCM_CHUNK) {
+    const chunkTokens = fcmTokens.slice(i, i + FCM_CHUNK);
+    const chunkUids = fcmTokenUids.slice(i, i + FCM_CHUNK);
+    try {
+      const response = await getMessaging().sendEachForMulticast({
+        tokens: chunkTokens,
+        notification: { title, body },
+        // Round 2 Agente #10 HIGH-10-10: broadcasts van al channel 'marketing'
+        // (importance DEFAULT vs HIGH de los transaccionales). Permite al user
+        // mute solo marketing sin perder alerts de mint/payment.
+        android: { priority: "high", notification: { sound: "default", channelId: "marketing" } },
+      });
+      response.responses.forEach((r, idx) => {
+        if (r.success) {
+          sent++;
+        } else {
+          failed++;
+          const code = r.error && r.error.code;
+          if (code === "messaging/registration-token-not-registered" ||
+              code === "messaging/invalid-registration-token" ||
+              code === "messaging/mismatched-credential") {
+            // eslint-disable-next-line security/detect-object-injection -- idx desde forEach con response.responses
+            invalidUids.add(chunkUids[idx]);
+          }
+        }
+      });
+    } catch (e) {
+      console.error("notifyAllUsers FCM chunk error:", e.message);
+      failed += chunkTokens.length;
+    }
+  }
+
+  // 2) Expo Push API (legacy) — hasta 100 por request
+  const EXPO_CHUNK = 100;
+  for (let i = 0; i < expoTokens.length; i += EXPO_CHUNK) {
+    const chunk = expoTokens.slice(i, i + EXPO_CHUNK).map((to) => ({
       to, title, body, sound: "default",
     }));
     try {
@@ -1664,11 +3253,29 @@ exports.notifyAllUsers = onCall(async (request) => {
       });
       sent += chunk.length;
     } catch (e) {
-      console.error("notifyAllUsers chunk error:", e.message);
+      console.error("notifyAllUsers Expo chunk error:", e.message);
+      failed += chunk.length;
     }
   }
 
-  console.log(`notifyAllUsers: sent=${sent} total_tokens=${tokens.length}`);
+  // CRIT-10-03: cleanup de tokens inválidos en batch.
+  if (invalidUids.size > 0) {
+    try {
+      const cleanupBatch = db.batch();
+      invalidUids.forEach((cleanUid) => {
+        cleanupBatch.set(db.collection("users").doc(cleanUid), {
+          pushToken: FieldValue.delete(),
+          pushTokenType: FieldValue.delete(),
+        }, { merge: true });
+      });
+      await cleanupBatch.commit();
+      console.log(`notifyAllUsers: cleaned ${invalidUids.size} invalid tokens`);
+    } catch (e) {
+      console.warn("notifyAllUsers cleanup error:", e.message);
+    }
+  }
+
+  console.log(`notifyAllUsers: sent=${sent} failed=${failed} cleaned=${invalidUids.size} total=${total} fcm=${fcmTokens.length} expo=${expoTokens.length}`);
 
   // SEC-P2-12: audit log
   try {
@@ -1678,14 +3285,18 @@ exports.notifyAllUsers = onCall(async (request) => {
       title: title.slice(0, 100),
       body: body.slice(0, 200),
       sent,
-      total: tokens.length,
+      failed,
+      cleaned: invalidUids.size,
+      total,
+      fcm: fcmTokens.length,
+      expo: expoTokens.length,
       ts: Date.now(),
     });
   } catch (logErr) {
     console.warn("notifyAllUsers audit log failed:", logErr.message);
   }
 
-  return { ok: true, sent, total: tokens.length };
+  return { ok: true, sent, failed, cleaned: invalidUids.size, total };
 });
 
 exports.cryptoPaymentProcessorScheduled = onSchedule("every 5 minutes", async () => {
@@ -1712,24 +3323,270 @@ exports.cryptoPaymentProcessorScheduled = onSchedule("every 5 minutes", async ()
 //        --role=roles/datastore.importExportAdmin`)
 //   3. Bucket lifecycle: borrar exports >30 días para no acumular costos.
 // Si el bucket no existe o el rol no está, la function loguea el error y no falla la app.
-exports.firestoreBackupScheduled = onSchedule("every day 03:00", async () => {
+// HIGH-01-11 + HIGH-11-06 (audit Round 2, fix 2026-06-23+): validar que la
+// Long-Running Operation efectivamente termine + email alert si falla.
+// Pre-fix: solo se logueaba "started", la function retornaba success aunque
+// el export fallara silencioso o quedara pending forever. Backups
+// inservibles → DR irrecuperable. Ahora:
+//   1. exportDocuments retorna { name } de la LRO
+//   2. Polling cada 30s hasta done:true (timeout 5min — exports típicos
+//      tardan <2min en Firestore-medium scale)
+//   3. Si done && error → email al admin con detalles
+//   4. Si done && success → log con outputUriPrefix + size hint
+//   5. Si timeout → email al admin (operación quedó pending, no fallida)
+exports.firestoreBackupScheduled = onSchedule({
+  schedule: "every day 03:00",
+  secrets: [gmailAppPassword],
+}, async () => {
+  const projectId = process.env.GCLOUD_PROJECT || "miningtheblocks-669f6";
+  const bucket = `gs://${projectId}-backups`;
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const outputUriPrefix = `${bucket}/${dateStr}`;
+
+  const sendAlert = async (subject, body) => {
+    try {
+      const appPassword = gmailAppPassword.value();
+      if (!appPassword) return;
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: { user: NOTIFY_EMAIL, pass: appPassword },
+      });
+      await transporter.sendMail({
+        from: `"MTB Backup Monitor" <${NOTIFY_EMAIL}>`,
+        to: NOTIFY_EMAIL,
+        subject,
+        text: body,
+      });
+    } catch (mailErr) {
+      console.error("firestoreBackupScheduled alert email failed:", mailErr.message);
+    }
+  };
+
+  let operationName = null;
   try {
     const { v1 } = require("@google-cloud/firestore");
     const client = new v1.FirestoreAdminClient();
-    const projectId = process.env.GCLOUD_PROJECT || "miningtheblocks-669f6";
-    const bucket = `gs://${projectId}-backups`;
-    const dateStr = new Date().toISOString().slice(0, 10);
+
     const [operation] = await client.exportDocuments({
       name: client.databasePath(projectId, "(default)"),
-      outputUriPrefix: `${bucket}/${dateStr}`,
-      collectionIds: [], // todas las colecciones
+      outputUriPrefix,
+      collectionIds: [], // todas las colecciones (incluye subcolecciones automáticamente)
     });
-    console.log(`firestoreBackupScheduled: started export to ${bucket}/${dateStr}, operation=${operation.name}`);
+    operationName = operation.name;
+    console.log(`firestoreBackupScheduled: started export to ${outputUriPrefix}, operation=${operationName}`);
+
+    // Polling — operation es un LRO que termina cuando metadata.endTime !== null.
+    // El SDK ofrece .promise() que resuelve cuando done=true. Wrappemos con
+    // timeout defensivo para no quedar atascados.
+    const TIMEOUT_MS = 5 * 60 * 1000; // 5 min
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("backup_timeout_5min")), TIMEOUT_MS);
+    });
+    const [response] = await Promise.race([operation.promise(), timeoutPromise]);
+
+    // response es el ExportDocumentsResponse — outputUriPrefix == el que pedimos.
+    console.log(`firestoreBackupScheduled: ✅ completed export to ${response.outputUriPrefix || outputUriPrefix}`);
   } catch (e) {
-    console.error(`firestoreBackupScheduled error: ${e.message}`);
-    // No re-throw: backup fallido no debería tirar reportes infinitos.
+    const errMsg = e && e.message ? e.message : String(e);
+    console.error(`firestoreBackupScheduled error: ${errMsg}`);
+    // Alert al admin para que sepa que el backup falló (sin email se enteraría
+    // solo cuando intente restore en un DR real — demasiado tarde).
+    const subject = `🚨 [MTB] Firestore backup FALLÓ — ${dateStr}`;
+    const body = [
+      `El backup programado de Firestore para ${dateStr} falló.`,
+      ``,
+      `Project: ${projectId}`,
+      `Output URI: ${outputUriPrefix}`,
+      `Operation: ${operationName || "(no se llegó a crear)"}`,
+      `Error: ${errMsg}`,
+      ``,
+      `Acciones:`,
+      `1. Verificar manualmente con: gcloud firestore operations list --project=${projectId}`,
+      `2. Si la operation existe pero falló, ver detalles: gcloud firestore operations describe <operation_name>`,
+      `3. Si no se creó operation, revisar IAM: serviceAccount necesita roles/datastore.importExportAdmin`,
+      `4. Lanzar backup manual: gcloud firestore export ${outputUriPrefix}-manual`,
+      `5. Ver RUNBOOK.md sección "Disaster Recovery" para procedure completo de restore.`,
+    ].join("\n");
+    await sendAlert(subject, body);
+    // No re-throw: el scheduler se ejecutará mañana de nuevo.
   }
 });
+
+// CRIT (Round 2 Agente #11 CRIT-11-02 + #12): MATIC balance alert.
+// Sin esto, mints fallarían silenciosamente cuando el balance llega a 0.
+// 5 retries × ~30s cada uno = 2-3h de holders esperando ANTES del email de
+// fail. Con alert proactivo: el dev se entera cuando balance < 2 MATIC
+// (umbral ~ 50 mints futuros @ Polygon gas típico).
+exports.maticBalanceCheckScheduled = onSchedule(
+    { schedule: "every 6 hours", secrets: [companyWalletKey, gmailAppPassword] },
+    async () => {
+      try {
+        const privateKey = companyWalletKey.value();
+        if (!privateKey || !/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+          console.error("maticBalanceCheck: invalid wallet key format");
+          return;
+        }
+        const provider = new ethers.JsonRpcProvider("https://polygon-bor-rpc.publicnode.com");
+        const wallet = new ethers.Wallet(privateKey, provider);
+        const balanceWei = await provider.getBalance(wallet.address);
+        const balanceMatic = Number(ethers.formatEther(balanceWei));
+        const THRESHOLD_MATIC = 2;
+
+        if (balanceMatic >= THRESHOLD_MATIC) {
+          console.log(`maticBalanceCheck: OK balance=${balanceMatic.toFixed(3)} MATIC`);
+          return;
+        }
+
+        // Anti-spam: 1 alert por día como máximo (state en runtime/maticAlert).
+        const alertRef = db.collection("runtime").doc("maticBalanceAlert");
+        const alertSnap = await alertRef.get();
+        const lastAlertAt = alertSnap.exists ? (alertSnap.data().lastAlertAt || 0) : 0;
+        if (Date.now() - lastAlertAt < 24 * 60 * 60 * 1000) {
+          console.log(`maticBalanceCheck: LOW ${balanceMatic.toFixed(3)} MATIC (alert deduped)`);
+          return;
+        }
+
+        const appPassword = gmailAppPassword.value();
+        if (!appPassword) {
+          console.error("maticBalanceCheck: gmail not configured, cannot send alert");
+          return;
+        }
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: { user: NOTIFY_EMAIL, pass: appPassword },
+        });
+        await transporter.sendMail({
+          from: `"MTB Operations Alert" <${NOTIFY_EMAIL}>`,
+          to: NOTIFY_EMAIL,
+          subject: `⛏️ [MTB OPS] LOW MATIC: ${balanceMatic.toFixed(3)} (threshold ${THRESHOLD_MATIC})`,
+          text: `Company wallet ${wallet.address} balance is below threshold.\n\nCurrent: ${balanceMatic.toFixed(6)} MATIC\nThreshold: ${THRESHOLD_MATIC} MATIC\n\nMint operations will start failing if balance reaches 0. Top up via QuickSwap (USDC → MATIC) or buy MATIC directly. ~0.04 MATIC per mint typical gas.\n\nThis alert is throttled to 1/day.`,
+        });
+        await alertRef.set({ lastAlertAt: Date.now(), balanceMatic }, { merge: true });
+        console.warn(`maticBalanceCheck: ALERT SENT, balance=${balanceMatic.toFixed(6)}`);
+      } catch (e) {
+        console.error("maticBalanceCheckScheduled error:", e && e.message);
+      }
+    });
+
+// HIGH (Round 2 Agente #11 HIGH-11-21): weekly errorLog digest.
+// errorLog Firestore es write-only desde regla; nadie lo lee programáticamente.
+// Pre-fix: el dev tenía que abrir Firebase Console manualmente cada X tiempo
+// y scrollear. Con email digest semanal: top scopes por count, sample por
+// scope, en HTML simple. Detección temprana de regresiones del cliente.
+exports.errorLogSummaryWeekly = onSchedule(
+    { schedule: "every monday 08:00", timeZone: "America/Argentina/Buenos_Aires", secrets: [gmailAppPassword] },
+    async () => {
+      try {
+        const oneWeekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const snap = await db.collection("errorLog")
+            .where("ts", ">=", oneWeekAgoMs)
+            .limit(2000).get();
+        if (snap.empty) {
+          console.log("errorLogSummary: no errors this week");
+          return;
+        }
+        const byScope = new Map();
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          const scope = String(data.scope || "unknown").slice(0, 80);
+          if (!byScope.has(scope)) byScope.set(scope, { count: 0, sample: "" });
+          const entry = byScope.get(scope);
+          entry.count++;
+          if (!entry.sample && data.msg) entry.sample = String(data.msg).slice(0, 200);
+        });
+        const sorted = Array.from(byScope.entries())
+            .sort((a, b) => b[1].count - a[1].count)
+            .slice(0, 25);
+
+        const appPassword = gmailAppPassword.value();
+        if (!appPassword) return;
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: { user: NOTIFY_EMAIL, pass: appPassword },
+        });
+        const rows = sorted.map(([scope, e]) =>
+          `<tr><td>${esc(scope)}</td><td style="text-align:right;font-weight:700">${e.count}</td><td style="font-family:monospace;font-size:11px;color:#888">${esc(e.sample) || "—"}</td></tr>`,
+        ).join("\n");
+        await transporter.sendMail({
+          from: `"MTB Weekly Report" <${NOTIFY_EMAIL}>`,
+          to: NOTIFY_EMAIL,
+          subject: `📊 [MTB] errorLog weekly: ${snap.size} errors / ${sorted.length} scopes`,
+          html: `<h2>errorLog weekly summary</h2>
+<p>Last 7 days: <strong>${snap.size}</strong> errors across <strong>${sorted.length}</strong> distinct scopes.</p>
+<table border="1" cellpadding="6" cellspacing="0" style="font-family:sans-serif;font-size:13px;border-collapse:collapse">
+  <thead style="background:#f0f0f0"><tr><th>Scope</th><th>Count</th><th>Sample message</th></tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+<p style="color:#888;font-size:11px;margin-top:24px">Scopes con &gt;100 errors/semana sugieren bug del cliente. Investigá los top 3.</p>`,
+        });
+        console.log(`errorLogSummary: sent digest, scopes=${sorted.length} total=${snap.size}`);
+      } catch (e) {
+        console.error("errorLogSummaryWeekly error:", e && e.message);
+      }
+    });
+
+// HIGH (Round 2 Agente #11 HIGH-11-22): weekly adminActions digest +
+// anomaly detection. adminActions Firestore es write-only; nadie monitorea.
+// Pre-fix: si un admin se compromete y hace 50 grant_admin + addServerCredit,
+// el log existe pero el operador no se entera hasta hacer auditoría manual.
+// Esta function alerta si un admin tuvo >50 acciones/semana (ramp-up sospechoso).
+exports.adminActionsAnomalyWeekly = onSchedule(
+    { schedule: "every monday 08:30", timeZone: "America/Argentina/Buenos_Aires", secrets: [gmailAppPassword] },
+    async () => {
+      try {
+        const oneWeekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const snap = await db.collection("adminActions")
+            .where("ts", ">=", oneWeekAgoMs)
+            .limit(5000).get();
+        if (snap.empty) {
+          console.log("adminActionsAnomaly: no actions this week");
+          return;
+        }
+        const byAdmin = new Map();
+        const byAction = new Map();
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          const adminUid = String(data.adminUid || data.uid || "system").slice(0, 32);
+          const action = String(data.action || "unknown").slice(0, 50);
+          byAdmin.set(adminUid, (byAdmin.get(adminUid) || 0) + 1);
+          byAction.set(action, (byAction.get(action) || 0) + 1);
+        });
+        const ANOMALY_THRESHOLD = 50;
+        const anomalies = Array.from(byAdmin.entries()).filter(([_, c]) => c > ANOMALY_THRESHOLD);
+
+        const appPassword = gmailAppPassword.value();
+        if (!appPassword) return;
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: { user: NOTIFY_EMAIL, pass: appPassword },
+        });
+        const adminRows = Array.from(byAdmin.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(([uid, c]) => `<tr><td>${esc(uid.slice(0, 12))}…</td><td style="text-align:right;font-weight:700">${c}</td><td>${c > ANOMALY_THRESHOLD ? '<span style="color:#ff6b6b">⚠️ HIGH</span>' : ""}</td></tr>`)
+            .join("\n");
+        const actionRows = Array.from(byAction.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(([a, c]) => `<tr><td>${esc(a)}</td><td style="text-align:right;font-weight:700">${c}</td></tr>`)
+            .join("\n");
+        await transporter.sendMail({
+          from: `"MTB Weekly Report" <${NOTIFY_EMAIL}>`,
+          to: NOTIFY_EMAIL,
+          subject: anomalies.length > 0 ?
+            `🚨 [MTB] adminActions ANOMALY: ${anomalies.length} admin(s) >${ANOMALY_THRESHOLD} ops/week` :
+            `📊 [MTB] adminActions weekly: ${snap.size} ops, nominal`,
+          html: `<h2>adminActions weekly summary</h2>
+<p>Last 7 days: <strong>${snap.size}</strong> admin operations across <strong>${byAdmin.size}</strong> admin uid(s).</p>
+${anomalies.length > 0 ? `<p style="background:#fff0f0;border-left:4px solid #ff6b6b;padding:10px"><strong>⚠️ ${anomalies.length} admin(s) exceeded ${ANOMALY_THRESHOLD} ops</strong>. Investigate: post-bug bash? Promo? Compromise?</p>` : ""}
+<h3>By admin</h3>
+<table border="1" cellpadding="6" cellspacing="0" style="font-family:sans-serif;font-size:13px;border-collapse:collapse"><thead style="background:#f0f0f0"><tr><th>adminUid</th><th>count</th><th>flag</th></tr></thead><tbody>${adminRows}</tbody></table>
+<h3>By action</h3>
+<table border="1" cellpadding="6" cellspacing="0" style="font-family:sans-serif;font-size:13px;border-collapse:collapse"><thead style="background:#f0f0f0"><tr><th>action</th><th>count</th></tr></thead><tbody>${actionRows}</tbody></table>`,
+        });
+        console.log(`adminActionsAnomaly: sent digest, anomalies=${anomalies.length} total=${snap.size}`);
+      } catch (e) {
+        console.error("adminActionsAnomalyWeekly error:", e && e.message);
+      }
+    });
 
 // ─── Web: Verificación y claim de gemas ──────────────────────────────────────
 
@@ -1746,20 +3603,29 @@ async function _rateLimitFirestore(bucket, max, windowMs) {
     const snap = await tx.get(ref);
     const now = Date.now();
     const arr = (snap.exists ? (snap.data().ts || []) : []).filter((t) => now - t < windowMs);
+    // Round 2 audit #2 HIGH-2: Firestore TTL policy requiere Timestamp, no
+    // un number plano. Sin esto los docs no se borraban automáticamente y
+    // `rateLimits/` crecía indefinido (cost, no security).
+    const expiresAt = Timestamp.fromMillis(now + windowMs * 2);
     if (arr.length >= max) {
       allowed = false;
-      tx.set(ref, { ts: arr, expiresAt: now + windowMs * 2 }, { merge: true });
+      tx.set(ref, { ts: arr, expiresAt }, { merge: true });
       return;
     }
     arr.push(now);
-    tx.set(ref, { ts: arr, expiresAt: now + windowMs * 2 }, { merge: true });
+    tx.set(ref, { ts: arr, expiresAt }, { merge: true });
     allowed = true;
   });
   return allowed;
 }
 
 exports.verifyGemCode = onRequest(async (req, res) => {
-  setCorsHeaders(res);
+  // MED (Round 2 Agente #7): allowlist en lugar de wildcard `*`. Pre-fix:
+  // cualquier origen podía enumerar códigos de gemas via GET (el rate-limit
+  // 30/min/IP mitigaba bulk-enum pero la inconsistencia con submitGemClaim
+  // — que sí usa allowlist — era reportable). Ahora solo miningtheblocks.com
+  // y miningtheblocks.github.io pueden hacer el call.
+  setRestrictedCorsHeaders(req, res);
   if (req.method === "OPTIONS") {
     return res.status(204).send("");
   }
@@ -1828,7 +3694,17 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
   // arbitrario. Y aunque verificationLink es server-generated, lo escapamos
   // antes de meterlo en el template HTML (defense-in-depth).
   if (!/^https:\/\/miningtheblocks-669f6\.web\.app\/verify\?/.test(verificationLink)) {
-    console.error("sendVerificationEmail: unexpected link shape", { prefix: verificationLink.slice(0, 80) });
+    // MED (Round 2 Agente #11 MED-11-25): NO loguear el prefix completo, el
+    // query string del link contiene oobCode (1-hr valid reset token) + email.
+    // Solo loguear scheme+host para diagnóstico.
+    let safePrefix = "";
+    try {
+      const u = new URL(verificationLink);
+      safePrefix = `${u.protocol}//${u.host}`;
+    } catch (_) {
+      // link mal-formed → safePrefix queda ""
+    }
+    console.error("sendVerificationEmail: unexpected link shape", { safePrefix });
     throw new HttpsError("internal", "link_generation_failed");
   }
   const safeLink = esc(verificationLink);
@@ -1906,6 +3782,268 @@ exports.sendVerificationEmail = onCall({ secrets: [gmailAppPassword] }, async (r
   return { ok: true };
 });
 
+// CRIT (Round 2 Agente #6): reemplazo del sendPasswordResetEmail directo del
+// cliente. Antes el client llamaba al Firebase Auth SDK Web → email genérico
+// de Firebase, SIN revoke de tokens (ventana 60min de account takeover
+// post-reset) y SIN notify al user real de "se inició un reset".
+//
+// Esta función:
+//   1. Anti-enumeration: rate-limit por email + retorno OK genérico siempre.
+//      Un atacante NO puede inferir si una cuenta existe observando el reply.
+//   2. revokeRefreshTokens(uid) ANTES de enviar el link → todas las sesiones
+//      existentes quedan invalidadas en la próxima validación con
+//      assertFreshToken (o al expirar el JWT TTL ~60min). Si el user real
+//      fue quien pidió el reset, re-loguea con la nueva password → token
+//      nuevo con auth_time > tokensValidAfterTime → válido. Si fue un
+//      atacante con email comprometido, todas sus sesiones se cierran.
+//   3. Email branded con texto explícito "tus sesiones fueron cerradas; si
+//      no fuiste vos ignorá este email — tu password actual sigue OK".
+exports.requestPasswordReset = onCall({ secrets: [gmailAppPassword] }, async (request) => {
+  const email = ((request.data && request.data.email) || "").toString().trim().toLowerCase().slice(0, 200);
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { ok: true };
+  }
+
+  // Rate-limit por email (3/hora) — sin esto, un atacante podría enumerar
+  // cuentas observando timing diferencial (existe vs no existe).
+  const emailKey = email.replace(/[^a-zA-Z0-9._%+-]/g, "_").slice(0, 64);
+  const okRate = await _rateLimitFirestore(`rpr_${emailKey}`, 3, 60 * 60 * 1000);
+  if (!okRate) return { ok: true };
+
+  let user;
+  try {
+    user = await getAuth().getUserByEmail(email);
+  } catch (_) {
+    return { ok: true }; // user no existe → anti-enumeration
+  }
+
+  try {
+    await getAuth().revokeRefreshTokens(user.uid);
+  } catch (e) {
+    console.error("requestPasswordReset revoke error:", e && e.message);
+  }
+
+  let link;
+  try {
+    link = await getAuth().generatePasswordResetLink(email);
+  } catch (e) {
+    console.error("requestPasswordReset generate link error:", e && e.message);
+    return { ok: true };
+  }
+
+  const appPassword = gmailAppPassword.value();
+  if (!appPassword) {
+    console.error("requestPasswordReset: gmail password not configured");
+    return { ok: true };
+  }
+
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: NOTIFY_EMAIL, pass: appPassword },
+  });
+
+  const safeLink = esc(link);
+  const displayName = esc(user.displayName || email.split("@")[0]);
+
+  try {
+    await transporter.sendMail({
+      from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
+      to: email,
+      subject: "🔐 Recuperación de contraseña — Mining The Blocks",
+      html: `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;background:#0a0a0a;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0a0a;padding:40px 20px"><tr><td align="center">
+    <table width="100%" style="max-width:480px;background:#141414;border-radius:16px;border:1px solid #2a2a2a">
+      <tr><td style="background:linear-gradient(135deg,#1a1a1a 0%,#222 100%);padding:32px 32px 24px;text-align:center;border-bottom:1px solid #2a2a2a">
+        <div style="font-size:36px;margin-bottom:8px">🔐</div>
+        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:900;letter-spacing:-0.5px">Mining The Blocks</h1>
+        <p style="margin:6px 0 0;color:#666;font-size:13px">Recuperación de contraseña</p>
+      </td></tr>
+      <tr><td style="padding:32px">
+        <p style="margin:0 0 8px;color:#999;font-size:13px;text-transform:uppercase;letter-spacing:1px;font-weight:700">Hola, ${displayName}</p>
+        <h2 style="margin:0 0 16px;color:#fff;font-size:20px;font-weight:800">Pediste resetear tu contraseña</h2>
+        <p style="margin:0 0 24px;color:#aaa;font-size:15px;line-height:1.6">
+          Hacé click en el botón para elegir una nueva contraseña. El link es válido por <strong style="color:#fff">1 hora</strong>.
+          Por seguridad, <strong style="color:#fff">todas tus sesiones existentes fueron cerradas</strong> y vas a tener que re-loguear en cada device.
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:8px 0 24px">
+          <a href="${safeLink}" style="display:inline-block;background:#fff;color:#000;text-decoration:none;font-weight:900;font-size:15px;padding:16px 40px;border-radius:10px;letter-spacing:0.3px">
+            🔑 Resetear contraseña
+          </a>
+        </td></tr></table>
+        <p style="margin:0 0 8px;color:#888;font-size:12px;text-align:center">Si el botón no funciona, copiá este link:</p>
+        <p style="margin:0;background:#1e1e1e;border-radius:8px;padding:10px 12px;word-break:break-all;font-size:11px;color:#4a9eff;font-family:monospace">${safeLink}</p>
+      </td></tr>
+      <tr><td style="padding:16px 32px 24px;border-top:1px solid #1e1e1e;text-align:center">
+        <p style="margin:0;color:#aaa;font-size:11px;line-height:1.5"><strong style="color:#fff">¿No fuiste vos?</strong> Si NO solicitaste este reset, ignorá este email. Nadie pudo acceder a tu cuenta — todas las sesiones fueron cerradas como medida preventiva y tu contraseña actual sigue siendo válida. Vas a tener que re-loguear con tu password actual.</p>
+        <p style="margin:6px 0 0;color:#666;font-size:11px">© 2026 Mining The Blocks</p>
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`,
+    });
+  } catch (e) {
+    console.error("requestPasswordReset mail error:", e && e.message);
+  }
+
+  return { ok: true };
+});
+
+// CRIT (Round 2 Agente #6 MED-15 + Agente #10 HIGH-10-38 + Agente #11):
+// self-serve account deletion. Sin esta función, el user solo podía pedir
+// borrado via email a soporte (privacy.html promete <30 días). Bloqueante
+// para Play Store policy (mayo 2024 self-serve in-app obligatorio para apps
+// con login) y GDPR Art. 17 ("right to erasure" con SLA escalable).
+//
+// Estrategia: soft-delete con anonimización.
+//  - users/{uid} se preserva (no se borra) pero pierde TODO el PII:
+//    email, profile, avatar, push tokens, wallet, referralCode/referredBy,
+//    settings, language. Se mantiene `deletedAt` timestamp.
+//  - subcoleccion notifications/ → batch delete (no retention).
+//  - subcoleccion gems/ → SE PRESERVA (NFT records + 5y retention AML/KYC).
+//  - usernames/{username} → released para que otros lo puedan reclamar.
+//  - pendingCryptoPayments con status:waiting → cancelled.
+//  - Auth user → deleteUser (revoca todas las sesiones automáticamente).
+//  - Audit en adminActions.
+//
+// Las gems del user quedan accesibles solo via Admin SDK (Firestore rules
+// requieren request.auth.uid == ownerUid). Para retention compliance.
+exports.deleteMyAccount = onCall(async (request) => {
+  requireRegistered(request);
+  await assertFreshToken(request);
+  const uid = request.auth.uid;
+
+  // Anti-accident: max 1 intento por hora. Si falla parcial, requiere intervención manual.
+  const okRate = await _rateLimitFirestore(`dma_${uid}`, 1, 60 * 60 * 1000);
+  if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
+
+  const userRef = db.collection("users").doc(uid);
+
+  // 1. Liberar el username (si tiene). Permite que el handle quede disponible.
+  try {
+    const usernamesSnap = await db.collection("usernames").where("uid", "==", uid).limit(1).get();
+    if (!usernamesSnap.empty) {
+      await usernamesSnap.docs[0].ref.delete();
+    }
+  } catch (e) {
+    console.warn("deleteMyAccount: username release failed:", e && e.message);
+  }
+
+  // 2. Anonimizar el user doc (preserva refs en history/gems para retention 5y).
+  try {
+    await userRef.set({
+      deletedAt: Date.now(),
+      displayName: "[deleted]",
+      email: FieldValue.delete(),
+      profile: FieldValue.delete(),
+      avatarUrl: FieldValue.delete(),
+      photoURL: FieldValue.delete(),
+      pushToken: FieldValue.delete(),
+      pushTokenType: FieldValue.delete(),
+      pushNotifications: FieldValue.delete(),
+      walletAddress: FieldValue.delete(),
+      walletChangedAt: FieldValue.delete(),
+      referralCode: FieldValue.delete(),
+      referredBy: FieldValue.delete(),
+      settings: FieldValue.delete(),
+      language: FieldValue.delete(),
+      serverCredits: 0,
+      picks: 0,
+    }, { merge: true });
+  } catch (e) {
+    console.error("deleteMyAccount: anonymize failed:", e && e.message);
+    throw new HttpsError("internal", "anonymize_failed");
+  }
+
+  // 3. Borrar notifications (no retention requirement).
+  try {
+    const notifSnap = await userRef.collection("notifications").limit(500).get();
+    if (!notifSnap.empty) {
+      const batch = db.batch();
+      notifSnap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn("deleteMyAccount notifications cleanup:", e && e.message);
+  }
+
+  // 4. Cancelar pendingCryptoPayments waiting (slots de amount únicos se liberan).
+  try {
+    const pendingPaySnap = await db.collection("pendingCryptoPayments")
+        .where("uid", "==", uid).where("status", "==", "waiting").get();
+    if (!pendingPaySnap.empty) {
+      const batch = db.batch();
+      pendingPaySnap.docs.forEach((d) => batch.update(d.ref, {
+        status: "cancelled", cancelledAt: Date.now(), reason: "account_deleted",
+      }));
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn("deleteMyAccount pendingPay cleanup:", e && e.message);
+  }
+
+  // 5. Borrar el Auth user (revoca refresh tokens automáticamente +
+  // las sesiones existentes quedan inválidas).
+  try {
+    await getAuth().deleteUser(uid);
+  } catch (e) {
+    // Si el Auth user ya no existe (race), seguimos: el doc ya está anonimizado.
+    if (e && e.code !== "auth/user-not-found") {
+      console.error("deleteMyAccount: Auth delete failed:", e && e.message);
+      throw new HttpsError("internal", "auth_delete_failed");
+    }
+  }
+
+  // 6. Audit log.
+  try {
+    await db.collection("adminActions").add({
+      action: "self_delete_account",
+      uid,
+      ts: Date.now(),
+    });
+  } catch (e) {
+    console.warn("deleteMyAccount audit log failed:", e && e.message);
+  }
+
+  return { ok: true };
+});
+
+// CRIT (Round 2 Agente #6 MED + Agente #11 MED-11-46): self-serve "logout
+// everywhere". Sin esto, ante sospecha de takeover, el user no tenía forma
+// de cerrar sesiones en otros devices — dependía del admin con acceso a
+// Firebase Console para llamar revokeRefreshTokens manualmente.
+//
+// Patrón mismo que Auth deleteUser pero sin tocar el doc / NFTs:
+// revokeRefreshTokens + audit log. El user sigue logueado en este device
+// hasta que su token actual expire (~5min para Firebase JWT) o el cliente
+// llame signOut local. La UI hace ambos para cierre inmediato.
+exports.revokeMySessions = onCall(async (request) => {
+  requireRegistered(request);
+  await assertFreshToken(request);
+  const uid = request.auth.uid;
+
+  const okRate = await _rateLimitFirestore(`rms_${uid}`, 5, 60 * 60 * 1000);
+  if (!okRate) throw new HttpsError("resource-exhausted", "rate_limited");
+
+  try {
+    await getAuth().revokeRefreshTokens(uid);
+  } catch (e) {
+    console.error("revokeMySessions error:", e && e.message);
+    throw new HttpsError("internal", "revoke_failed");
+  }
+
+  try {
+    await db.collection("adminActions").add({
+      action: "self_revoke_sessions",
+      uid,
+      ts: Date.now(),
+    });
+  } catch (_) {/* audit non-critical */}
+
+  return { ok: true };
+});
+
 exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, res) => {
   setRestrictedCorsHeaders(req, res);
   if (req.method === "OPTIONS") {
@@ -1926,7 +4064,16 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
     if (!m) {
       return res.status(401).json({ error: "unauthenticated" });
     }
-    const decoded = await getAuth().verifyIdToken(m[1]);
+    // CRIT (Round 2 Agente #6): checkRevoked=true. submitGemClaim opera sobre
+    // gemas hasta tier-1 ($100k nominal) — un token robado o sesión post-revoke
+    // sigue válido hasta el TTL JWT (~60min) sin este flag.
+    const decoded = await getAuth().verifyIdToken(m[1], true);
+    // Defense-in-depth: gating de email_verified para provider=password
+    // (alineado con requireRegistered del lado onCall).
+    const provider = decoded.firebase && decoded.firebase.sign_in_provider;
+    if (provider === "password" && decoded.email_verified === false) {
+      return res.status(403).json({ error: "email_not_verified" });
+    }
     authUid = decoded.uid;
   } catch (authErr) {
     // ALTO-001: NO loguear authErr.message — puede contener fragmentos del
@@ -1940,16 +4087,30 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
   const email = (body.email || "").toString().trim().toLowerCase().slice(0, 200);
   const name = (body.name || "").toString().trim().slice(0, 100);
   const phone = (body.phone || "").toString().trim().slice(0, 30);
-  const wallet = (body.wallet || "").toString().trim();
-  if (!code || !email || !name || !phone || !wallet) {
+
+  // CRIT (Round 2 Agentes #1 HIGH-4 + #6 + #8): wallet del user doc, NO del
+  // body. Mismo razonamiento que claimGemNFT: aceptar wallet del body bypasea
+  // el cooldown de setUserWallet. El web claim form sigue mostrando el campo
+  // pero el backend lo descarta — el web form debería leer userSnap.walletAddress
+  // como read-only en una iteración futura (TODO web).
+  let wallet = "";
+  try {
+    const userSnap = await db.collection("users").doc(authUid).get();
+    wallet = userSnap.exists ? (userSnap.data().walletAddress || "").toString().trim() : "";
+  } catch (e) {
+    console.error("submitGemClaim user lookup error:", e && e.message);
+    return res.status(500).json({ error: "server_error" });
+  }
+
+  if (!code || !email || !name || !phone) {
     return res.status(400).json({ error: "missing_fields" });
   }
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
     return res.status(400).json({ error: "invalid_email" });
   }
-  if (!/^0x[a-fA-F0-9]{40}$/.test(wallet)) {
-    return res.status(400).json({ error: "invalid_wallet" });
+  if (!wallet || !/^0x[a-fA-F0-9]{40}$/.test(wallet)) {
+    return res.status(400).json({ error: "wallet_not_set" });
   }
   try {
     const snap = await db.collectionGroup("gems").where("code", "==", code).limit(1).get();
@@ -1972,36 +4133,283 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
       return res.status(403).json({ error: "not_owner" });
     }
 
+    // Audit feedback 2026-06-23+: rechazar canjes después de 90 días del
+    // cierre del episodio. La ventana se computa desde episodes/{n}.completedAt.
+    // Mientras el episodio sigue activo (no cerrado), NO hay expire.
+    try {
+      await assertGemNotExpired(gemDoc.data());
+    } catch (expErr) {
+      if (expErr instanceof HttpsError && expErr.message && expErr.message.startsWith("expired")) {
+        return res.status(410).json({ error: "expired" }); // 410 Gone
+      }
+      throw expErr;
+    }
+
     let gemTier;
-    // Atomic check-and-mark: prevents double-claim race condition
+    let gemTokenId = null;
+    let requiresNftTransfer = false;
+    // Atomic check-and-mark: prevents double-claim race condition.
+    // Round 2 audit #4 HIGH (swap flow): si el NFT está minteado (status='minted'),
+    // el user DEBE enviarlo a NFT_RECEIVER_WALLET antes de cobrar. Marcamos
+    // como 'awaiting_nft_transfer' y el flow termina cuando llaman
+    // confirmGemNftSent con el txHash. Si NO está minteado (legacy/sin wallet),
+    // mantenemos el flow viejo: claim_submitted → admin marca pagado vía
+    // markGemRedeemed.
     await db.runTransaction(async (tx) => {
       const freshSnap = await tx.get(gemDoc.ref);
       if (!freshSnap.exists) throw new Error("not_found");
       const gem = freshSnap.data();
-      if (gem.status !== "unclaimed") {
-        const errKey = gem.status === "redeemed" || gem.status === "claim_submitted" ? "already_redeemed" : "already_minted";
+      // 'unclaimed' o 'minted' son los dos únicos estados válidos para iniciar
+      // un claim. 'minting' = pendiente del worker, esperar. 'redeemed' /
+      // 'claim_submitted' / 'awaiting_nft_transfer' / 'nft_received_pending_payout'
+      // = ya en proceso o cerrado.
+      if (gem.status !== "unclaimed" && gem.status !== "minted") {
+        const errKey =
+            gem.status === "redeemed" || gem.status === "claim_submitted" ||
+            gem.status === "awaiting_nft_transfer" || gem.status === "nft_received_pending_payout" ?
+              "already_redeemed" :
+              "minting_in_progress";
         throw new Error(errKey);
       }
       gemTier = gem.gemTier || gem.tier || null;
-      tx.set(gemDoc.ref, { status: "claim_submitted", claimSubmittedAt: Date.now() }, { merge: true });
+      gemTokenId = gem.tokenId || null;
+      requiresNftTransfer = gem.status === "minted" && !!gemTokenId;
+      const newStatus = requiresNftTransfer ? "awaiting_nft_transfer" : "claim_submitted";
+      tx.set(gemDoc.ref, { status: newStatus, claimSubmittedAt: Date.now() }, { merge: true });
     });
 
     const gemName = gemTier ? (GEM_NAMES_ES[gemTier - 1] || `Tier ${gemTier}`) : "Desconocida";
     const gemPrize = gemTier ? (`$${GEM_PRICES[gemTier - 1].toLocaleString()}`) : "-";
 
-    await db.collection("gemClaims").add({
+    const claimRef = await db.collection("gemClaims").add({
       code,
       name,
       email,
       phone,
       wallet,
       gemTier,
+      tokenId: gemTokenId,
+      requiresNftTransfer,
       gemRef: gemDoc.ref.path,
       submittedAt: Date.now(),
-      status: "pending",
+      status: requiresNftTransfer ? "awaiting_nft_transfer" : "pending",
     });
 
-    // Enviar notificación al admin
+    // Si requiere transfer del NFT, NO mandamos email al admin todavía — solo
+    // cuando el user confirme el envío en confirmGemNftSent. Esto evita ruido
+    // de claims iniciados que nunca completan.
+    if (!requiresNftTransfer) {
+      try {
+        const appPassword = gmailAppPassword.value();
+        if (appPassword) {
+          const transporter = nodemailer.createTransport({
+            service: "gmail",
+            auth: { user: NOTIFY_EMAIL, pass: appPassword },
+          });
+          const fecha = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+          await transporter.sendMail({
+            from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
+            to: NOTIFY_EMAIL,
+            subject: `🎉 Nuevo canje de gema (sin NFT) — ${esc(gemName)} (${esc(gemPrize)})`,
+            html: `
+              <h2>Nuevo canje de gema recibido (legacy/sin NFT)</h2>
+              <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Gema</td><td style="padding:6px 12px">${esc(gemName)} — Tier ${esc(String(gemTier))}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Premio</td><td style="padding:6px 12px;font-weight:bold;color:#000">${esc(gemPrize)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Código</td><td style="padding:6px 12px;font-family:monospace">${esc(code)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Nombre</td><td style="padding:6px 12px">${esc(name)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Email</td><td style="padding:6px 12px">${esc(email)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Teléfono</td><td style="padding:6px 12px">${esc(phone)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Billetera</td><td style="padding:6px 12px;font-family:monospace;font-size:12px">${esc(wallet)}</td></tr>
+                <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Fecha</td><td style="padding:6px 12px">${esc(fecha)}</td></tr>
+              </table>
+              <p style="margin-top:16px;font-size:12px;color:#888">Mining The Blocks · Firestore: gemClaims/${claimRef.id}</p>
+            `,
+          });
+        }
+      } catch (mailErr) {
+        console.error("submitGemClaim email error:", mailErr.message);
+      }
+    }
+
+    // Si requiere transfer del NFT, devolvemos las instrucciones para el paso 2.
+    if (requiresNftTransfer) {
+      return res.json({
+        success: true,
+        requiresNftTransfer: true,
+        nftReceiverWallet: NFT_RECEIVER_WALLET,
+        tokenId: gemTokenId,
+        gemName,
+        gemPrize,
+        claimId: claimRef.id,
+        message: "Enviá el NFT a la wallet indicada. Después pegá el txHash para confirmar.",
+      });
+    }
+    return res.json({ success: true, requiresNftTransfer: false });
+  } catch (e) {
+    console.error("submitGemClaim:", e.message);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+// Round 2 audit #4 HIGH (swap flow 2026-06-23): el user envía el NFT a
+// NFT_RECEIVER_WALLET (pagosmtb) y nos pasa el txHash. Verificamos on-chain:
+//   1. txHash existe + status=1 (success) + >=3 confirmaciones (anti-reorg)
+//   2. El receipt incluye un event Transfer del MTBGEMS_CONTRACT
+//   3. El tokenId del Transfer = el del gemClaim (no envió otro NFT)
+//   4. from = wallet del user (la registrada con setUserWallet)
+//   5. to   = NFT_RECEIVER_WALLET
+//   6. txHash no fue usado antes (anti-replay)
+// Si todo pasa: gem.status -> nft_received_pending_payout + email al admin
+// con todos los datos para que apruebe + transfiera USDC manual.
+const ERC721_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"; // keccak256("Transfer(address,address,uint256)")
+
+exports.confirmGemNftSent = onRequest({ secrets: [gmailAppPassword] }, async (req, res) => {
+  setRestrictedCorsHeaders(req, res);
+  if (req.method === "OPTIONS") return res.status(204).send("");
+  if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
+
+  // Auth — mismo patrón que submitGemClaim (token verifyWithRevocationCheck).
+  let authUid = null;
+  try {
+    const authHeader = req.get("Authorization") || "";
+    const m = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (!m) return res.status(401).json({ error: "unauthenticated" });
+    const decoded = await getAuth().verifyIdToken(m[1], true);
+    const provider = decoded.firebase && decoded.firebase.sign_in_provider;
+    if (provider === "password" && decoded.email_verified === false) {
+      return res.status(403).json({ error: "email_not_verified" });
+    }
+    authUid = decoded.uid;
+  } catch (authErr) {
+    console.error("confirmGemNftSent auth error: invalid_token (code=" + (authErr && authErr.code ? authErr.code : "unknown") + ")");
+    return res.status(401).json({ error: "invalid_token" });
+  }
+
+  const body = req.body || {};
+  const code = (body.code || "").toString().trim().toUpperCase().slice(0, 30);
+  const txHash = (body.txHash || "").toString().trim().toLowerCase().slice(0, 100);
+
+  if (!code) return res.status(400).json({ error: "missing_code" });
+  if (!/^0x[a-f0-9]{64}$/.test(txHash)) return res.status(400).json({ error: "invalid_txhash" });
+
+  try {
+    // 1. Anti-replay: el txHash no debe haber sido usado en otro claim.
+    const txDocRef = db.collection("nftTxHashes").doc(txHash);
+    const txSnap = await txDocRef.get();
+    if (txSnap.exists) {
+      console.warn("confirmGemNftSent replay attempt:", { txHash, authUid });
+      return res.status(409).json({ error: "tx_already_used" });
+    }
+
+    // 2. Localizar la gema del user.
+    const gemQuery = await db.collectionGroup("gems").where("code", "==", code).limit(1).get();
+    if (gemQuery.empty) return res.status(404).json({ error: "gem_not_found" });
+    const gemDoc = gemQuery.docs[0];
+    const pathParts = gemDoc.ref.path.split("/");
+    if (pathParts.length !== 4 || pathParts[0] !== "users" || pathParts[2] !== "gems" || pathParts[1] !== authUid) {
+      console.warn("confirmGemNftSent ownership mismatch:", { authUid, path: gemDoc.ref.path });
+      return res.status(403).json({ error: "not_owner" });
+    }
+    const gem = gemDoc.data();
+    if (gem.status !== "awaiting_nft_transfer") {
+      return res.status(409).json({ error: "invalid_state:" + (gem.status || "unknown") });
+    }
+    // Audit feedback 2026-06-23+: chequear ventana de canje 90d post-episodio.
+    try {
+      await assertGemNotExpired(gem);
+    } catch (expErr) {
+      if (expErr instanceof HttpsError && expErr.message && expErr.message.startsWith("expired")) {
+        return res.status(410).json({ error: "expired" });
+      }
+      throw expErr;
+    }
+    const expectedTokenId = gem.tokenId;
+    if (!expectedTokenId) {
+      console.error("confirmGemNftSent gem sin tokenId:", { code, path: gemDoc.ref.path });
+      return res.status(500).json({ error: "missing_token_id" });
+    }
+
+    // 3. Wallet del user (la registrada, no la del body — defense-in-depth).
+    const userSnap = await db.collection("users").doc(authUid).get();
+    const userWallet = (userSnap.exists ? (userSnap.data().walletAddress || "") : "").toLowerCase();
+    if (!/^0x[a-f0-9]{40}$/.test(userWallet)) {
+      return res.status(400).json({ error: "wallet_not_set" });
+    }
+
+    // 4. Verificación on-chain del transfer.
+    const provider = new ethers.JsonRpcProvider("https://polygon-bor-rpc.publicnode.com");
+    let receipt;
+    try {
+      receipt = await provider.getTransactionReceipt(txHash);
+    } catch (rpcErr) {
+      console.error("confirmGemNftSent RPC error:", rpcErr.message);
+      return res.status(503).json({ error: "rpc_unavailable" });
+    }
+    if (!receipt) return res.status(404).json({ error: "tx_not_found" });
+    if (receipt.status !== 1) return res.status(400).json({ error: "tx_reverted" });
+
+    const currentBlock = await provider.getBlockNumber();
+    const confirmations = currentBlock - receipt.blockNumber;
+    if (confirmations < 3) {
+      return res.status(425).json({ error: "tx_not_confirmed", confirmations });
+    }
+
+    // 5. Buscar el Transfer event que matchea (MTBGEMS_CONTRACT + tokenId + from + to).
+    const expectedTo = NFT_RECEIVER_WALLET.toLowerCase();
+    const contractLc = MTBGEMS_CONTRACT.toLowerCase();
+    let transferOk = false;
+    for (const log of receipt.logs) {
+      if ((log.address || "").toLowerCase() !== contractLc) continue;
+      if (!log.topics || log.topics[0] !== ERC721_TRANSFER_TOPIC) continue;
+      // topics[1] = from (32 bytes), topics[2] = to (32 bytes), topics[3] = tokenId (32 bytes)
+      const logFrom = "0x" + log.topics[1].slice(26).toLowerCase();
+      const logTo = "0x" + log.topics[2].slice(26).toLowerCase();
+      const logTokenId = BigInt(log.topics[3]).toString();
+      if (logFrom === userWallet && logTo === expectedTo && logTokenId === String(expectedTokenId)) {
+        transferOk = true;
+        break;
+      }
+    }
+    if (!transferOk) {
+      console.warn("confirmGemNftSent transfer mismatch:", { txHash, expectedTokenId, userWallet, expectedTo });
+      return res.status(400).json({ error: "transfer_mismatch" });
+    }
+
+    // 6. Update Firestore atómico: marca gem + gemClaim + nftTxHashes anti-replay.
+    const claimQuery = await db.collection("gemClaims")
+        .where("code", "==", code)
+        .where("status", "==", "awaiting_nft_transfer")
+        .orderBy("submittedAt", "desc")
+        .limit(1).get();
+    const claimDocRef = claimQuery.empty ? null : claimQuery.docs[0].ref;
+
+    await db.runTransaction(async (tx) => {
+      const freshGem = await tx.get(gemDoc.ref);
+      if (!freshGem.exists || freshGem.data().status !== "awaiting_nft_transfer") {
+        throw new Error("state_changed");
+      }
+      tx.set(gemDoc.ref, {
+        status: "nft_received_pending_payout",
+        nftTxHash: txHash,
+        nftReceivedAt: Date.now(),
+      }, { merge: true });
+      if (claimDocRef) {
+        tx.set(claimDocRef, {
+          status: "nft_received_pending_payout",
+          nftTxHash: txHash,
+          nftReceivedAt: Date.now(),
+        }, { merge: true });
+      }
+      tx.set(txDocRef, {
+        gemCode: code,
+        uid: authUid,
+        tokenId: String(expectedTokenId),
+        confirmedAt: Date.now(),
+      });
+    });
+
+    // 7. Email al admin con todos los datos para que apruebe + pague USDC manual.
     try {
       const appPassword = gmailAppPassword.value();
       if (appPassword) {
@@ -2009,40 +4417,280 @@ exports.submitGemClaim = onRequest({ secrets: [gmailAppPassword] }, async (req, 
           service: "gmail",
           auth: { user: NOTIFY_EMAIL, pass: appPassword },
         });
+        const gemTier = gem.gemTier || gem.tier;
+        const gemName = gemTier ? (GEM_NAMES_ES[gemTier - 1] || `Tier ${gemTier}`) : "Desconocida";
+        const gemPrize = gemTier ? (`$${GEM_PRICES[gemTier - 1].toLocaleString()}`) : "-";
         const fecha = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+        const claimSnap = claimDocRef ? await claimDocRef.get() : null;
+        const claimData = claimSnap && claimSnap.exists ? claimSnap.data() : {};
         await transporter.sendMail({
           from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
           to: NOTIFY_EMAIL,
-          subject: `🎉 Nuevo canje de gema — ${esc(gemName)} (${esc(gemPrize)})`,
+          subject: `🎁 NFT recibido — Listo para pagar ${esc(gemPrize)} (${esc(gemName)})`,
           html: `
-            <h2>Nuevo canje de gema recibido</h2>
+            <h2>NFT recibido — Pago pendiente</h2>
+            <p>El usuario envió el NFT y confirmó el txHash on-chain. Verificá y transferí el USDC.</p>
             <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Premio a pagar</td><td style="padding:6px 12px;font-weight:bold;color:#000;font-size:18px">${esc(gemPrize)}</td></tr>
               <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Gema</td><td style="padding:6px 12px">${esc(gemName)} — Tier ${esc(String(gemTier))}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Premio</td><td style="padding:6px 12px;font-weight:bold;color:#000">${esc(gemPrize)}</td></tr>
               <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Código</td><td style="padding:6px 12px;font-family:monospace">${esc(code)}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Nombre</td><td style="padding:6px 12px">${esc(name)}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Email</td><td style="padding:6px 12px">${esc(email)}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Teléfono</td><td style="padding:6px 12px">${esc(phone)}</td></tr>
-              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Billetera</td><td style="padding:6px 12px;font-family:monospace;font-size:12px">${esc(wallet)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Token ID</td><td style="padding:6px 12px;font-family:monospace">#${esc(String(expectedTokenId))}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Wallet del user</td><td style="padding:6px 12px;font-family:monospace;font-size:12px">${esc(userWallet)}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Nombre</td><td style="padding:6px 12px">${esc(claimData.name || "-")}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Email</td><td style="padding:6px 12px">${esc(claimData.email || "-")}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Teléfono</td><td style="padding:6px 12px">${esc(claimData.phone || "-")}</td></tr>
+              <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Tx del NFT</td><td style="padding:6px 12px;font-family:monospace;font-size:11px"><a href="https://polygonscan.com/tx/${esc(txHash)}">${esc(txHash)}</a></td></tr>
               <tr><td style="padding:6px 12px;font-weight:bold;color:#555">Fecha</td><td style="padding:6px 12px">${esc(fecha)}</td></tr>
             </table>
-            <p style="margin-top:16px;font-size:12px;color:#888">Mining The Blocks · Firestore: gemClaims</p>
+            <p style="margin-top:20px;padding:12px 16px;background:#fff8e1;border-left:4px solid #f59e0b;font-size:13px">
+              <strong>Acción requerida:</strong> Transferí <strong>${esc(gemPrize)}</strong> USDC (red Polygon) a la wallet del user <code>${esc(userWallet)}</code>.
+              Después marcá el canje como completado vía <code>markGemRedeemed</code> con el txHash del pago como <code>paymentRef</code>.
+            </p>
+            <p style="margin-top:16px;font-size:12px;color:#888">Mining The Blocks · Firestore: gemClaims · El NFT ya está en pagosmtb (NFT_RECEIVER_WALLET).</p>
           `,
         });
       }
     } catch (mailErr) {
-      console.error("submitGemClaim email error:", mailErr.message);
+      console.error("confirmGemNftSent email error:", mailErr.message);
     }
 
-    return res.json({ success: true });
+    return res.json({
+      success: true,
+      message: "NFT confirmado. Te notificamos por mail cuando se complete el pago (hasta 24 hs hábiles).",
+    });
   } catch (e) {
-    console.error("submitGemClaim:", e.message);
+    console.error("confirmGemNftSent:", e.message);
+    if (e.message === "state_changed") {
+      return res.status(409).json({ error: "state_changed" });
+    }
     return res.status(500).json({ error: "server_error" });
   }
 });
 
 // P1-8: log de errores client-side. Rate-limit 100/dia/uid + 10/min/uid via
 // Firestore para evitar que un bug en bucle sature la colección.
+// CRIT (Round 2 Agente #8 CRIT-5): markGemRedeemed — sin esta función, el
+// admin pagaba en cash manualmente y marcaba la gema a mano via Firebase
+// Console. Si el admin se olvida (o el user re-submitGemClaim antes de la
+// marca), el admin podría pagar 2x — pérdida hasta $100k para gemas tier-1.
+//
+// Esta función:
+//   1. requireAdminFresh (admin claim verificado fresh).
+//   2. Busca la gema por code via collectionGroup (única por construcción).
+//   3. TX atómica: chequea que NO esté ya 'redeemed' (idempotency) ni
+//      'minted' (no se puede canjear NFT y cash). Setea status, registra
+//      adminUid + paymentRef + adminNote + redeemedAt.
+//   4. Si existe gemClaims/{xxx} asociado (web claim form), lo marca también.
+//   5. Audit log en adminActions con código + ownerUid + paymentRef.
+exports.markGemRedeemed = onCall({ secrets: [gmailAppPassword] }, async (request) => {
+  await requireAdminFresh(request);
+  const adminUid = request.auth.uid;
+
+  const code = String((request.data && request.data.code) || "").trim().toUpperCase().slice(0, 50);
+  const paymentRef = String((request.data && request.data.paymentRef) || "").trim().slice(0, 200);
+  const adminNote = String((request.data && request.data.adminNote) || "").trim().slice(0, 500);
+  if (!code) throw new HttpsError("invalid-argument", "code_required");
+  if (!paymentRef) throw new HttpsError("invalid-argument", "paymentRef_required");
+
+  // Buscar la gema por code (collectionGroup; path users/{uid}/gems/{gemId}).
+  const gemQuery = await db.collectionGroup("gems").where("code", "==", code).limit(2).get();
+  if (gemQuery.empty) throw new HttpsError("not-found", "gem_not_found");
+  if (gemQuery.size > 1) {
+    // Defense-in-depth — gemCodes deberían ser únicos (randomBytes).
+    console.error("markGemRedeemed: multiple gems with same code", { code, count: gemQuery.size });
+    throw new HttpsError("failed-precondition", "duplicate_code");
+  }
+  const gemDoc = gemQuery.docs[0];
+  const pathParts = gemDoc.ref.path.split("/");
+  if (pathParts.length !== 4 || pathParts[0] !== "users" || pathParts[2] !== "gems") {
+    throw new HttpsError("failed-precondition", "invalid_gem_path");
+  }
+  const ownerUid = pathParts[1];
+  const gemId = pathParts[3];
+
+  // Audit feedback 2026-06-23+: defensa en markGemRedeemed por si admin intenta
+  // marcar un canje que ya pasó la ventana de 90d. submitGemClaim ya rechaza
+  // antes, pero esta capa extra protege contra mark manual via callable.
+  await assertGemNotExpired(gemDoc.data());
+
+  // Idempotency: TX que verifica status antes de marcar.
+  // Ultrareview bug_003: además de redeemed/minted, bloqueamos también
+  // 'minting' (state intermedio entre claimGemNFT y mintProcessorScheduled).
+  // Sin esto, admin cashea durante la ventana de cron (~5min) y el cron
+  // mintea el NFT igual → doble-pago tier-1 = $100k irrecuperable.
+  // Atomicidad: el pendingMints/{uid_gemId} se borra DENTRO de la misma
+  // TX, así si el cron arranca después no encuentra qué mintear.
+  await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(gemDoc.ref);
+    if (!fresh.exists) throw new HttpsError("not-found", "gem_gone");
+    const data = fresh.data();
+    if (data.status === "redeemed") {
+      throw new HttpsError("already-exists", "already_redeemed");
+    }
+    if (data.status === "minted") {
+      // Gema ya minteada como NFT — no se canjea por cash adicional.
+      throw new HttpsError("failed-precondition", "already_minted");
+    }
+    if (data.status === "minting") {
+      // Race window: claimGemNFT corrió pero el cron todavía no minteó.
+      // Necesitamos cancelar el pendingMints en la misma TX para que el
+      // cron no minte después del cash payment.
+      const pendingMintRef = db.collection("pendingMints").doc(`${ownerUid}_${gemId}`);
+      const pendingMint = await tx.get(pendingMintRef);
+      if (pendingMint.exists && pendingMint.data().status === "pending") {
+        tx.delete(pendingMintRef);
+      } else if (pendingMint.exists && pendingMint.data().status === "processing") {
+        // mintProcessor agarró el lock antes que nosotros — no podemos
+        // cancelar; abortamos para no doble-pagar. Operador espera al
+        // próximo cron tick (~5min) y reintenta.
+        throw new HttpsError("failed-precondition", "mint_in_progress");
+      }
+    }
+    tx.set(gemDoc.ref, {
+      status: "redeemed",
+      redeemedAt: Date.now(),
+      redeemedBy: adminUid,
+      paymentRef,
+      adminNote: adminNote || null,
+    }, { merge: true });
+  });
+
+  // Buscar y actualizar gemClaim asociado (si el user usó la web claim form).
+  // También capturamos email + gem info para notificar al user.
+  let claimEmail = null;
+  let claimName = null;
+  let claimUserWallet = null;
+  let claimGemTier = null;
+  try {
+    const claimQuery = await db.collection("gemClaims").where("code", "==", code).limit(1).get();
+    if (!claimQuery.empty) {
+      const claimSnap = claimQuery.docs[0];
+      const claimData = claimSnap.data() || {};
+      claimEmail = claimData.email || null;
+      claimName = claimData.name || null;
+      claimUserWallet = claimData.wallet || null;
+      claimGemTier = claimData.gemTier || null;
+      await claimSnap.ref.set({
+        status: "redeemed",
+        processedAt: Date.now(),
+        processedBy: adminUid,
+        paymentRef,
+      }, { merge: true });
+    }
+  } catch (e) {
+    console.warn("markGemRedeemed gemClaim update warning:", e && e.message);
+  }
+
+  // Round 2 audit #4 HIGH (swap flow 2026-06-23): email de confirmación al
+  // user notificando que el pago fue completado. Mejora UX vs "lo cobré pero
+  // no te avisé"; antes el user tenía que checkear su wallet manualmente.
+  if (claimEmail) {
+    try {
+      const appPassword = gmailAppPassword.value();
+      if (appPassword) {
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: { user: NOTIFY_EMAIL, pass: appPassword },
+        });
+        const gemName = claimGemTier ? (GEM_NAMES_ES[claimGemTier - 1] || `Tier ${claimGemTier}`) : "tu gema";
+        const gemPrize = claimGemTier ? (`$${GEM_PRICES[claimGemTier - 1].toLocaleString()}`) : "";
+        const polygonscanLink = /^0x[a-fA-F0-9]{64}$/.test(paymentRef) ?
+          `https://polygonscan.com/tx/${paymentRef}` :
+          null;
+        await transporter.sendMail({
+          from: `"Mining The Blocks" <${NOTIFY_EMAIL}>`,
+          to: claimEmail,
+          subject: `✅ Tu canje de ${esc(gemName)} fue completado — ${esc(gemPrize)} enviados`,
+          html: `
+            <h2>¡Listo! Tu premio fue enviado</h2>
+            <p>${esc(claimName ? `Hola ${claimName},` : "Hola,")}</p>
+            <p>Confirmamos el canje de tu gema <strong>${esc(gemName)}</strong> y enviamos <strong>${esc(gemPrize)} USDC</strong> a tu billetera Polygon:</p>
+            <p style="font-family:monospace;font-size:13px;background:#f5f5f5;padding:10px 14px;border-radius:6px;word-break:break-all">${esc(claimUserWallet || "")}</p>
+            ${polygonscanLink ? `<p style="margin-top:16px">Podés ver la transacción en <a href="${esc(polygonscanLink)}">Polygonscan</a>.</p>` : ""}
+            <p style="margin-top:20px;font-size:13px;color:#555">Si no ves los fondos en tu wallet en las próximas horas, asegurate de estar mirando la red <strong>Polygon (MATIC)</strong> y el token <strong>USDC</strong>. Si necesitás ayuda escribinos a <a href="mailto:${esc(NOTIFY_EMAIL)}">${esc(NOTIFY_EMAIL)}</a> y mencioná el código <code>${esc(code)}</code>.</p>
+            <p style="margin-top:24px;font-size:12px;color:#888">Gracias por jugar Mining The Blocks. 💎</p>
+          `,
+        });
+      }
+    } catch (mailErr) {
+      console.warn("markGemRedeemed user-notify email warning:", mailErr && mailErr.message);
+    }
+  }
+
+  // Audit log.
+  try {
+    await db.collection("adminActions").add({
+      action: "markGemRedeemed",
+      adminUid,
+      ts: Date.now(),
+      gemCode: code,
+      gemId,
+      ownerUid,
+      paymentRef: paymentRef.slice(0, 100),
+    });
+  } catch (e) {
+    console.warn("markGemRedeemed audit log warning:", e && e.message);
+  }
+
+  // Audit feedback 2026-06-23+: publicar evento history "episode_redeemed"
+  // SOLO post-canje, para transparencia. Antes del canje completo no se
+  // expone info que pudiera ser usada por terceros (winner wallet, tx hashes,
+  // gemCode) — todo eso ya es info pública on-chain pero el feed lo presenta
+  // UI-friendly para que los users del chain puedan corroborar.
+  //
+  // Campos del evento: solo data PÚBLICA. NO email, NO phone, NO full name.
+  // Wallet + tx hashes son públicos en blockchain.
+  try {
+    const fresh = await gemDoc.ref.get();
+    const gemData = fresh.exists ? (fresh.data() || {}) : {};
+    const chainId = gemData.chainId;
+    if (chainId) {
+      const chainRef = db.collection("serverChains").doc(chainId);
+      const counterRef = chainRef.collection("meta").doc("counter");
+      const winnerWallet = gemData.walletAddress || claimUserWallet || null;
+      await db.runTransaction(async (tx) => {
+        const cs = await tx.get(counterRef);
+        const seq = ((cs.exists && cs.data().seq) || 0) + 1;
+        const histRef = chainRef.collection("history").doc();
+        // Audit feedback 2026-06-23+: privacy-by-default. Publicamos solo info
+        // verificable on-chain o data del episodio que cualquier miembro de
+        // la chain ya conoce. NO publicamos:
+        //   - uid (Firebase UID — identificador interno correlativo, no debería
+        //     estar en feeds públicos: permite enumeration cross-event).
+        //   - paymentRefLabel cuando NO es tx hash on-chain (admin podría
+        //     poner notas internas tipo "Pago vía Wise ref XYZ" — sensible).
+        //     Si paymentRef no es 0x..64, omitimos payoutTxHash completo.
+        // SÍ publicamos gemCode aunque sea sensitive-sounding porque post-canje
+        // ya está marcado como redeemed (backend bloquea re-claim). El código
+        // sirve para identificación inequívoca + verificación pública en
+        // /verify ("¿este código fue canjeado?" → sí, monto, fecha).
+        tx.set(histRef, {
+          type: "episode_redeemed",
+          seq,
+          ts: Date.now(),
+          episodeNumber: gemData.episodeNumber || null,
+          serverId: gemData.serverId || null,
+          chainId,
+          // Datos PÚBLICOS verificables on-chain o info del episodio:
+          gemCode: code,
+          gemTier: gemData.gemTier || null,
+          priceUSD: gemData.priceUSD || 0,
+          winnerWallet: winnerWallet,
+          nftTxHash: gemData.nftTxHash || null,
+          payoutTxHash: /^0x[a-fA-F0-9]{64}$/.test(paymentRef) ? paymentRef : null,
+          redeemedAt: Date.now(),
+        });
+        tx.set(counterRef, { seq }, { merge: true });
+      });
+    }
+  } catch (e) {
+    // No bloquear el flow del admin si falla la publicación del evento.
+    console.warn("markGemRedeemed history publish warning:", e && e.message);
+  }
+
+  return { ok: true, ownerUid, gemId };
+});
+
 exports.logClientError = onCall(async (request) => {
   const uid = (request.auth && request.auth.uid) || null;
   // Permitimos sin auth (bootstrap errors antes del login), pero limitamos por IP.

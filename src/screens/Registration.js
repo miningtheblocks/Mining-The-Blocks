@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, ActivityIndicator, Switch, Linking, Modal } from 'react-native';
 import { useAppAlert } from '../components/AppAlert';
-import { TERMS_URL } from '../constants';
+import CaptchaModal from '../components/CaptchaModal';
+import { TERMS_URL, PRIVACY_URL } from '../constants';
 import { auth, db, storage } from '../firebase/client';
-import { createUserWithEmailAndPassword, EmailAuthProvider, linkWithCredential, updateEmail, reauthenticateWithCredential, sendEmailVerification, signOut } from 'firebase/auth';
+import { createUserWithEmailAndPassword, EmailAuthProvider, linkWithCredential, verifyBeforeUpdateEmail, reauthenticateWithCredential, sendEmailVerification, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import * as ImagePicker from 'expo-image-picker';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -44,6 +45,15 @@ export default function Registration({ asModal = false, onClose }) {
   const [referralStatus, setReferralStatus] = useState('idle'); // 'idle'|'checking'|'valid'|'invalid'
   const referralDebounceRef = useRef(null);
   const { showAlert, AlertComponent } = useAppAlert();
+  // Cambio 6 (modo Chain): fricción anti-bot en el signup. NOTA: a
+  // diferencia de claimChainPick (verificado server-side contra la API de
+  // hCaptcha), createUserWithEmailAndPassword es una llamada directa del
+  // SDK cliente a Firebase Auth -- no hay forma de interceptarla con una
+  // verificación dura antes de que la cuenta se cree. Esto es fricción
+  // client-side (bloquea bots simples que no resuelven captchas), no una
+  // garantía tan fuerte como la del pico diario.
+  const [captchaToken, setCaptchaToken] = useState(null);
+  const [showCaptcha, setShowCaptcha] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -126,6 +136,43 @@ export default function Registration({ asModal = false, onClose }) {
         showAlert(t('registration.requiredFields'), t('registration.requiredFieldsBody'));
         return;
       }
+      // CRIT-2 (audit 2026-06-21): validar edad >=18 contra la fecha de nacimiento.
+      // El checkbox accept18 es self-attest y se puede tildar sin reflejar la realidad.
+      // Format esperado: DD/MM/YYYY.
+      const ageCheck = (() => {
+        const m = String(birthday).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (!m) return { ok: false, reason: 'format' };
+        const dd = parseInt(m[1], 10);
+        const mm = parseInt(m[2], 10);
+        const yyyy = parseInt(m[3], 10);
+        const now = new Date();
+        const thisYear = now.getFullYear();
+        // Sanity: año razonable (no en el futuro, no antes de 1900)
+        if (yyyy < 1900 || yyyy > thisYear) return { ok: false, reason: 'range' };
+        if (mm < 1 || mm > 12) return { ok: false, reason: 'range' };
+        if (dd < 1 || dd > 31) return { ok: false, reason: 'range' };
+        // Construir fecha y verificar que es válida (no 31/02 etc.)
+        const dob = new Date(yyyy, mm - 1, dd);
+        if (dob.getFullYear() !== yyyy || dob.getMonth() !== mm - 1 || dob.getDate() !== dd) {
+          return { ok: false, reason: 'range' };
+        }
+        // Calcular edad considerando si ya cumplió años este año
+        let age = thisYear - yyyy;
+        const thisMonth = now.getMonth();
+        const thisDay = now.getDate();
+        if (thisMonth < (mm - 1) || (thisMonth === (mm - 1) && thisDay < dd)) {
+          age -= 1;
+        }
+        if (age < 18) return { ok: false, reason: 'under18' };
+        return { ok: true };
+      })();
+      if (!ageCheck.ok) {
+        const msg = ageCheck.reason === 'under18'
+          ? t('registration.under18Body')
+          : t('registration.birthdayInvalidBody');
+        showAlert(t('registration.errorTitle'), msg);
+        return;
+      }
       // Username must be available
       if (usernameStatus === 'taken') {
         showAlert(t('registration.errorTitle'), t('registration.usernameTakenError'));
@@ -155,6 +202,10 @@ export default function Registration({ asModal = false, onClose }) {
           showAlert(t('registration.passwordsTitle'), t('registration.passwordsBody'));
           return;
         }
+        if (!captchaToken) {
+          setShowCaptcha(true);
+          return;
+        }
         const credUser = await createUserWithEmailAndPassword(auth, (email || '').trim(), password || '');
         u = credUser.user;
         try { await callSendVerificationEmail(); } catch { try { await sendEmailVerification(u); } catch {} }
@@ -177,8 +228,16 @@ export default function Registration({ asModal = false, onClose }) {
             showAlert(t('registration.errorTitle'), t('registration.wrongPassword'));
             return;
           }
-          try { await updateEmail(u, (email || '').trim()); } catch (e) {
-            showAlert(t('registration.errorTitle'), e?.message || 'Could not update email');
+          // Round 2 Agente #6 HIGH-12: verifyBeforeUpdateEmail en lugar de
+          // updateEmail directo. Pre-fix: updateEmail cambiaba el email
+          // inmediatamente + dejaba emailVerified=false silenciosamente →
+          // limbo (user cree que el email es el nuevo, pero no puede recuperar
+          // password porque el nuevo no está verified; el viejo ya no funciona).
+          // verifyBeforeUpdateEmail manda un email de verificación al NUEVO
+          // address; el email solo cambia cuando el user clickea el link. Hasta
+          // entonces, el user puede seguir logueando con el viejo email.
+          try { await verifyBeforeUpdateEmail(u, (email || '').trim()); } catch (e) {
+            showAlert(t('registration.errorTitle'), e?.message || 'Could not initiate email change');
             return;
           }
         }
@@ -264,6 +323,14 @@ export default function Registration({ asModal = false, onClose }) {
       setSaving(false);
     }
   };
+
+  // Cambio 6 (modo Chain): una vez resuelto el captcha, reintenta el submit
+  // automáticamente (ya no lo vuelve a pedir porque captchaToken ya tiene
+  // valor).
+  useEffect(() => {
+    if (captchaToken) onSave();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [captchaToken]);
 
   const ensurePermissions = async () => {
     const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -441,14 +508,14 @@ export default function Registration({ asModal = false, onClose }) {
         </View>
 
         <Text style={styles.label}>{t('registration.firstName')}</Text>
-        <TextInput style={styles.input} value={firstName} onChangeText={setFirstName} placeholderTextColor="#555" />
+        <TextInput style={styles.input} value={firstName} onChangeText={setFirstName} placeholderTextColor="#888" accessibilityLabel={t('registration.firstName')} />
 
         <Text style={styles.label}>{t('registration.lastName')}</Text>
-        <TextInput style={styles.input} value={lastName} onChangeText={setLastName} placeholderTextColor="#555" />
+        <TextInput style={styles.input} value={lastName} onChangeText={setLastName} placeholderTextColor="#888" accessibilityLabel={t('registration.lastName')} />
 
         <Text style={styles.label}>{t('registration.username')}</Text>
         <View style={styles.rowAlign}>
-          <TextInput style={[styles.input, { flex: 1 }]} value={username} onChangeText={setUsername} autoCapitalize="none" placeholder={t('registration.usernamePlaceholder')} placeholderTextColor="#555" />
+          <TextInput style={[styles.input, { flex: 1 }]} value={username} onChangeText={setUsername} autoCapitalize="none" placeholder={t('registration.usernamePlaceholder')} placeholderTextColor="#888" accessibilityLabel={t('registration.username')} />
           <Text style={[styles.matchIcon, usernameStatus === 'available' ? styles.matchOk : (usernameStatus === 'taken' || usernameStatus === 'invalid') ? styles.matchBad : styles.matchEmpty]}>
             {usernameStatus === 'available' ? '✓' : (usernameStatus === 'taken' || usernameStatus === 'invalid') ? '✗' : usernameStatus === 'checking' ? '…' : ''}
           </Text>
@@ -469,24 +536,24 @@ export default function Registration({ asModal = false, onClose }) {
           value={birthday}
           onChangeText={onChangeBirthday}
           placeholder={t('registration.birthdayPlaceholder')}
-          placeholderTextColor="#555"
+          placeholderTextColor="#888"
           keyboardType="number-pad"
           maxLength={10}
         />
 
         <Text style={styles.label}>{t('registration.phone')}</Text>
-        <TextInput style={styles.input} value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholderTextColor="#555" />
+        <TextInput style={styles.input} value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholderTextColor="#888" accessibilityLabel={t('registration.phone')} />
 
         {/* Email/Password section logic */}
         {isAnon ? (
           <>
             <Text style={styles.label}>{t('registration.email')}</Text>
-            <TextInput style={styles.input} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" placeholderTextColor="#555" />
+            <TextInput style={styles.input} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" placeholderTextColor="#888" accessibilityLabel={t('registration.email')} />
             <Text style={styles.label}>{t('registration.password')}</Text>
-            <TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry placeholder={t('registration.passwordPlaceholder')} placeholderTextColor="#555" />
+            <TextInput style={styles.input} value={password} onChangeText={setPassword} secureTextEntry placeholder={t('registration.passwordPlaceholder')} placeholderTextColor="#888" accessibilityLabel={t('registration.password')} />
             <Text style={styles.label}>{t('registration.confirmPassword')}</Text>
             <View style={styles.rowAlign}>
-              <TextInput style={[styles.input, { flex: 1 }]} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry placeholderTextColor="#555" />
+              <TextInput style={[styles.input, { flex: 1 }]} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry placeholderTextColor="#888" accessibilityLabel={t('registration.confirmPassword')} />
               <Text style={[styles.matchIcon, passwordsMatch ? styles.matchOk : styles.matchEmpty]}>{passwordsMatch ? '✓' : ''}</Text>
             </View>
           </>
@@ -498,11 +565,11 @@ export default function Registration({ asModal = false, onClose }) {
                 <Text style={styles.smallBtnTxt}>{canEditAuthEmail ? t('registration.cancel') : t('registration.changeEmail')}</Text>
               </TouchableOpacity>
             </View>
-            <TextInput style={styles.input} value={email} onChangeText={setEmail} editable={canEditAuthEmail} keyboardType="email-address" autoCapitalize="none" placeholderTextColor="#555" />
+            <TextInput style={styles.input} value={email} onChangeText={setEmail} editable={canEditAuthEmail} keyboardType="email-address" autoCapitalize="none" placeholderTextColor="#888" />
             {canEditAuthEmail && (
               <>
                 <Text style={styles.label}>{t('registration.confirmCurrentPassword')}</Text>
-                <TextInput style={styles.input} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry placeholderTextColor="#555" />
+                <TextInput style={styles.input} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry placeholderTextColor="#888" />
               </>
             )}
           </>
@@ -518,7 +585,7 @@ export default function Registration({ asModal = false, onClose }) {
                 value={referralCode}
                 onChangeText={v => setReferralCode(v.toUpperCase())}
                 placeholder={t('registration.referralCodePlaceholder')}
-                placeholderTextColor="#555"
+                placeholderTextColor="#888"
                 autoCapitalize="characters"
                 autoCorrect={false}
                 maxLength={10}
@@ -557,10 +624,16 @@ export default function Registration({ asModal = false, onClose }) {
           <Text style={styles.termsLinkTxt}>{t('registration.viewTerms')}</Text>
         </TouchableOpacity>
 
+        <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_URL).catch(() => {})} style={styles.termsLinkBtn}>
+          <Text style={styles.termsLinkTxt}>{t('registration.viewPrivacy')}</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.saveBtn, (loading || saving) && { opacity: 0.6 }]}
           onPress={onSave}
           disabled={loading || saving}
+          accessibilityLabel={t('registration.save')}
+          accessibilityState={{ disabled: loading || saving, busy: saving || loading }}
         >
           {saving
             ? <ActivityIndicator color="#fff" />
@@ -599,6 +672,12 @@ export default function Registration({ asModal = false, onClose }) {
       </Modal>
 
       {AlertComponent}
+
+      <CaptchaModal
+        visible={showCaptcha}
+        onClose={() => setShowCaptcha(false)}
+        onSuccess={(token) => { setCaptchaToken(token); setShowCaptcha(false); }}
+      />
 
       <Modal visible={showVerifyModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>

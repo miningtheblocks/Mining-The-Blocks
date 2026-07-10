@@ -5,6 +5,7 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { useI18n, languages } from '../utils/i18n';
 // BAJO-CFG-07: import `navigate` removido — no se usa en este archivo.
 import audioManager from '../utils/audioManager';
+import perfTier from '../utils/perfTier';
 export default function Config({ asModal = false, onClose }) {
   const { t, language, setLanguage } = useI18n();
 
@@ -15,10 +16,18 @@ export default function Config({ asModal = false, onClose }) {
   const [notifyDaily, setNotifyDaily] = useState(true);
   const [notifyRewards, setNotifyRewards] = useState(true);
   const [notifyNewLayer, setNotifyNewLayer] = useState(true);
+  // Cambio 16 (2026-07-06): mute independiente por categoría de "pico
+  // listo" -- Chain, Free y servers pagos tienen cooldowns/mecánicas
+  // distintas, así que se notifican por separado.
+  const [notifyChainPick, setNotifyChainPick] = useState(true);
+  const [notifyFreePick, setNotifyFreePick] = useState(true);
+  const [notifyPaidServerPick, setNotifyPaidServerPick] = useState(true);
   const [musicEnabled, setMusicEnabled] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [musicVolumeFactor, setMusicVolumeFactor] = useState(1.0);
   const [sfxVolumeFactor, setSfxVolumeFactor] = useState(1.0);
+  const [lowPerfMode, setLowPerfMode] = useState(false);
+  const [perfTierDetected, setPerfTierDetected] = useState('mid');
   const musicBarRef = useRef(null);
   const sfxBarRef = useRef(null);
   const settingsRef = useRef({});
@@ -39,6 +48,9 @@ export default function Config({ asModal = false, onClose }) {
     setNotifyDaily(settings?.notifyDaily ?? true);
     setNotifyRewards(settings?.notifyRewards ?? true);
     setNotifyNewLayer(settings?.notifyNewLayer ?? true);
+    setNotifyChainPick(settings?.notifyChainPick ?? true);
+    setNotifyFreePick(settings?.notifyFreePick ?? true);
+    setNotifyPaidServerPick(settings?.notifyPaidServerPick ?? true);
     setMusicEnabled(settings?.musicEnabled ?? true);
     setSoundEnabled(settings?.soundEnabled ?? true);
     const mvf = typeof settings?.musicVolumeFactor === 'number' ? Math.max(0, Math.min(1, settings.musicVolumeFactor)) : 1.0;
@@ -52,6 +64,9 @@ export default function Config({ asModal = false, onClose }) {
       notifyDaily: settings?.notifyDaily ?? true,
       notifyRewards: settings?.notifyRewards ?? true,
       notifyNewLayer: settings?.notifyNewLayer ?? true,
+      notifyChainPick: settings?.notifyChainPick ?? true,
+      notifyFreePick: settings?.notifyFreePick ?? true,
+      notifyPaidServerPick: settings?.notifyPaidServerPick ?? true,
       musicEnabled: settings?.musicEnabled ?? true,
       soundEnabled: settings?.soundEnabled ?? true,
       musicVolumeFactor: mvf,
@@ -70,6 +85,23 @@ export default function Config({ asModal = false, onClose }) {
 
   useEffect(() => { load(); }, []);
 
+  // Cargar tier de performance: el cubo ya corrió perfTier.init() y detectFromGL
+  // al primer onContextCreate, así que acá sólo leemos el estado en memoria.
+  useEffect(() => {
+    (async () => {
+      try {
+        await perfTier.init();
+        setLowPerfMode(perfTier.getOverride() === 'low');
+        setPerfTierDetected(perfTier.getDetectedTier());
+      } catch {}
+    })();
+  }, []);
+
+  const toggleLowPerf = async (value) => {
+    setLowPerfMode(value);
+    try { await perfTier.setOverride(value ? 'low' : 'auto'); } catch {}
+  };
+
   // BAJO-CFG-03: limpiar sliderSaveTimer en unmount para no escribir a Firestore
   // después de que el modal de Config se cerró (puede dispararse con uid del
   // usuario anterior si hubo sign-out entre el slider move y el debounce de 400ms).
@@ -87,6 +119,9 @@ export default function Config({ asModal = false, onClose }) {
     if (key === 'notifyDaily') setNotifyDaily(value);
     if (key === 'notifyRewards') setNotifyRewards(value);
     if (key === 'notifyNewLayer') setNotifyNewLayer(value);
+    if (key === 'notifyChainPick') setNotifyChainPick(value);
+    if (key === 'notifyFreePick') setNotifyFreePick(value);
+    if (key === 'notifyPaidServerPick') setNotifyPaidServerPick(value);
     if (key === 'musicEnabled') setMusicEnabled(value);
     if (key === 'soundEnabled') setSoundEnabled(value);
     await saveSettings({ [key]: value });
@@ -181,6 +216,9 @@ export default function Config({ asModal = false, onClose }) {
             style={[styles.toggleBtn, notifyAdReady && styles.toggleBtnOn]}
             onPress={() => toggle('notifyAdReady', !notifyAdReady)}
             activeOpacity={0.85}
+            accessibilityLabel={t('config.adReady')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyAdReady }}
           >
             <Text style={[styles.toggleTxt, notifyAdReady && styles.toggleTxtOn]}>
               {notifyAdReady ? t('common.on') : t('common.off')}
@@ -194,6 +232,9 @@ export default function Config({ asModal = false, onClose }) {
             style={[styles.toggleBtn, notifyDaily && styles.toggleBtnOn]}
             onPress={() => toggle('notifyDaily', !notifyDaily)}
             activeOpacity={0.85}
+            accessibilityLabel={t('config.dailyReady')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyDaily }}
           >
             <Text style={[styles.toggleTxt, notifyDaily && styles.toggleTxtOn]}>
               {notifyDaily ? t('common.on') : t('common.off')}
@@ -207,6 +248,9 @@ export default function Config({ asModal = false, onClose }) {
             style={[styles.toggleBtn, notifyRewards && styles.toggleBtnOn]}
             onPress={() => toggle('notifyRewards', !notifyRewards)}
             activeOpacity={0.85}
+            accessibilityLabel={t('config.rewardsAdded')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyRewards }}
           >
             <Text style={[styles.toggleTxt, notifyRewards && styles.toggleTxtOn]}>
               {notifyRewards ? t('common.on') : t('common.off')}
@@ -220,9 +264,60 @@ export default function Config({ asModal = false, onClose }) {
             style={[styles.toggleBtn, notifyNewLayer && styles.toggleBtnOn]}
             onPress={() => toggle('notifyNewLayer', !notifyNewLayer)}
             activeOpacity={0.85}
+            accessibilityLabel={t('config.newLayer')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyNewLayer }}
           >
             <Text style={[styles.toggleTxt, notifyNewLayer && styles.toggleTxtOn]}>
               {notifyNewLayer ? t('common.on') : t('common.off')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.cardRow}>
+          <Text style={styles.cardTitleRow}>{t('config.notifyChainPick')}</Text>
+          <TouchableOpacity
+            style={[styles.toggleBtn, notifyChainPick && styles.toggleBtnOn]}
+            onPress={() => toggle('notifyChainPick', !notifyChainPick)}
+            activeOpacity={0.85}
+            accessibilityLabel={t('config.notifyChainPick')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyChainPick }}
+          >
+            <Text style={[styles.toggleTxt, notifyChainPick && styles.toggleTxtOn]}>
+              {notifyChainPick ? t('common.on') : t('common.off')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.cardRow}>
+          <Text style={styles.cardTitleRow}>{t('config.notifyFreePick')}</Text>
+          <TouchableOpacity
+            style={[styles.toggleBtn, notifyFreePick && styles.toggleBtnOn]}
+            onPress={() => toggle('notifyFreePick', !notifyFreePick)}
+            activeOpacity={0.85}
+            accessibilityLabel={t('config.notifyFreePick')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyFreePick }}
+          >
+            <Text style={[styles.toggleTxt, notifyFreePick && styles.toggleTxtOn]}>
+              {notifyFreePick ? t('common.on') : t('common.off')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.cardRow}>
+          <Text style={styles.cardTitleRow}>{t('config.notifyPaidServerPick')}</Text>
+          <TouchableOpacity
+            style={[styles.toggleBtn, notifyPaidServerPick && styles.toggleBtnOn]}
+            onPress={() => toggle('notifyPaidServerPick', !notifyPaidServerPick)}
+            activeOpacity={0.85}
+            accessibilityLabel={t('config.notifyPaidServerPick')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyPaidServerPick }}
+          >
+            <Text style={[styles.toggleTxt, notifyPaidServerPick && styles.toggleTxtOn]}>
+              {notifyPaidServerPick ? t('common.on') : t('common.off')}
             </Text>
           </TouchableOpacity>
         </View>
@@ -236,6 +331,9 @@ export default function Config({ asModal = false, onClose }) {
               style={[styles.toggleBtn, language === 'en' && styles.toggleBtnOn]}
               onPress={() => setLanguage('en')}
               activeOpacity={0.85}
+              accessibilityLabel={t('config.english')}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: language === 'en' }}
             >
               <Text style={[styles.toggleTxt, language === 'en' && styles.toggleTxtOn]}>{t('config.english')}</Text>
             </TouchableOpacity>
@@ -243,10 +341,40 @@ export default function Config({ asModal = false, onClose }) {
               style={[styles.toggleBtn, language === 'es' && styles.toggleBtnOn]}
               onPress={() => setLanguage('es')}
               activeOpacity={0.85}
+              accessibilityLabel={t('config.spanish')}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: language === 'es' }}
             >
               <Text style={[styles.toggleTxt, language === 'es' && styles.toggleTxtOn]}>{t('config.spanish')}</Text>
             </TouchableOpacity>
           </View>
+        </View>
+
+        {/* Performance */}
+        <Text style={styles.sectionLabel}>⚙️ {language === 'es' ? 'Rendimiento' : 'Performance'}</Text>
+        <View style={styles.cardRow}>
+          <View style={{ flex: 1, paddingRight: 10 }}>
+            <Text style={styles.cardTitleRow}>
+              {language === 'es' ? 'Modo bajo rendimiento' : 'Low performance mode'}
+            </Text>
+            <Text style={styles.perfHint}>
+              {language === 'es'
+                ? `Detectado: ${perfTierDetected.toUpperCase()}. Activá si la app se traba o consume batería.`
+                : `Detected: ${perfTierDetected.toUpperCase()}. Enable if the app lags or drains battery.`}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.toggleBtn, lowPerfMode && styles.toggleBtnOn]}
+            onPress={() => toggleLowPerf(!lowPerfMode)}
+            activeOpacity={0.85}
+            accessibilityLabel={language === 'es' ? 'Modo bajo rendimiento' : 'Low performance mode'}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: lowPerfMode }}
+          >
+            <Text style={[styles.toggleTxt, lowPerfMode && styles.toggleTxtOn]}>
+              {lowPerfMode ? t('common.on') : t('common.off')}
+            </Text>
+          </TouchableOpacity>
         </View>
 
         <View style={{ height: 16 }} />
@@ -299,14 +427,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   cardTitleRow: { fontSize: 15, fontWeight: '700', color: '#ccc', flex: 1 },
+  perfHint: { fontSize: 11, color: '#777', marginTop: 4, lineHeight: 14 },
 
   toggleBtn: {
-    paddingVertical: 8,
+    // Round 2 #10 MED-10-44: touch target ≥ 44pt (WCAG 2.5.5 / Android UX).
+    // Pre-fix: paddingVertical 8 + text ~14 = ~32dp altura, sub-mínimo.
+    minHeight: 44,
+    paddingVertical: 12,
     paddingHorizontal: 18,
     borderRadius: 20,
     backgroundColor: '#1a1a1a',
     borderWidth: 1,
     borderColor: '#333',
+    justifyContent: 'center',
   },
   toggleBtnOn: {
     backgroundColor: '#1a1400',

@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, ScrollView, TextInput, Share } from 'react-native';
+import { signOut, onAuthStateChanged } from 'firebase/auth';
 import { useAppAlert } from '../components/AppAlert';
 import { auth, db } from '../firebase/client';
 import { navigate } from '../utils/navigationRef';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { useI18n } from '../utils/i18n';
 import { useOverlayModals } from '../components/OverlayModalsProvider';
-import { callApplyReferral, callSetUserWallet } from '../firebase/functions';
+import { callApplyReferral, callSetUserWallet, callDeleteMyAccount, callRevokeMySessions } from '../firebase/functions';
 import { logError } from '../utils/logError';
 
 const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -21,25 +22,44 @@ export default function Profile({ asModal = false, onClose }) {
   const [savingWallet, setSavingWallet] = useState(false);
   const [referralInput, setReferralInput] = useState('');
   const [applyingReferral, setApplyingReferral] = useState(false);
+  // Round 2 Commit F: self-serve account ops state.
+  const [revoking, setRevoking] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
+  // Round 2 Agente #4 ALTO-FE-07: subscribe al uid actual via onAuthStateChanged
+  // en lugar de capturar auth.currentUser al mount. Pre-fix: si el user cambia
+  // durante la vida del componente (e.g., logout + login con cuenta distinta,
+  // o token refresh con uid diff), el listener servía data del uid VIEJO →
+  // cross-user data leak (mostraba wallet/email del primer user al segundo).
   useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) { setLoading(false); return; }
-    const ref = doc(db, 'users', u.uid);
-    const unsub = onSnapshot(ref, (snap) => {
-      const d = snap.exists() ? snap.data() : null;
-      setData(d);
-      setWalletInput(d?.walletAddress || '');
-      setLoading(false);
-    }, () => setLoading(false));
-    return () => unsub();
+    let unsub = null;
+    const unsubAuth = onAuthStateChanged(auth, (u) => {
+      if (unsub) { try { unsub(); } catch (_) {} unsub = null; }
+      if (!u) {
+        setData(null);
+        setWalletInput('');
+        setLoading(false);
+        return;
+      }
+      const ref = doc(db, 'users', u.uid);
+      unsub = onSnapshot(ref, (snap) => {
+        const d = snap.exists() ? snap.data() : null;
+        setData(d);
+        setWalletInput(d?.walletAddress || '');
+        setLoading(false);
+      }, () => setLoading(false));
+    });
+    return () => {
+      if (unsub) { try { unsub(); } catch (_) {} }
+      if (unsubAuth) { try { unsubAuth(); } catch (_) {} }
+    };
   }, []);
 
   const shareReferralCode = async () => {
     const code = data?.referralCode;
     if (!code) return;
     const url = `https://miningtheblocks.com/?ref=${code}`;
-    const msg = t('profile.referralShareMsg').replace('{code}', code).replace('{url}', url);
+    const msg = t('profile.referralShareMsg', { code, url });
     try {
       await Share.share({ message: msg });
     } catch {}
@@ -91,10 +111,12 @@ export default function Profile({ asModal = false, onClose }) {
       const code = e?.code || '';
       const msg = e?.message || '';
       if (msg.includes('email_not_verified')) {
-        showAlert(t('profile.walletInvalidTitle') || 'Error', t('profile.emailNotVerified') || 'Verificá tu email antes de cambiar la wallet.');
+        // Round 2 #10 CRIT-10-04: t() ahora soporta interpolación; las keys
+        // emailNotVerified + walletCooldown se agregaron en Tier 1 (EN+ES).
+        showAlert(t('profile.walletInvalidTitle'), t('profile.emailNotVerified'));
       } else if (msg.startsWith('wallet_cooldown:')) {
         const h = msg.split(':')[1] || '24';
-        showAlert('', (t('profile.walletCooldown') || 'Podés cambiar tu wallet en {h}h.').replace('{h}', h));
+        showAlert('', t('profile.walletCooldown', { h }));
       } else {
         showAlert('Error', t('profile.walletInvalidMsg') || 'No se pudo guardar.');
       }
@@ -104,6 +126,63 @@ export default function Profile({ asModal = false, onClose }) {
   };
 
   const fullName = `${data?.profile?.firstName || ''} ${data?.profile?.lastName || ''}`.trim() || '';
+
+  // Round 2 Commit F: self-serve account ops (logout everywhere + delete).
+  const handleLogoutEverywhere = () => {
+    showAlert(
+      t('profile.logoutEverywhereTitle'),
+      t('profile.logoutEverywhereMsg'),
+      [
+        { text: t('profile.cancel'), style: 'cancel' },
+        {
+          text: t('profile.logoutEverywhereConfirm'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setRevoking(true);
+              await callRevokeMySessions();
+              // Cierre local inmediato — el revoke server-side recién toma
+              // efecto cuando otros devices intentan validar su token (los
+              // tokens viejos son <60min, próximo refresh los pesca).
+              await signOut(auth).catch(() => {});
+            } catch (e) {
+              logError('Profile.revokeSessions', e);
+              showAlert('Error', t('profile.logoutEverywhereError'));
+            } finally {
+              setRevoking(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteAccount = () => {
+    showAlert(
+      t('profile.deleteAccountTitle'),
+      t('profile.deleteAccountWarning'),
+      [
+        { text: t('profile.cancel'), style: 'cancel' },
+        {
+          text: t('profile.deleteAccountConfirm'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setDeleting(true);
+              await callDeleteMyAccount();
+              // El Auth user fue borrado server-side → tokens invalidados.
+              // signOut local para coherencia inmediata del cliente.
+              await signOut(auth).catch(() => {});
+            } catch (e) {
+              logError('Profile.deleteAccount', e);
+              showAlert('Error', t('profile.deleteAccountError'));
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -141,10 +220,6 @@ export default function Profile({ asModal = false, onClose }) {
           <InfoRow label={t('profile.birthday')} value={data?.profile?.birthday} />
           <Sep />
           <InfoRow label={t('profile.phone')} value={data?.profile?.phone} />
-          <Sep />
-          <InfoRow label={t('profile.address')} value={data?.profile?.address} />
-          <Sep />
-          <InfoRow label={t('profile.postalCode')} value={data?.profile?.postalCode} />
         </View>
 
         {/* Wallet ETH */}
@@ -155,15 +230,18 @@ export default function Profile({ asModal = false, onClose }) {
             value={walletInput}
             onChangeText={setWalletInput}
             placeholder="0x..."
-            placeholderTextColor="#444"
+            placeholderTextColor="#888"
             autoCapitalize="none"
             autoCorrect={false}
+            accessibilityLabel={t('profile.wallet')}
           />
           <TouchableOpacity
             style={[styles.actionBtn, { marginTop: 8 }]}
             onPress={saveWallet}
             disabled={savingWallet}
             activeOpacity={0.85}
+            accessibilityLabel={t('profile.saveWallet')}
+            accessibilityState={{ disabled: savingWallet, busy: savingWallet }}
           >
             <Text style={styles.actionBtnTxt}>
               {savingWallet ? t('profile.saving') : t('profile.saveWallet')}
@@ -199,7 +277,7 @@ export default function Profile({ asModal = false, onClose }) {
                 value={referralInput}
                 onChangeText={setReferralInput}
                 placeholder={t('profile.referralPlaceholder')}
-                placeholderTextColor="#444"
+                placeholderTextColor="#888"
                 autoCapitalize="characters"
                 autoCorrect={false}
               />
@@ -220,9 +298,37 @@ export default function Profile({ asModal = false, onClose }) {
           style={styles.editProfileBtn}
           onPress={() => { if (asModal && onClose) onClose(); openModal('registration'); }}
           activeOpacity={0.85}
+          accessibilityLabel={t('profile.editProfile')}
         >
           <Text style={styles.editProfileTxt}>✏️ {t('profile.editProfile')}</Text>
         </TouchableOpacity>
+
+        {/* Round 2 Commit F: Danger zone — self-serve "logout everywhere" + account deletion. */}
+        {!loading && data && (
+          <View style={styles.dangerSection}>
+            <Text style={styles.dangerLabel}>{t('profile.dangerZone')}</Text>
+            <TouchableOpacity
+              style={styles.dangerBtn}
+              onPress={handleLogoutEverywhere}
+              disabled={revoking}
+              activeOpacity={0.85}
+              accessibilityLabel={t('profile.logoutEverywhere')}
+              accessibilityState={{ disabled: revoking, busy: revoking }}
+            >
+              <Text style={styles.dangerBtnTxt}>🔐 {revoking ? '…' : t('profile.logoutEverywhere')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.dangerBtn, styles.dangerBtnCritical]}
+              onPress={handleDeleteAccount}
+              disabled={deleting}
+              activeOpacity={0.85}
+              accessibilityLabel={t('profile.deleteAccount')}
+              accessibilityState={{ disabled: deleting, busy: deleting }}
+            >
+              <Text style={[styles.dangerBtnTxt, styles.dangerBtnTxtCritical]}>⚠️  {deleting ? '…' : t('profile.deleteAccount')}</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
       </ScrollView>
       {AlertComponent}
@@ -338,4 +444,39 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   editProfileTxt: { color: '#ccc', fontWeight: '800', fontSize: 15 },
+
+  // Round 2 Commit F: Danger zone (self-serve account ops).
+  dangerSection: {
+    marginTop: 32,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#1a1a1a',
+  },
+  dangerLabel: {
+    color: '#888',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 10,
+    marginLeft: 2,
+  },
+  dangerBtn: {
+    minHeight: 44,
+    backgroundColor: '#1a1414',
+    borderWidth: 1,
+    borderColor: '#3a2222',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+  dangerBtnCritical: {
+    backgroundColor: '#1a0a0a',
+    borderColor: '#5a1414',
+  },
+  dangerBtnTxt: { color: '#ccc', fontWeight: '700', fontSize: 14 },
+  dangerBtnTxtCritical: { color: '#ff6b6b', fontWeight: '800' },
 });

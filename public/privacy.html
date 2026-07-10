@@ -8,6 +8,9 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests">
 <meta http-equiv="X-Frame-Options" content="DENY">
 <meta name="referrer" content="strict-origin-when-cross-origin">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <title>Política de Privacidad — Mining The Blocks</title>
 <style>
   body { margin:0; padding:0; background:#0a0a0a; color:#ddd; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; line-height:1.65; }
@@ -71,7 +74,8 @@
 
   <h3>1.6 Publicidad</h3>
   <ul>
-    <li>Usamos <strong>Google AdMob</strong> para mostrar anuncios premiados (rewarded ads). AdMob puede recolectar identificadores publicitarios anónimos del dispositivo (AD_ID) según su propia política: <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer">policies.google.com/privacy</a>.</li>
+    <li>NO usamos ad SDKs nativos (Google AdMob fue removido). Los anuncios se muestran en una página web externa (<code>miningtheblocks.com/adpick.html</code>) que abrís cuando elegís "Watch Ad" para obtener un pico. Esa página embebe una red de publicidad de terceros (<code>effectivecpmnetwork.com</code>) dentro de un iframe sandbox aislado en otro subdominio (<code>ads.miningtheblocks.com</code>), sin acceso a tus datos de la app.</li>
+    <li>La red de publicidad puede recolectar metadata estándar de navegación (User-Agent, IP, cookies de su propio dominio) según su política. NO les pasamos identificadores tuyos (uid, email, etc.) ni el AD_ID del dispositivo (la app NO declara este permiso).</li>
   </ul>
 
   <h2>2. Para qué usamos los datos</h2>
@@ -84,11 +88,15 @@
     <li>Mejorar la app (anonimizado).</li>
   </ul>
 
-  <h2>3. Con quién compartimos datos</h2>
+  <h2>3. Con quién compartimos datos (sub-procesadores)</h2>
   <ul>
-    <li><strong>Google / Firebase</strong> (Auth, Firestore, Cloud Functions, FCM, AdMob): infraestructura.</li>
-    <li><strong>Polygon Network</strong> (blockchain pública): tu dirección de wallet y el NFT minteado quedan registrados on-chain.</li>
-    <li><strong>Pinata / IPFS</strong>: metadata pública de los NFTs.</li>
+    <li><strong>Google / Firebase</strong> (Auth, Firestore, Cloud Functions, FCM, Cloud Storage): infraestructura principal. Datos procesados en Estados Unidos bajo Standard Contractual Clauses (SCC) aprobadas por la Comisión Europea para transferencias UE→USA.</li>
+    <li><strong>Cloudflare</strong> (DNS registrar del dominio <code>miningtheblocks.com</code>): procesa metadata de resolución DNS (IP, headers, geolocalización) cuando visitás el sitio web. Bajo SCC para transferencias UE→USA. <a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener noreferrer">Política de Cloudflare</a>.</li>
+    <li><strong>GitHub</strong> (GitHub Pages hostea las páginas web públicas en <code>/docs</code> + el subdominio <code>ads.miningtheblocks.com</code>): procesa IPs de visitantes a privacy.html, terms.html y adpick.html. Bajo SCC para transferencias UE→USA. <a href="https://docs.github.com/site-policy/privacy-policies" target="_blank" rel="noopener noreferrer">Política de GitHub</a>.</li>
+    <li><strong>Sentry</strong> (error tracking de la app): procesa stack traces de crashes anonimizados (sin email/uid). Datos almacenados en la UE (región Frankfurt). <a href="https://sentry.io/privacy/" target="_blank" rel="noopener noreferrer">Política de Sentry</a>.</li>
+    <li><strong>Better Stack</strong> (status page público en <code>status.miningtheblocks.com</code>): monitorea uptime de los servicios. No recolecta datos de usuarios finales. <a href="https://betterstack.com/privacy" target="_blank" rel="noopener noreferrer">Política de Better Stack</a>.</li>
+    <li><strong>Polygon Network</strong> (blockchain pública): tu dirección de wallet y el NFT minteado quedan registrados on-chain de forma permanente.</li>
+    <li><strong>Pinata + Filebase</strong> (pinning IPFS redundante para los NFTs): metadata pública de los NFTs (imágenes + atributos). El contenido en IPFS es público por diseño. Pinata bajo SCC para UE→USA; Filebase opera desde USA.</li>
     <li>No vendemos tus datos a terceros. No compartimos con anunciantes individuales.</li>
   </ul>
 
@@ -96,7 +104,7 @@
   <ul>
     <li>Datos de cuenta: mientras tu cuenta exista.</li>
     <li>Logs de errores y feeds de actividad: máximo 90 días.</li>
-    <li>Registros de canje de gemas: hasta 5 años (para auditoría fiscal).</li>
+    <li>Registros de canje de gemas y datos KYC/AML asociados: hasta 5 años, en cumplimiento de obligaciones regulatorias antilavado (espejo de Términos §13.3).</li>
     <li>Transacciones blockchain: permanentes (no las podemos borrar).</li>
   </ul>
 
@@ -111,9 +119,10 @@
 
   <h2>6. Seguridad</h2>
   <p>Usamos Firebase Auth con tokens JWT, TLS 1.2+ en todas las conexiones, y Firestore Rules para que cada usuario sólo acceda a sus propios datos. Las claves privadas de la wallet de empresa están en Google Secret Manager.</p>
+  <p><strong>Método de autenticación:</strong> Mining The Blocks usa <strong>únicamente email + contraseña</strong> para el registro e inicio de sesión. <strong>NO</strong> integramos proveedores OAuth de terceros (Apple Sign-In, Google Sign-In, Facebook, etc.), por lo que tu cuenta no comparte datos de identidad con ninguna red social ni con Apple/Google fuera de los servicios de infraestructura listados en §3 (Firebase Auth).</p>
 
   <h2>7. Menores de edad</h2>
-  <p>La app está restringida a usuarios de <strong>18 años o más</strong> y NO recolecta intencionalmente datos de menores. AdMob está configurado con los flags <code>tagForChildDirectedTreatment=false</code> (no es servicio dirigido a niños, conforme a COPPA / FTC) y <code>tagForUnderAgeOfConsent=false</code>. Si descubrís que un menor está usando la app, contactanos para eliminar su cuenta inmediatamente.</p>
+  <p>La app está restringida a usuarios de <strong>18 años o más</strong> y NO recolecta intencionalmente datos de menores. Si descubrís que un menor está usando la app, contactanos para eliminar su cuenta inmediatamente.</p>
 
   <h2>7.1 COPPA &amp; CCPA</h2>
   <p>No recolectamos a sabiendas información personal de menores de 13 años (COPPA, EE.UU.). Si residís en California, podés ejercer tus derechos bajo CCPA / CPRA (acceso, eliminación, opt-out de venta de datos — nosotros NO vendemos datos) escribiéndonos al email de contacto.</p>
@@ -138,7 +147,7 @@
     <li><strong>Crypto payment data</strong>: wallet address you paste in the app, USDC payment session ID. We never store private keys.</li>
     <li><strong>Prize claim data</strong>: name, email, phone, wallet you enter at miningtheblocks.com to claim a gem.</li>
     <li><strong>Technical data</strong>: push token, app version, language, error logs.</li>
-    <li><strong>Ads</strong>: Google AdMob may collect anonymous ad identifiers per their own policy.</li>
+    <li><strong>Ads</strong>: We do NOT use native ad SDKs (Google AdMob was removed). Ads are shown on an external web page (<code>miningtheblocks.com/adpick.html</code>) you open when choosing "Watch Ad" for a pick. That page embeds a third-party ad network (<code>effectivecpmnetwork.com</code>) inside a sandboxed iframe on a separate subdomain (<code>ads.miningtheblocks.com</code>) with no access to your app data. The ad network may collect standard browsing metadata (User-Agent, IP, its own cookies) per its policy. We do NOT share your identifiers (uid, email) nor the device's AD_ID with them (the app does NOT declare that permission).</li>
   </ul>
 
   <h2>2. How we use it</h2>
@@ -151,11 +160,15 @@
     <li>Improve the app (anonymized).</li>
   </ul>
 
-  <h2>3. Sharing</h2>
+  <h2>3. Sharing (sub-processors)</h2>
   <ul>
-    <li><strong>Google / Firebase</strong> (infra): Auth, Firestore, Cloud Functions, FCM, AdMob.</li>
-    <li><strong>Polygon Network</strong>: your wallet and minted NFT are recorded on-chain (public).</li>
-    <li><strong>Pinata / IPFS</strong>: public NFT metadata.</li>
+    <li><strong>Google / Firebase</strong> (Auth, Firestore, Cloud Functions, FCM, Cloud Storage): primary infrastructure. Data processed in the United States under Standard Contractual Clauses (SCC) approved by the European Commission for EU→USA transfers (post Schrems II).</li>
+    <li><strong>Cloudflare</strong> (DNS registrar for <code>miningtheblocks.com</code>): processes DNS resolution metadata (IP, headers, geolocation) when you visit the website. Under SCC for EU→USA transfers. <a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener noreferrer">Cloudflare Policy</a>.</li>
+    <li><strong>GitHub</strong> (GitHub Pages hosts the public web pages in <code>/docs</code> + the subdomain <code>ads.miningtheblocks.com</code>): processes visitor IPs to privacy.html, terms.html and adpick.html. Under SCC for EU→USA transfers. <a href="https://docs.github.com/site-policy/privacy-policies" target="_blank" rel="noopener noreferrer">GitHub Policy</a>.</li>
+    <li><strong>Sentry</strong> (in-app error tracking): processes anonymized crash stack traces (no email/uid). Data stored in the EU (Frankfurt region). <a href="https://sentry.io/privacy/" target="_blank" rel="noopener noreferrer">Sentry Policy</a>.</li>
+    <li><strong>Better Stack</strong> (public status page at <code>status.miningtheblocks.com</code>): monitors service uptime. Does not collect end-user data. <a href="https://betterstack.com/privacy" target="_blank" rel="noopener noreferrer">Better Stack Policy</a>.</li>
+    <li><strong>Polygon Network</strong>: your wallet and minted NFT are recorded on-chain (public, permanent by design).</li>
+    <li><strong>Pinata + Filebase</strong> (redundant IPFS pinning for NFTs): public NFT metadata (images + attributes). IPFS content is public by design. Pinata under SCC for EU→USA; Filebase operates from USA.</li>
     <li>We do not sell your data. We do not share with individual advertisers.</li>
   </ul>
 
@@ -163,7 +176,7 @@
   <ul>
     <li>Account data: as long as your account exists.</li>
     <li>Error logs and activity feeds: max 90 days.</li>
-    <li>Gem claim records: up to 5 years (audit).</li>
+    <li>Gem claim records and associated KYC/AML data: up to 5 years, for regulatory anti-money-laundering compliance (mirrors Terms §13.3).</li>
     <li>Blockchain transactions: permanent.</li>
   </ul>
 
@@ -175,9 +188,10 @@
 
   <h2>6. Security</h2>
   <p>Firebase Auth (JWT), TLS 1.2+, Firestore Rules per-user access, secrets in Google Secret Manager.</p>
+  <p><strong>Authentication method:</strong> Mining The Blocks uses <strong>email + password only</strong> for account registration and sign-in. We do <strong>NOT</strong> integrate third-party OAuth providers (Apple Sign-In, Google Sign-In, Facebook, etc.), so your account does not share identity data with any social network or with Apple/Google beyond the infrastructure services listed in §3 (Firebase Auth).</p>
 
   <h2>7. Minors</h2>
-  <p>This app is restricted to users <strong>18 years of age or older</strong> and does not knowingly collect data from minors. AdMob is configured with <code>tagForChildDirectedTreatment=false</code> (not child-directed per COPPA/FTC) and <code>tagForUnderAgeOfConsent=false</code>. If you discover a minor using the app, contact us to delete the account immediately.</p>
+  <p>This app is restricted to users <strong>18 years of age or older</strong> and does not knowingly collect data from minors. If you discover a minor using the app, contact us to delete the account immediately.</p>
 
   <h2>7.1 COPPA &amp; CCPA</h2>
   <p>We do not knowingly collect personal information from children under 13 (COPPA, US). California residents may exercise their CCPA / CPRA rights (access, deletion, opt-out of sale — we do NOT sell data) by emailing the contact address.</p>

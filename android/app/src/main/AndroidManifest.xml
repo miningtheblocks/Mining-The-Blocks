@@ -7,6 +7,37 @@
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+  <!-- Round 2 Agente #9 MED-09-10 + MED-09-11: remover permisos transitivos
+       sin valor en sideload (no Play Store install referrer; no badges porque
+       Notifications.shouldSetBadge:false). Reduce attack surface visible al
+       user en Settings → Permisos. -->
+  <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove"/>
+  <uses-permission android:name="com.android.vending.BILLING" tools:node="remove"/>
+  <uses-permission android:name="com.sec.android.provider.badge.permission.READ" tools:node="remove"/>
+  <uses-permission android:name="com.sec.android.provider.badge.permission.WRITE" tools:node="remove"/>
+  <uses-permission android:name="com.htc.launcher.permission.READ_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="com.htc.launcher.permission.UPDATE_SHORTCUT" tools:node="remove"/>
+  <uses-permission android:name="com.sonyericsson.home.permission.BROADCAST_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.sonymobile.home.permission.PROVIDER_INSERT_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.anddoes.launcher.permission.UPDATE_COUNT" tools:node="remove"/>
+  <uses-permission android:name="com.majeur.launcher.permission.UPDATE_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.huawei.android.launcher.permission.CHANGE_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.huawei.android.launcher.permission.READ_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="com.huawei.android.launcher.permission.WRITE_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="android.permission.READ_APP_BADGE" tools:node="remove"/>
+  <uses-permission android:name="com.oppo.launcher.permission.READ_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="com.oppo.launcher.permission.WRITE_SETTINGS" tools:node="remove"/>
+  <uses-permission android:name="me.everything.badger.permission.BADGE_COUNT_READ" tools:node="remove"/>
+  <uses-permission android:name="me.everything.badger.permission.BADGE_COUNT_WRITE" tools:node="remove"/>
+  <!-- Round 2 Agente #9 HIGH-09-08: expo-notifications auto-registra
+       RECEIVE_BOOT_COMPLETED + MY_PACKAGE_REPLACED + un receiver
+       NotificationsService que se levanta al boot del device. La app NO usa
+       scheduled notifications (App.js no llama scheduleNotificationAsync),
+       solo push remoto FCM. Sin esto: el user en sideload Android ve
+       "Esta app se inicia al encender" en Settings → asusta + reputación.
+       Si en el futuro suman scheduled notifications locales, recuperar. -->
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" tools:node="remove"/>
+  <uses-permission android:name="android.intent.action.MY_PACKAGE_REPLACED" tools:node="remove"/>
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
@@ -18,9 +49,13 @@
        SEC-A4: tools:replace fuerza allowBackup=false aunque librerías
        transitivas (androidx.work, etc.) intenten setearlo a true. -->
   <application android:name=".MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:networkSecurityConfig="@xml/network_security_config" android:usesCleartextTraffic="false" android:theme="@style/AppTheme" android:supportsRtl="true" android:enableOnBackInvokedCallback="false" tools:replace="android:allowBackup,android:fullBackupContent,android:usesCleartextTraffic">
-    <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-4718826806092770~3631324090" tools:replace="android:value"/>
-    <meta-data android:name="com.google.android.gms.ads.flag.OPTIMIZE_AD_LOADING" android:value="true" tools:replace="android:value"/>
-    <meta-data android:name="com.google.android.gms.ads.flag.OPTIMIZE_INITIALIZATION" android:value="true" tools:replace="android:value"/>
+    <!-- Round 2 Commit Q follow-up: 3 meta-data tags de Google Mobile Ads
+         removidas. El SDK react-native-google-mobile-ads fue removido del
+         package.json en Commit Q, pero estos meta-data quedaban en el manifest
+         residuales. Sin el SDK gradle dep, son inert (no hay código que los
+         lea) pero ensucian el manifest merged.
+         Si vuelven a native ads: agregar react-native-google-mobile-ads dep,
+         agregar plugin a app.json, regenerar el android/ (prebuild una vez). -->
     <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_LAUNCH_WAIT_MS" android:value="0"/>
@@ -35,6 +70,51 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="exp+miningtheblocks"/>
       </intent-filter>
+      <!-- Round 2 Agente #9 MED-09-13: nuevo scheme `mtb://` sin prefix `exp+`
+           (que delataba la app como Expo a cualquier static analyzer del APK).
+           Mantenemos el viejo para backwards-compat de users existentes; el
+           backend va a migrar a `mtb://` en futuros releases una vez que
+           ~95% de la base haya actualizado a v1.2.0+. -->
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="mtb"/>
+      </intent-filter>
+      <!-- Round 2 Agente #9 HIGH-09-04: App Links HTTPS verificadas.
+           autoVerify="true" instruye a Android a fetchear
+           https://miningtheblocks.com/.well-known/assetlinks.json al install
+           del APK; verifica que el SHA-256 de la firma matchea + entonces
+           registra la app como handler EXCLUSIVO de estos URLs (sin chooser,
+           sin posibilidad de hijack por otra app maliciosa que declare el
+           mismo intent filter — el scheme `mtb://` solo NO ofrece esa
+           garantía). assetlinks.json declara la huella SHA-256
+           BF:8F:25:AC:... del keystore mtb-release-v2. Si en el futuro
+           cambia el keystore, actualizar assetlinks.json en el repo
+           mismo (vive en docs/.well-known/). -->
+      <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="https"
+              android:host="miningtheblocks.com"
+              android:pathPrefix="/app/"/>
+      </intent-filter>
     </activity>
+    <!-- Round 2 Agente #9 MED-09-12: CropImageActivity (libreria canhub.cropper
+         via expo-image-picker) auto-injecta exported=true. Override a false:
+         es una activity interna del crop flow, no debe responder a intents
+         externos. Sin esto, otra app podía dispararla con Intent.setComponent
+         + URI arbitraria.
+         tools:replace="android:exported" es obligatorio porque la lib declara
+         exported=true; sin esto, el manifest merger falla con conflict. -->
+    <activity android:name="com.canhub.cropper.CropImageActivity"
+              android:exported="false"
+              tools:replace="android:exported"/>
+    <!-- Round 2 Agente #9 MED-09-10: BIND_GET_INSTALL_REFERRER_SERVICE viene
+         de play-services-measurement para Play Store install attribution. En
+         sideload nunca está populated → permiso cosmético sin uso. -->
+    <service android:name="com.google.android.gms.measurement.AppMeasurementJobService"
+             tools:node="remove"/>
   </application>
 </manifest>

@@ -9,6 +9,8 @@ import MyGems from '../screens/MyGems';
 import HowToPlay from '../screens/HowToPlay';
 import BuyCredits from '../screens/BuyCredits';
 import ReportProblem from './ReportProblem';
+import CreateCustomServer from '../screens/CreateCustomServer';
+import { useServer } from '../utils/serverContext';
 
 // CQ-013: Subscribe.js eliminado — duplicaba la funcionalidad de Login.js
 // (sólo hacía signInWithEmailAndPassword) y mostraba "cuenta creada" misleading.
@@ -29,10 +31,15 @@ const INITIAL_VISIBLE = {
   howToPlay: false,
   buyCredits: false,
   report: false,
+  createCustomServer: false,
 };
 
 export function OverlayModalsProvider({ children }) {
   const [visible, setVisible] = useState(INITIAL_VISIBLE);
+  // Cambio 1 (picos por cadena): el modal de Peaks ya no es global — se
+  // inyecta el chainId de la cadena activa. Sin activeServer, GetPeaks
+  // muestra un estado vacío en vez de romper (ver `noChainMsg`).
+  const { activeServer } = useServer();
 
   const openModal = useCallback((key) => {
     setVisible((v) => ({ ...v, [key]: true }));
@@ -63,7 +70,14 @@ export function OverlayModalsProvider({ children }) {
 
         {/* Peaks */}
         <ModalShell visible={visible.peaks} onClose={() => closeModal('peaks')} titleKey="drawer.getPeaks">
-          {visible.peaks && <GetPeaks asModal onClose={() => closeModal('peaks')} />}
+          {visible.peaks && (
+            <GetPeaks
+              asModal
+              onClose={() => closeModal('peaks')}
+              chainId={activeServer?.chainId || null}
+              isFreeServer={!!(activeServer?.config && activeServer.config.isFreeServer)}
+            />
+          )}
         </ModalShell>
 
         {/* Edit Profile (Registration form as modal) */}
@@ -90,6 +104,14 @@ export function OverlayModalsProvider({ children }) {
         <ModalShell visible={visible.report} onClose={() => closeModal('report')} titleKey="report.title">
           {visible.report && <ReportProblem onClose={() => closeModal('report')} />}
         </ModalShell>
+
+        {/* Cambio 3 (Fase 4): server a medida -- experimental, solo aparece si
+            config/app.paramServerCreationEnabled está activo (gate en ServerList.js,
+            el botón que abre este modal ni se muestra si el flag está apagado). */}
+        <ModalShell visible={visible.createCustomServer} onClose={() => closeModal('createCustomServer')} titleKey="drawer.createCustomServer">
+          {visible.createCustomServer && <CreateCustomServer onClose={() => closeModal('createCustomServer')} />}
+        </ModalShell>
+
       </View>
     </OverlayModalsContext.Provider>
   );

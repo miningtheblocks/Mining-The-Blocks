@@ -10,28 +10,20 @@
  * Uso: node scripts/full_reset_game.js
  */
 
-const admin = require('../functions/node_modules/firebase-admin');
-const { getAuth } = require('../functions/node_modules/firebase-admin/auth');
+const { getAuth } = require('../functions/node_modules/firebase-admin/lib/auth');
 const https = require('https');
-const fs = require('fs');
 const { confirmDestructive } = require('./_confirm');
+const { initAdmin, getAccessToken, PROJECT } = require('./_sa_init');
 
-const config = JSON.parse(fs.readFileSync('/home/code/.config/configstore/firebase-tools.json', 'utf8'));
-const accessToken = config.tokens.access_token;
-const PROJECT = 'miningtheblocks-669f6';
 const BASE_PATH = `/v1/projects/${PROJECT}/databases/(default)/documents`;
 
-// --- Auth via firebase-admin ---
-admin.initializeApp({
-  credential: {
-    getAccessToken: () => Promise.resolve({ access_token: accessToken, expires_in: 3600 }),
-  },
-  projectId: PROJECT,
-});
+// SA dedicado mtb-admin-cli — ver _sa_init.js + RUNBOOK.md.
+initAdmin();
 const auth = getAuth();
 
-// --- Firestore REST API helpers ---
-function httpsReq(method, path, body) {
+// --- Firestore REST API helpers — token se obtiene del SA cacheado en _sa_init ---
+async function httpsReq(method, path, body) {
+  const accessToken = await getAccessToken();
   return new Promise((resolve, reject) => {
     const opts = {
       hostname: 'firestore.googleapis.com',

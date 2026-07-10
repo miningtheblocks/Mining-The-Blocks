@@ -30,6 +30,16 @@ scripts/
 
 # ─── Smart contracts (Solidity) — no van en el APK ────────────────────────────
 contracts/
+contracts_build/
+
+# ─── Audits (markdown internos, no necesarios en APK) — Round 2 #6 Cleanup #4 ─
+audit_2026_06_14_round2/
+audit_2026_06_21_pre_release/
+ACCIONES_MANUALES.md
+ARCHITECTURE.md
+AUDITORIA_SIDELOAD.md
+RUNBOOK.md
+*.sha256
 
 # ─── Firebase config (deploy es por separado) ─────────────────────────────────
 firebase.json

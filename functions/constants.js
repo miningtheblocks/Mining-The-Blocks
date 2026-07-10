@@ -33,11 +33,28 @@ const GEM_TOKEN_URIS = [
   'ipfs://bafkreibx455uher6cdea6sm3fagj4qdu6u4rfu3w52leptffoorrmzdd5y',
 ];
 
-const MTBGEMS_CONTRACT = process.env.MTBGEMS_CONTRACT || '0x54c2859411afCb51fcfE42054aDcA3484B3f29E6';
+// V2 desplegado 2026-06-23 (audit R2 CRIT-S1/S2/S3 + MED-S1 fix).
+// AccessControl 2-of-3 Safe (0x83a3F5...86aCD) como ADMIN+PAUSER,
+// nftv2 EOA (0x0a2858...41e) como MINTER, supply caps inmutables.
+// V1 deprecated: 0x54c2859411afCb51fcfE42054aDcA3484B3f29E6 (Ownable, sin caps).
+const MTBGEMS_CONTRACT = process.env.MTBGEMS_CONTRACT || '0x2933Ff14AdeC0a4D74aD8380E5c491321bBd3195';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Cambio 13 (2026-07-06): cooldown del pico diario de Chain, bajado de
+// 24h a 2h -- decisión del usuario tras analizar el impacto en impresiones
+// de ads (ver claimChainPick: el cooldown arranca al USAR el pico, no al
+// reclamarlo, y solo se puede tener 1 pico sin usar a la vez -- así la
+// frecuencia de impresiones queda atada a cuánto juega el usuario, no a
+// cuántas veces puede reclamar sin usar).
+const CHAIN_PICK_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+
 const PAYMENT_WALLET = '0x61f7E9df2113Ac2E4a3D18f802AF2EE77cFAAD4f';
+
+// Wallet a la que el user envía el NFT como prueba de canje. Por simplicidad
+// inicial usamos la misma wallet que recibe los USDC de entry fee (pagosmtb).
+// En el futuro se puede separar a una wallet dedicada de "NFT-receiver".
+const NFT_RECEIVER_WALLET = PAYMENT_WALLET;
 const USDC_CONTRACTS = [
   '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', // USDC bridged (PoS)
   '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', // USDC native
@@ -61,7 +78,9 @@ module.exports = {
   GEM_TOKEN_URIS,
   MTBGEMS_CONTRACT,
   DAY_MS,
+  CHAIN_PICK_COOLDOWN_MS,
   PAYMENT_WALLET,
+  NFT_RECEIVER_WALLET,
   USDC_CONTRACTS,
   USDC_ABI,
   CREDIT_PRICE_USD,

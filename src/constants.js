@@ -6,7 +6,7 @@ import Constants from 'expo-constants';
 
 // Fallback hardcoded sincronizado manualmente con app.json/package.json en cada bump.
 // El proceso de release es: bumpear 3 lugares (app.json.expo.version + package.json.version + acá).
-const FALLBACK_APP_VERSION = '1.1.0';
+const FALLBACK_APP_VERSION = '1.2.0';
 
 export const APP_VERSION =
   Constants?.expoConfig?.version ||
@@ -16,6 +16,7 @@ export const APP_VERSION =
 
 export const TERMS_URL = 'https://miningtheblocks.com/terms.html';
 export const PRIVACY_URL = 'https://miningtheblocks.com/privacy.html';
+export const DISCORD_URL = 'https://discord.gg/ehsaYcSWc';
 
 // Comparación semver simple — devuelve -1, 0 o 1.
 // MEDIO-CONST-05: strip de sufijos prerelease/build (e.g. "1.2.3-beta.1" → "1.2.3")
@@ -44,4 +45,8 @@ export const StorageKeys = {
   KEEP_SIGNED_IN: '@mtb_keep_signed_in',
   ACTIVE_SERVER: '@mtb_active_server',
   LANGUAGE: '@mtb_language',
+  // Round 2 Commit O: pre-permission UI para notificaciones.
+  // 'yes' → user opt-in; 'no' → user opt-out (no volver a pedir);
+  // absent → todavía no se preguntó.
+  NOTIFICATIONS_CONSENT: '@mtb_notifications_consent',
 };

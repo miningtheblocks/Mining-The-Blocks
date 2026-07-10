@@ -1,49 +1,22 @@
 /**
- * Sube las 9 imágenes de gemas a IPFS via Pinata.
- * Usa fetch y FormData nativos de Node.js 18+, sin dependencias externas.
+ * Sube las 9 imágenes de gemas a IPFS via multi-pin (Pinata + Filebase).
  *
  * Uso:
- *   PINATA_API_KEY="xxx" PINATA_API_SECRET="xxx" node scripts/upload-to-ipfs.js
+ *   PINATA_API_KEY=xxx PINATA_API_SECRET=xxx \
+ *   FILEBASE_KEY=xxx FILEBASE_SECRET=xxx \
+ *   node scripts/upload-to-ipfs.js
+ *
+ * Si FILEBASE_* no están seteadas, corre legacy single-pin con warning.
  */
 
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
-
-const API_KEY    = process.env.PINATA_API_KEY;
-const API_SECRET = process.env.PINATA_API_SECRET;
-
-if (!API_KEY || !API_SECRET) {
-  console.error('ERROR: Necesitás PINATA_API_KEY y PINATA_API_SECRET.');
-  process.exit(1);
-}
+const { pinFile, filebaseEnabled } = require('./_ipfs_pin');
 
 const GEMS_DIR = path.join(__dirname, '..', 'assets', 'gems');
 
-async function pinFile(filePath, name) {
-  const fileBuffer = fs.readFileSync(filePath);
-  const blob = new Blob([fileBuffer], { type: 'image/png' });
-
-  const form = new FormData();
-  form.append('file', blob, name);
-  form.append('pinataMetadata', JSON.stringify({ name }));
-  form.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
-
-  const res = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-    method: 'POST',
-    headers: {
-      pinata_api_key: API_KEY,
-      pinata_secret_api_key: API_SECRET,
-    },
-    body: form,
-  });
-
-  const json = await res.json();
-  if (!json.IpfsHash) throw new Error(JSON.stringify(json));
-  return json.IpfsHash;
-}
-
 async function main() {
-  console.log('Subiendo imágenes a IPFS via Pinata...\n');
+  console.log(`Subiendo 9 imágenes de gemas a IPFS (multi-pin: ${filebaseEnabled ? 'Pinata + Filebase' : 'Pinata only — LEGACY'})...\n`);
   const results = {};
 
   for (let tier = 1; tier <= 9; tier++) {
@@ -53,9 +26,13 @@ async function main() {
       process.exit(1);
     }
     try {
-      const cid = await pinFile(filePath, `mtb_gem_${tier}.png`);
-      results[tier] = cid;
-      console.log(`✓ gem_${tier}.png → ipfs://${cid}`);
+      const buffer = fs.readFileSync(filePath);
+      const { primary, mirror, match } = await pinFile(buffer, `mtb_gem_${tier}.png`, 'image/png');
+      results[tier] = { primary, mirror, match };
+      const status = mirror
+        ? (match ? '✓ identical' : `⚠ different (mirror=${mirror})`)
+        : '⚠ mirror skipped';
+      console.log(`✓ gem_${tier}.png → ipfs://${primary}  [filebase: ${status}]`);
     } catch (e) {
       console.error(`✗ gem_${tier}.png → ERROR: ${e.message}`);
     }
@@ -64,9 +41,17 @@ async function main() {
   console.log('\n─── Pegá esto en IMAGE_CIDS de generate-nft-metadata.js ───');
   console.log('const IMAGE_CIDS = {');
   for (let tier = 1; tier <= 9; tier++) {
-    console.log(`  ${tier}: '${results[tier] || 'ERROR'}',`);
+    console.log(`  ${tier}: '${(results[tier] && results[tier].primary) || 'ERROR'}',`);
   }
   console.log('};');
+
+  if (filebaseEnabled) {
+    console.log('\n─── Filebase mirror CIDs (backup-only — no se ponen en metadata) ───');
+    for (let tier = 1; tier <= 9; tier++) {
+      const m = results[tier] && results[tier].mirror;
+      console.log(`  ${tier}: ${m || 'FAILED'}`);
+    }
+  }
 }
 
 main();

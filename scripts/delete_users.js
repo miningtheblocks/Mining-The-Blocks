@@ -1,25 +1,16 @@
-const admin = require('../functions/node_modules/firebase-admin');
-const { getAuth } = require('../functions/node_modules/firebase-admin/auth');
-const { getFirestore, FieldValue } = require('../functions/node_modules/firebase-admin/firestore');
+const { getAuth } = require('../functions/node_modules/firebase-admin/lib/auth');
+const { getFirestore, FieldValue } = require('../functions/node_modules/firebase-admin/lib/firestore');
 const https = require('https');
-const fs = require('fs');
 const { confirmDestructive } = require('./_confirm');
+const { initAdmin, getAccessToken, PROJECT } = require('./_sa_init');
 
-const config = JSON.parse(fs.readFileSync('/home/code/.config/configstore/firebase-tools.json', 'utf8'));
-const accessToken = config.tokens.access_token;
-const PROJECT = 'miningtheblocks-669f6';
-
-// --- Firebase Auth deletion via firebase-admin ---
-admin.initializeApp({
-  credential: {
-    getAccessToken: () => Promise.resolve({ access_token: accessToken, expires_in: 3600 }),
-  },
-  projectId: PROJECT,
-});
+// SA dedicado mtb-admin-cli — ver _sa_init.js + RUNBOOK.md.
+initAdmin();
 const auth = getAuth();
 
-// --- Firestore REST API helpers ---
-function httpsReq(method, path, body) {
+// --- Firestore REST API helpers — token se obtiene del SA cacheado en _sa_init ---
+async function httpsReq(method, path, body) {
+  const accessToken = await getAccessToken();
   return new Promise((resolve, reject) => {
     const opts = {
       hostname: 'firestore.googleapis.com',

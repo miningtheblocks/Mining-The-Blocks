@@ -1,22 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, TextInput,
-  StyleSheet, ActivityIndicator, Modal,
+  View, Text, FlatList, TouchableOpacity,
+  StyleSheet, ActivityIndicator, Modal, TextInput, BackHandler,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppAlert } from '../components/AppAlert';
 import { useNavigation } from '@react-navigation/native';
-import { collection, query, orderBy, limit, onSnapshot, doc, deleteDoc } from 'firebase/firestore';
+import { collection, query, orderBy, limit, onSnapshot, doc, deleteDoc, getDocs, where, documentId } from 'firebase/firestore';
 import { db, auth } from '../firebase/client';
 import { signOut, onAuthStateChanged } from 'firebase/auth';
-import { callCreateServer, callJoinServer, callCheckServerAccess } from '../firebase/functions';
+import { callJoinServer, callCheckServerAccess } from '../firebase/functions';
 import { useServer } from '../utils/serverContext';
 import { useI18n } from '../utils/i18n';
 import { useOverlayModals } from '../components/OverlayModalsProvider';
 import audioManager from '../utils/audioManager';
 import UpdateModal from '../components/UpdateModal';
+import LayerLockedModal from '../components/LayerLockedModal';
+import { getLayerUnlockThreshold, isLayerUnlocked, TOTAL_PRIZE_POOL_USD } from '../utils/gems';
 import { APP_VERSION, compareVersions } from '../constants';
 import { logError } from '../utils/logError';
+import ChainMode from './ChainMode';
+import CaptchaModal from '../components/CaptchaModal';
 
 // SEC-A7: anti-downgrade. Cacheamos el máximo latestVersion visto históricamente.
 // Si Firebase es comprometido y un atacante setea latestVersion a una versión
@@ -33,20 +37,73 @@ export default function ServerList() {
   const { setActiveServer } = useServer();
   const [servers, setServers] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [serverName, setServerName] = useState('');
   const [tab, setTab] = useState('active'); // 'active' | 'finished'
   const [joining, setJoining] = useState(null); // serverId que está procesando
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
   const [serverCredits, setServerCredits] = useState(null);
-  const [joinedServerIds, setJoinedServerIds] = useState(new Set());
+  // Cambio 4 (Mis Servers): Map<serverId, {role, chainId}> en vez de un Set
+  // de solo IDs — permite distinguir "creado por mí" ('creator') de "unido"
+  // ('member'), dato que ya vivía en serverAccess pero antes se descartaba.
+  const [myServerAccess, setMyServerAccess] = useState(new Map());
+  const [myServersFilter, setMyServersFilter] = useState(false);
+  // Servers a los que el usuario tiene acceso pero que cayeron fuera del
+  // top-50 de `servers` (más viejos) — se buscan aparte solo cuando el
+  // filtro "Mis Servers" está activo.
+  const [extraServers, setExtraServers] = useState([]);
   const [referralBonusNotif, setReferralBonusNotif] = useState(null); // { id } referrer bonus
   const [referralBonusSelfNotif, setReferralBonusSelfNotif] = useState(null); // { id } buyer bonus
   const [updateInfo, setUpdateInfo] = useState(null);
+  // Audit feedback 2026-06-23+: modal cuando el user intenta entrar a un server
+  // cuya capa actual no tiene quorum suficiente. Bloquea entrada hasta cumplir
+  // threshold + CTA de share. Info viene de getServers (layerUnlocked/Threshold).
+  const [layerLockedInfo, setLayerLockedInfo] = useState(null);
+  // referralCode del usuario actual — usado en el share message del modal locked.
+  const [myReferralCode, setMyReferralCode] = useState(null);
   const [showWelcomePicks, setShowWelcomePicks] = useState(false);
   const [pendingServer, setPendingServer] = useState(null); // server to navigate to after welcome modal
+  // Cambio 2 (server Free): id de la cadena Free fija, para pinearla arriba
+  // de todo en la lista. Viene de config/app.freeServerChainId (seteado una
+  // sola vez por la Cloud Function bootstrapFreeServer).
+  const [freeServerChainId, setFreeServerChainId] = useState(null);
+  // El server "activo" de esa cadena cambia en cada reinicio infinito (nuevo
+  // episodio = nuevo serverId) -- se resuelve en 2 pasos (chain -> server
+  // actual) para no depender de que esté dentro del top-50 de `servers`.
+  const [freeServerDoc, setFreeServerDoc] = useState(null);
+  // Cambio 3 (Fase 4, servers a medida): flag de config/app, apagado por
+  // default. El botón para crear un server a medida ni se muestra si esto
+  // es false -- el backend también lo re-valida (defensa en profundidad).
+  const [paramServerCreationEnabled, setParamServerCreationEnabled] = useState(false);
+  // Cambio 8 (modo Chain, 2026-07-05): pestaña al lado de "Servers" para
+  // entrar al modo Chain, en vez de estar escondida en el menú de adentro
+  // del cubo (donde era poco descubrible). Mismo gate que antes.
+  const [blockchainModeEnabled, setBlockchainModeEnabled] = useState(false);
+  const [view, setView] = useState('servers'); // 'servers' | 'chain'
+  // Cambio 10 (2026-07-05): contraseña simple para entrar a Chain mientras
+  // sigue en testing -- no es un mecanismo de seguridad real (la contraseña
+  // vive en el bundle cliente), solo evita que alguien entre por accidente
+  // mientras blockchainModeEnabled está activo en producción para pruebas.
+  const [showChainGate, setShowChainGate] = useState(false);
+  const [chainGateInput, setChainGateInput] = useState('');
+  const CHAIN_GATE_PASSWORD = 'bissi';
+  // Cambio 16 (captcha de desbloqueo único, 2026-07-06): pendingUnlockServer
+  // guarda el server mientras se resuelve el captcha, para poder reanudar
+  // el join (performJoin) con el token recién obtenido.
+  const [showUnlockCaptcha, setShowUnlockCaptcha] = useState(false);
+  const [pendingUnlockServer, setPendingUnlockServer] = useState(null);
   const { showAlert, AlertComponent } = useAppAlert();
+
+  // Cambio 11 (2026-07-05): sin esto, el botón/gesto de "atrás" de Android
+  // (swipe desde el borde) minimizaba la app entera estando en Chain, en
+  // vez de volver a la lista de Servers -- react-navigation no participa acá
+  // porque el cambio de "view" es un state local, no una screen navegada.
+  useEffect(() => {
+    if (view !== 'chain') return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setView('servers');
+      return true;
+    });
+    return () => sub.remove();
+  }, [view]);
 
   const currentUid = currentUser?.uid;
 
@@ -108,6 +165,9 @@ export default function ServerList() {
         firstSnapshotArrived = true;
         const cfg = snap.data();
         processConfig(cfg, false);
+        setFreeServerChainId(cfg.freeServerChainId || null);
+        setParamServerCreationEnabled(cfg.paramServerCreationEnabled === true);
+        setBlockchainModeEnabled(cfg.blockchainModeEnabled === true);
         // Cache para próximo cold start
         AsyncStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(cfg)).catch(() => {});
       }, (err) => { logError('ServerList.configSnapshot', err); });
@@ -120,25 +180,65 @@ export default function ServerList() {
   }, []);
 
   useEffect(() => {
-    if (!currentUid) { setServerCredits(0); return; }
+    if (!currentUid) { setServerCredits(0); setMyReferralCode(null); return; }
     const unsub = onSnapshot(doc(db, 'users', currentUid), (snap) => {
-      setServerCredits(snap.exists() ? (snap.data()?.serverCredits ?? 0) : 0);
+      if (snap.exists()) {
+        const data = snap.data() || {};
+        setServerCredits(data.serverCredits ?? 0);
+        setMyReferralCode(data.referralCode || null);
+      } else {
+        setServerCredits(0);
+        setMyReferralCode(null);
+      }
     });
     return () => unsub();
   }, [currentUid]);
 
   useEffect(() => {
-    if (!currentUid) { setJoinedServerIds(new Set()); return; }
+    if (!currentUid) { setMyServerAccess(new Map()); return; }
     // PERF-009: limit(200) — soporta hasta 200 servers joineados; si crece,
     // paginar.  Sin límite, usuarios con historia larga descargan todo en cada
     // snapshot.
     const unsub = onSnapshot(
       query(collection(db, 'users', currentUid, 'serverAccess'), limit(200)),
-      (snap) => setJoinedServerIds(new Set(snap.docs.map(d => d.id))),
+      (snap) => {
+        const m = new Map();
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          m.set(d.id, { role: data.role || 'member', chainId: data.chainId || null });
+        });
+        setMyServerAccess(m);
+      },
       () => {},
     );
     return () => unsub();
   }, [currentUid]);
+
+  // Cambio 4: la lista base `servers` es un top-50 por fecha — si el filtro
+  // "Mis Servers" está activo y el usuario tiene acceso a un server más viejo
+  // que cayó fuera de ese top-50, lo buscamos aparte por ID (chunked de a 10,
+  // límite de Firestore para cláusulas `in`).
+  useEffect(() => {
+    if (!myServersFilter) { setExtraServers([]); return; }
+    const knownIds = new Set(servers.map((s) => s.id));
+    const missingIds = [...myServerAccess.keys()].filter((id) => !knownIds.has(id));
+    if (missingIds.length === 0) { setExtraServers([]); return; }
+    let cancelled = false;
+    (async () => {
+      const chunks = [];
+      for (let i = 0; i < missingIds.length; i += 10) chunks.push(missingIds.slice(i, i + 10));
+      try {
+        const results = await Promise.all(chunks.map((chunk) =>
+          getDocs(query(collection(db, 'servers'), where(documentId(), 'in', chunk))),
+        ));
+        if (cancelled) return;
+        setExtraServers(results.flatMap((snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+      } catch (e) {
+        logError('ServerList.fetchMyServersExtra', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [myServersFilter, myServerAccess, servers]);
 
   useEffect(() => {
     if (!currentUid) return;
@@ -166,6 +266,23 @@ export default function ServerList() {
     return () => unsub();
   }, []);
 
+  // Cambio 2: resolver el server ACTIVO de la cadena Free en 2 pasos (chain
+  // -> currentServerId -> ese doc), porque el server concreto cambia en cada
+  // reinicio infinito y no siempre va a estar en el top-50 de `servers`.
+  useEffect(() => {
+    if (!freeServerChainId) { setFreeServerDoc(null); return; }
+    let unsubServer = null;
+    const unsubChain = onSnapshot(doc(db, 'serverChains', freeServerChainId), (chainSnap) => {
+      if (unsubServer) { unsubServer(); unsubServer = null; }
+      const currentServerId = chainSnap.exists() ? chainSnap.data().currentServerId : null;
+      if (!currentServerId) { setFreeServerDoc(null); return; }
+      unsubServer = onSnapshot(doc(db, 'servers', currentServerId), (serverSnap) => {
+        setFreeServerDoc(serverSnap.exists() ? { id: serverSnap.id, ...serverSnap.data() } : null);
+      }, () => setFreeServerDoc(null));
+    }, () => setFreeServerDoc(null));
+    return () => { unsubChain(); if (unsubServer) unsubServer(); };
+  }, [freeServerChainId]);
+
   useEffect(() => {
     const initAudio = async () => {
       try {
@@ -191,22 +308,36 @@ export default function ServerList() {
 
   const goToRegister = () => openModal('registration');
 
-  const joinServer = async (server) => {
-    if (!currentUser) { goToRegister(); return; }
+  // Cambio 16 (captcha de desbloqueo único, 2026-07-06): performJoin hace el
+  // trabajo real (antes vivía inline dentro de joinServer) -- se separó para
+  // poder "pausar" el flujo en joinServer, mostrar el captcha de desbloqueo
+  // si hace falta, y recién REANUDAR acá con el token ya resuelto.
+  const performJoin = async (server, captchaToken) => {
     setJoining(server.id);
+    const markJoined = () => {
+      setMyServerAccess((prev) => {
+        const m = new Map(prev);
+        if (!m.has(server.id)) m.set(server.id, { role: 'member', chainId: server.chainId || null });
+        return m;
+      });
+    };
     const doJoin = async () => {
       const { hasAccess, serverCredits } = await callCheckServerAccess(server.id);
       if (hasAccess) {
         // Already paid — update local state in case the listener missed it
-        setJoinedServerIds(prev => new Set([...prev, server.id]));
+        markJoined();
         return true;
       }
-      if (serverCredits < 1) {
+      // Cambio 2: el server Free no cobra crédito -- el backend (joinServer)
+      // ya lo saltea, pero el cliente también debe saltear este gate o
+      // bloquearía a un usuario con 0 créditos que en realidad puede entrar gratis.
+      const isFree = !!(server?.config && server.config.isFreeServer);
+      if (!isFree && serverCredits < 1) {
         showAlert(t('serverList.noCreditsTitle'), t('serverList.noCreditsMsg'));
         return false;
       }
-      const joinResult = await callJoinServer(server.id);
-      setJoinedServerIds(prev => new Set([...prev, server.id]));
+      const joinResult = await callJoinServer(server.id, captchaToken);
+      markJoined();
       if (joinResult?.welcomePicks) {
         return 'welcome';
       }
@@ -253,43 +384,83 @@ export default function ServerList() {
     }
   };
 
-  const handleCreate = async () => {
+  const joinServer = async (server) => {
     if (!currentUser) { goToRegister(); return; }
-    const name = serverName.trim();
-    if (!name) return;
-    setCreating(true);
-    try {
-      const result = await callCreateServer(name);
-      const newServer = {
-        id: result.serverId,
-        name,
-        currentLayer: 100,
-        status: 'active',
-        totalMined: 0,
-      };
-      if (result?.welcomePicks) {
-        setPendingServer(newServer);
-        setShowWelcomePicks(true);
-      } else {
-        setActiveServer(newServer);
-        navigation.navigate('GameDrawer');
-      }
-    } catch (e) {
-      showAlert('Error', e?.message || t('serverList.errorCreate'));
-    } finally {
-      setCreating(false);
-      setShowCreate(false);
-      setServerName('');
+    // Audit feedback 2026-06-23+: bloquear entrada si la capa actual del
+    // server no tiene quorum suficiente. Modal explica + CTA share. El user
+    // no gasta créditos en un server que no puede minar todavía.
+    // Computamos en cliente (espejo de functions/helpers.js#isLayerUnlocked)
+    // porque ServerList lee via onSnapshot directo a Firestore, no via
+    // callGetServers (que sí anexaría layerUnlocked al payload).
+    const K = server?.currentLayer;
+    const members = server?.memberCount || 0;
+    // Cambio 2/3: el espejo cliente de isLayerUnlocked usa los umbrales fijos
+    // del cubo estándar (100 capas) — no aplica a servers con config propia
+    // (Free, a medida), que tienen su propia geometría/umbrales. Para esos,
+    // confiamos en que el backend (mineCube) gatee correctamente y salteamos
+    // este check especulativo del lado cliente.
+    if (!server?.config && typeof K === 'number' && !isLayerUnlocked(K, members)) {
+      setLayerLockedInfo({
+        current: members,
+        required: getLayerUnlockThreshold(K),
+        K,
+      });
+      return;
     }
+
+    // Cambio 16: el Free exige captcha la PRIMERA vez (sin acceso todavía).
+    // Servers pagos (estándar/a medida) van directo, sin este paso.
+    const isFree = !!(server?.config && server.config.isFreeServer);
+    if (isFree) {
+      setJoining(server.id);
+      try {
+        const { hasAccess } = await callCheckServerAccess(server.id);
+        setJoining(null);
+        if (!hasAccess) {
+          setPendingUnlockServer(server);
+          setShowUnlockCaptcha(true);
+          return;
+        }
+      } catch (e) {
+        setJoining(null);
+        // Si el check falla, dejamos que performJoin lo intente de nuevo y
+        // maneje el error con su manejo de errores ya establecido.
+      }
+    }
+
+    await performJoin(server, null);
   };
 
-  const activeServers = servers.filter(s => s.status !== 'completed');
-  const finishedServers = servers.filter(s => s.status === 'completed');
+  // Cambio 4: con el filtro "Mis Servers" activo, la fuente es servers (top-50)
+  // + extraServers (los que cayeron fuera del top-50 pero el user tiene
+  // acceso), filtrados a solo los que están en myServerAccess.
+  const baseServers = myServersFilter
+    ? [...servers, ...extraServers.filter((es) => !servers.some((s) => s.id === es.id))]
+        .filter((s) => myServerAccess.has(s.id))
+    : servers;
+  // Cambio 2: el server Free se pinea siempre arriba de todo en la pestaña de
+  // activos (nunca aparece en "finalizados" -- reinicia para siempre). Se
+  // filtra igual que el resto si "Mis Servers" está activo.
+  const freeVisible = tab !== 'finished' && freeServerDoc &&
+    (!myServersFilter || myServerAccess.has(freeServerDoc.id));
+  const withFree = freeVisible
+    ? [freeServerDoc, ...baseServers.filter((s) => s.id !== freeServerDoc.id)]
+    : baseServers;
+  const activeServers = withFree.filter(s => s.status !== 'completed');
+  const finishedServers = baseServers.filter(s => s.status === 'completed');
   const displayedServers = tab === 'finished' ? finishedServers : activeServers;
 
   const renderEpisodeBadge = (item) => {
     if (!item.episodeNumber) return null;
     const ep = item.episodeNumber;
+    // Cambio 2: el server Free reinicia infinito, "ep/10" no aplica ahí.
+    if (item.config && item.config.isFreeServer) {
+      return (
+        <View style={styles.episodeBadge}>
+          <Text style={styles.episodeBadgeTxt}>{t('serverList.episodeBadge')} {ep}</Text>
+        </View>
+      );
+    }
     const total = 10;
     return (
       <View style={styles.episodeBadge}>
@@ -298,20 +469,76 @@ export default function ServerList() {
     );
   };
 
+  // Cambio 5: premio total del server/cadena. Usa item.config.totalPrizePoolUSD
+  // si el server tiene config propia (Fase 3/4, server Free o a medida);
+  // servers estándar/legacy no tienen config -> fallback al total fijo actual.
+  const prizePoolFor = (item) => item?.config?.totalPrizePoolUSD ?? TOTAL_PRIZE_POOL_USD;
+
+  // Cambio 4: badge "creador" — el dato ya existía en serverAccess.role pero
+  // antes solo se usaba para el botón Mine/Unlock, nunca se mostraba.
+  const renderCreatorBadge = (item) => {
+    if (myServerAccess.get(item.id)?.role !== 'creator') return null;
+    return (
+      <View style={styles.creatorBadge}>
+        <Text style={styles.creatorBadgeTxt}>👑 {t('serverList.createdByMe')}</Text>
+      </View>
+    );
+  };
+
+  // Cambio 2: badge distintivo para el server Free.
+  const renderFreeBadge = (item) => {
+    if (!item.config || !item.config.isFreeServer) return null;
+    return (
+      <View style={styles.freeBadge}>
+        <Text style={styles.freeBadgeTxt}>🎁 FREE</Text>
+      </View>
+    );
+  };
+
   const renderActiveItem = ({ item }) => (
-    <View style={styles.card}>
+    <View style={[styles.card, item.config && item.config.isFreeServer && styles.cardFree]}>
       <View style={{ flex: 1 }}>
         <View style={styles.nameRow}>
           <Text style={styles.serverName}>{t('serverList.chainLabel')} {item.name}</Text>
+          {renderFreeBadge(item)}
           {renderEpisodeBadge(item)}
+          {renderCreatorBadge(item)}
         </View>
         <Text style={styles.serverMeta}>
           {t('serverList.layer')}: {item.currentLayer}
           {typeof item.totalMined === 'number' ? `  ·  ⛏ ${item.totalMined} ${t('serverList.totalMined')}` : ''}
         </Text>
         <Text style={styles.serverMeta}>
-          👥 {(item.memberCount || 0).toLocaleString()} / 100,000 {t('serverList.members')}
+          👥 {(item.memberCount || 0).toLocaleString()}
+          {item.config && item.config.maxMembers == null ? '' : ' / 100,000'} {t('serverList.members')}
         </Text>
+        <Text style={[styles.serverMeta, styles.prizeMeta]}>
+          💰 {t('serverList.totalPrize')}: ${prizePoolFor(item).toLocaleString()}
+        </Text>
+        {(() => {
+          // Audit feedback 2026-06-23+: indicador visual de unlock por capa.
+          // Si la capa actual está locked, mostrar "🔒 faltan N jugadores".
+          // Si está unlocked y la capa tiene threshold > 0, mostrar "🔓 desbloqueada".
+          const K = item.currentLayer;
+          if (typeof K !== 'number' || item.config) return null; // Cambio 2/3: servers con config propia no usan estos umbrales fijos
+          const threshold = getLayerUnlockThreshold(K);
+          if (threshold === 0) return null; // capa warmup, sin info
+          const members = item.memberCount || 0;
+          const unlocked = members >= threshold;
+          if (unlocked) {
+            return (
+              <Text style={[styles.serverMeta, { color: '#5cb85c' }]}>
+                🔓 {t('serverList.layerUnlocked', { defaultValue: 'Capa desbloqueada' })}
+              </Text>
+            );
+          }
+          const remaining = Math.max(0, threshold - members);
+          return (
+            <Text style={[styles.serverMeta, { color: '#f59e0b' }]}>
+              🔒 {t('serverList.layerLocked', { remaining: remaining.toLocaleString(), defaultValue: `Faltan ${remaining.toLocaleString()} jugadores` })}
+            </Text>
+          );
+        })()}
       </View>
       <View style={styles.cardActions}>
         {item.chainId ? (
@@ -319,14 +546,18 @@ export default function ServerList() {
             style={styles.historyBtn}
             onPress={() => navigation.navigate('ChainHistory', { chainId: item.chainId, chainName: item.name })}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel={`${t('drawer.history') || 'Historial'}: ${item.name}`}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
             <Text style={styles.historyTxt}>📋</Text>
           </TouchableOpacity>
         ) : null}
         {(() => {
-          const hasAccess = joinedServerIds.has(item.id);
+          const hasAccess = myServerAccess.has(item.id);
+          const isFree = !!(item.config && item.config.isFreeServer);
           const btnStyle = hasAccess ? styles.mineBtn : styles.unlockBtn;
-          const label = hasAccess ? t('serverList.mine') : t('serverList.unlock');
+          const label = hasAccess ? t('serverList.mine') : (isFree ? t('serverList.unlockFree') : t('serverList.unlock'));
           const txtStyle = hasAccess ? styles.mineTxt : styles.unlockTxt;
           return (
             <TouchableOpacity
@@ -358,6 +589,7 @@ export default function ServerList() {
           <View style={styles.finishedNameRow}>
             <Text style={styles.serverName}>{t('serverList.chainLabel')} {item.name}</Text>
             {renderEpisodeBadge(item)}
+            {renderCreatorBadge(item)}
             <View style={styles.completedBadge}>
               <Text style={styles.completedBadgeTxt}>✓</Text>
             </View>
@@ -367,12 +599,18 @@ export default function ServerList() {
             {typeof item.totalMined === 'number' ? `  ·  ⛏ ${item.totalMined} ${t('serverList.totalMined')}` : ''}
             {completedDate ? `  ·  ${completedDate}` : ''}
           </Text>
+          <Text style={[styles.serverMeta, styles.prizeMeta]}>
+            💰 {t('serverList.totalPrize')}: ${prizePoolFor(item).toLocaleString()}
+          </Text>
         </View>
         {item.chainId ? (
           <TouchableOpacity
             style={styles.historyBtn}
             onPress={() => navigation.navigate('ChainHistory', { chainId: item.chainId, chainName: item.name })}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel={`${t('drawer.history') || 'Historial'}: ${item.name}`}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
             <Text style={styles.historyTxt}>📋</Text>
           </TouchableOpacity>
@@ -413,22 +651,61 @@ export default function ServerList() {
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.title}>{t('serverList.title')}</Text>
+          {blockchainModeEnabled ? (
+            <View style={styles.viewSwitchRow}>
+              <TouchableOpacity
+                onPress={() => setView('servers')}
+                activeOpacity={0.8}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: view === 'servers' }}
+              >
+                <Text style={[styles.title, styles.viewSwitchTitle, view !== 'servers' && styles.viewSwitchTitleInactive]}>
+                  {t('serverList.title')}
+                </Text>
+              </TouchableOpacity>
+              <Text style={styles.viewSwitchSep}>·</Text>
+              <TouchableOpacity
+                onPress={() => { if (view === 'chain') return; setChainGateInput(''); setShowChainGate(true); }}
+                activeOpacity={0.8}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: view === 'chain' }}
+              >
+                <Text style={[styles.title, styles.viewSwitchTitle, view !== 'chain' && styles.viewSwitchTitleInactive]}>
+                  {t('drawer.chain')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={styles.title}>{t('serverList.title')}</Text>
+          )}
           <Text style={styles.creditsLine}>
             🎟️ {serverCredits === null ? '…' : serverCredits} {t('serverList.credits')}
           </Text>
         </View>
         <View style={styles.headerRight}>
+          {view === 'servers' && (
+            <TouchableOpacity
+              style={[styles.finishedBtn, tab === 'finished' && styles.finishedBtnActive]}
+              onPress={() => setTab(tab === 'finished' ? 'active' : 'finished')}
+              activeOpacity={0.8}
+              accessibilityRole="tab"
+              accessibilityLabel={tab === 'finished' ? t('serverList.backActive') : t('serverList.finished')}
+              accessibilityState={{ selected: tab === 'finished' }}
+            >
+              <Text style={[styles.finishedBtnTxt, tab === 'finished' && styles.finishedBtnTxtActive]}>
+                {tab === 'finished' ? t('serverList.backActive') : t('serverList.finished')}
+              </Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
-            style={[styles.finishedBtn, tab === 'finished' && styles.finishedBtnActive]}
-            onPress={() => setTab(tab === 'finished' ? 'active' : 'finished')}
+            style={styles.menuBtn}
+            onPress={() => setMenuVisible(true)}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel={t('drawer.menu')}
+            accessibilityHint={t('drawer.menu')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <Text style={[styles.finishedBtnTxt, tab === 'finished' && styles.finishedBtnTxtActive]}>
-              {tab === 'finished' ? t('serverList.backActive') : t('serverList.finished')}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.menuBtn} onPress={() => setMenuVisible(true)} activeOpacity={0.8}>
             <Text style={styles.menuBtnTxt}>☰</Text>
           </TouchableOpacity>
         </View>
@@ -436,11 +713,20 @@ export default function ServerList() {
 
       {/* Slide-down menu modal */}
       <Modal transparent animationType="fade" visible={menuVisible} onRequestClose={() => setMenuVisible(false)}>
-        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
+        <TouchableOpacity
+          style={styles.menuOverlay}
+          activeOpacity={1}
+          onPress={() => setMenuVisible(false)}
+          accessibilityLabel={t('serverList.cancel') || 'Close menu'}
+          accessibilityRole="button"
+        >
           <View style={styles.menuPanel}>
             <Text style={styles.menuHeader}>{t('drawer.menu')}</Text>
+            {/* Cambio 1: "Picos" se quitó de este menú (lista de cadenas/servers,
+                sin cadena activa necesariamente) — ahora vive solo en el menú
+                del cubo (GameDrawer/CustomDrawerContent en App.js), donde
+                activeServer.chainId siempre está definido. */}
             {[
-              { label: t('drawer.getPeaks'),  key: 'peaks' },
               { label: t('drawer.gems'),      key: 'gems' },
               { label: t('drawer.profile'),   key: 'profile' },
               { label: t('drawer.config'),    key: 'config' },
@@ -450,7 +736,14 @@ export default function ServerList() {
                 ? [{ label: t('drawer.signIn') || 'Sign in', key: 'login' }]
                 : []),
             ].map((item) => (
-              <TouchableOpacity key={item.key} style={styles.menuItem} onPress={() => openItem(item.key)} activeOpacity={0.8}>
+              <TouchableOpacity
+                key={item.key}
+                style={styles.menuItem}
+                onPress={() => openItem(item.key)}
+                activeOpacity={0.8}
+                accessibilityRole="menuitem"
+                accessibilityLabel={item.label}
+              >
                 <Text style={styles.menuItemTxt}>{item.label}</Text>
               </TouchableOpacity>
             ))}
@@ -470,61 +763,53 @@ export default function ServerList() {
         </TouchableOpacity>
       </Modal>
 
-      {/* Filter row — solo en tab activos */}
+      {/* Cambio 8: pestaña Chain en el header -- todo lo de acá abajo (filtros,
+          botón de crear server, lista) es específico de la vista "servers". */}
+      {view === 'chain' ? (
+        <ChainMode />
+      ) : (
+      <>
+      {/* Filter row — solo en tab activos. Cambio 4: chips ahora interactivos,
+          alternan entre "Todos" y "Mis Servers" (creados + unidos). */}
       {tab === 'active' && (
         <View style={styles.filterRow}>
-          <View style={[styles.filterChip, styles.filterChipActive]}>
-            <Text style={styles.filterChipTxtActive}>{t('serverList.allServers')}</Text>
-          </View>
-          <View style={styles.filterChipLocked}>
-            <Text style={styles.filterChipTxtLocked}>🔒 {t('serverList.myServers')}</Text>
-          </View>
+          <TouchableOpacity
+            style={[styles.filterChip, !myServersFilter ? styles.filterChipActive : styles.filterChipInactive]}
+            onPress={() => setMyServersFilter(false)}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityState={{ selected: !myServersFilter }}
+          >
+            <Text style={!myServersFilter ? styles.filterChipTxtActive : styles.filterChipTxtLocked}>
+              {t('serverList.allServers')}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.filterChip, myServersFilter ? styles.filterChipActive : styles.filterChipInactive]}
+            onPress={() => setMyServersFilter(true)}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityState={{ selected: myServersFilter }}
+          >
+            <Text style={myServersFilter ? styles.filterChipTxtActive : styles.filterChipTxtLocked}>
+              {t('serverList.myServers')}
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
 
-      {/* Formulario crear servidor */}
-      {tab === 'active' && (
-        showCreate ? (
-          <View style={styles.createForm}>
-            <TextInput
-              style={styles.input}
-              value={serverName}
-              onChangeText={setServerName}
-              placeholder={t('serverList.serverNamePlaceholder')}
-              placeholderTextColor="#555"
-              maxLength={40}
-              autoFocus
-            />
-            <View style={styles.createRow}>
-              <TouchableOpacity
-                style={[styles.btn, styles.btnPrimary]}
-                onPress={handleCreate}
-                disabled={creating || !serverName.trim()}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.btnTxt}>
-                  {creating ? t('serverList.creating') : t('serverList.create')}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.btn, styles.btnSecondary]}
-                onPress={() => { setShowCreate(false); setServerName(''); }}
-                disabled={creating}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.btnTxt}>{t('serverList.cancel')}</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        ) : (
-          <TouchableOpacity
-            style={[styles.btn, styles.btnPrimary, styles.createTopBtn, styles.btnDisabled]}
-            disabled={true}
-            activeOpacity={1}
-          >
-            <Text style={[styles.btnTxt, styles.btnTxtDisabled]}>+ {t('serverList.create')}</Text>
-          </TouchableOpacity>
-        )
+      {/* Cambio 3 (Fase 4): botón de creación de server. Reemplaza al viejo
+          "+ Create Chain" (quedaba permanentemente disabled, showCreate nunca
+          se activaba — dead code eliminado junto con este cambio), solo
+          visible si config/app.paramServerCreationEnabled está activo. */}
+      {tab === 'active' && paramServerCreationEnabled && (
+        <TouchableOpacity
+          style={styles.createCustomBtn}
+          onPress={() => openModal('createCustomServer')}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.createCustomBtnTxt}>⚙️ {t('drawer.createCustomServer')}</Text>
+        </TouchableOpacity>
       )}
 
       {/* Lista */}
@@ -532,7 +817,9 @@ export default function ServerList() {
         <ActivityIndicator color="#fff" style={{ marginTop: 40 }} size="large" />
       ) : displayedServers.length === 0 ? (
         <Text style={styles.empty}>
-          {tab === 'finished' ? t('serverList.finishedEmpty') : t('serverList.empty')}
+          {myServersFilter
+            ? t('serverList.myServersEmpty')
+            : (tab === 'finished' ? t('serverList.finishedEmpty') : t('serverList.empty'))}
         </Text>
       ) : (
         <FlatList
@@ -548,6 +835,56 @@ export default function ServerList() {
           windowSize={5}
         />
       )}
+      </>
+      )}
+
+      {/* Cambio 16: captcha de desbloqueo único al entrar al Free por primera vez */}
+      <CaptchaModal
+        visible={showUnlockCaptcha}
+        onClose={() => { setShowUnlockCaptcha(false); setPendingUnlockServer(null); }}
+        onSuccess={(token) => {
+          setShowUnlockCaptcha(false);
+          const server = pendingUnlockServer;
+          setPendingUnlockServer(null);
+          if (server) performJoin(server, token);
+        }}
+      />
+
+      {/* Cambio 10: gate de contraseña para Chain (testing) */}
+      <Modal visible={showChainGate} transparent animationType="fade" onRequestClose={() => setShowChainGate(false)}>
+        <View style={wpStyles.overlay}>
+          <View style={wpStyles.box}>
+            <Text style={wpStyles.icon}>🔒</Text>
+            <Text style={wpStyles.title}>Chain</Text>
+            <TextInput
+              value={chainGateInput}
+              onChangeText={setChainGateInput}
+              placeholder="Contraseña"
+              placeholderTextColor="#666"
+              secureTextEntry
+              autoCapitalize="none"
+              autoFocus
+              style={styles.chainGateInput}
+              onSubmitEditing={() => {
+                if (chainGateInput === CHAIN_GATE_PASSWORD) { setShowChainGate(false); setView('chain'); }
+                else setChainGateInput('');
+              }}
+            />
+            <TouchableOpacity
+              style={wpStyles.btn}
+              onPress={() => {
+                if (chainGateInput === CHAIN_GATE_PASSWORD) { setShowChainGate(false); setView('chain'); }
+                else setChainGateInput('');
+              }}
+            >
+              <Text style={wpStyles.btnTxt}>Entrar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowChainGate(false)} style={{ marginTop: 10 }}>
+              <Text style={{ color: '#777', fontSize: 12 }}>{t('serverList.cancel') || 'Cancelar'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Welcome picks modal */}
       <Modal visible={showWelcomePicks} transparent animationType="fade" onRequestClose={() => setShowWelcomePicks(false)}>
@@ -624,6 +961,15 @@ export default function ServerList() {
 
       {AlertComponent}
 
+      <LayerLockedModal
+        visible={!!layerLockedInfo}
+        currentMembers={layerLockedInfo?.current || 0}
+        requiredMembers={layerLockedInfo?.required || 0}
+        layerK={layerLockedInfo?.K ?? null}
+        referralCode={myReferralCode}
+        onClose={() => setLayerLockedInfo(null)}
+      />
+
     </View>
   );
 }
@@ -668,6 +1014,14 @@ const styles = StyleSheet.create({
   creditsLine: { color: '#ffd700', fontSize: 12, fontWeight: '700', marginTop: 2 },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: '#fff', fontSize: 24, fontWeight: '900' },
+  viewSwitchRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  viewSwitchTitle: { fontSize: 22 },
+  viewSwitchTitleInactive: { color: '#555' },
+  viewSwitchSep: { color: '#444', fontSize: 20, fontWeight: '900' },
+  chainGateInput: {
+    width: '100%', backgroundColor: '#1a1a1a', borderRadius: 10, borderWidth: 1, borderColor: '#333',
+    color: '#fff', paddingVertical: 10, paddingHorizontal: 14, fontSize: 15, marginTop: 14, marginBottom: 6,
+  },
   menuBtn: { width: 36, height: 36, borderRadius: 8, backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#333', alignItems: 'center', justifyContent: 'center' },
   menuBtnTxt: { color: '#ccc', fontSize: 18 },
   // Overlay menu
@@ -698,36 +1052,22 @@ const styles = StyleSheet.create({
     borderColor: '#333',
   },
   filterChipActive: { backgroundColor: '#1a3a1a', borderColor: '#2e7d32' },
+  filterChipInactive: { backgroundColor: 'transparent', borderColor: '#2a2a2a' },
   filterChipTxtActive: { color: '#5cb85c', fontWeight: '700', fontSize: 13 },
-  filterChipLocked: {
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
-    opacity: 0.45,
-  },
   filterChipTxtLocked: { color: '#777', fontWeight: '700', fontSize: 13 },
 
-  // Create form
-  createForm: { marginBottom: 16 },
-  input: {
-    backgroundColor: '#111',
-    color: '#fff',
-    padding: 12,
-    borderRadius: 8,
+  // Crear server a medida (Fase 4)
+  createCustomBtn: {
+    backgroundColor: '#1a1a0a',
     borderWidth: 1,
-    borderColor: '#333',
-    marginBottom: 8,
+    borderColor: '#5a5a2a',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    alignSelf: 'flex-start',
+    marginBottom: 16,
   },
-  createRow: { flexDirection: 'row', gap: 8 },
-  createTopBtn: { marginBottom: 16, alignSelf: 'flex-start' },
-  btn: { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 10, alignItems: 'center' },
-  btnPrimary: { backgroundColor: '#2e7d32' },
-  btnSecondary: { backgroundColor: '#333' },
-  btnDisabled: { backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2a2a2a', opacity: 0.45 },
-  btnTxt: { color: '#fff', fontWeight: '700' },
-  btnTxtDisabled: { color: '#555' },
+  createCustomBtnTxt: { color: '#d4c95a', fontSize: 12, fontWeight: '700' },
 
   // Cards
   empty: { color: '#555', textAlign: 'center', marginTop: 60, fontSize: 16 },
@@ -742,8 +1082,9 @@ const styles = StyleSheet.create({
     borderColor: '#222',
   },
   cardFinished: { borderColor: '#2a2a1a', backgroundColor: '#0f0f08' },
-  serverName: { color: '#fff', fontWeight: '800', fontSize: 16 },
+  serverName: { color: '#fff', fontWeight: '800', fontSize: 16, flexShrink: 1 },
   serverMeta: { color: '#777', fontSize: 12, marginTop: 4 },
+  prizeMeta: { color: '#ffd700', fontWeight: '700' },
   cardActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -763,10 +1104,11 @@ const styles = StyleSheet.create({
   mineBtn: {
     backgroundColor: '#1a3a1a',
     borderRadius: 8,
-    paddingVertical: 8,
+    height: 36,
     paddingHorizontal: 16,
     minWidth: 70,
     alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#2e7d32',
   },
@@ -774,18 +1116,20 @@ const styles = StyleSheet.create({
   joinBtn: {
     backgroundColor: '#1565c0',
     borderRadius: 8,
-    paddingVertical: 8,
+    height: 36,
     paddingHorizontal: 16,
     minWidth: 70,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   unlockBtn: {
     backgroundColor: '#1a1a1a',
     borderRadius: 8,
-    paddingVertical: 8,
+    height: 36,
     paddingHorizontal: 16,
     minWidth: 70,
     alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#444',
   },
@@ -793,9 +1137,10 @@ const styles = StyleSheet.create({
   joinTxt: { color: '#fff', fontWeight: '700' },
   unlockTxt: { color: '#888', fontWeight: '700', fontSize: 13 },
 
-  // Name rows
-  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  finishedNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  // Name rows — flexWrap permite que el badge baje a otra línea si no entra.
+  // Sin esto, en pantallas chicas el badge se solapa con los botones de la derecha.
+  nameRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 4 },
+  finishedNameRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 4 },
 
   // Episode badge
   episodeBadge: {
@@ -807,6 +1152,25 @@ const styles = StyleSheet.create({
     borderColor: '#1a4a7a',
   },
   episodeBadgeTxt: { color: '#5599cc', fontWeight: '700', fontSize: 10 },
+  creatorBadge: {
+    backgroundColor: '#2a2000',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: '#7a5a1a',
+  },
+  creatorBadgeTxt: { color: '#ffd700', fontWeight: '700', fontSize: 10 },
+  freeBadge: {
+    backgroundColor: '#0d2010',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: '#2e7d32',
+  },
+  freeBadgeTxt: { color: '#5cb85c', fontWeight: '900', fontSize: 10 },
+  cardFree: { borderColor: '#2e7d32' },
   completedBadge: {
     backgroundColor: '#2a3a1a',
     borderRadius: 10,

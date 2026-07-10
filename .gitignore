@@ -27,12 +27,18 @@ ios/build/
 debug.keystore
 *.keystore
 *.jks
+*.p12
+*.pfx
+*.pem
 mtb-release.*
+.mtb-keys/
 
 # Service accounts y credenciales
 service-account*.json
 firebase-adminsdk-*.json
 credentials.json
+mtb-admin-cli*.json
+*.runtimeconfig.json
 google-services-private.json
 
 # Mapping de ProGuard/R8 (subir a Sentry/Crashlytics separadamente)
@@ -60,3 +66,8 @@ BACKUP_OBSOLETOS/
 BUILDS_ANTERIORES/
 DEV_FILES/
 final_complete_apk/
+
+# Hardhat build artifacts (smart contract V2). El source vive en contracts/ y
+# contracts_build/contracts/; los artefactos generados se reproducen vía npm install.
+contracts_build/artifacts/
+contracts_build/cache/

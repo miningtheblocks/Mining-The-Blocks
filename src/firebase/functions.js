@@ -19,6 +19,22 @@ export async function callCreateServer(name) {
   return res.data;
 }
 
+// Cambio 3 (Fase 4, servers a medida) — SE ENTREGA COMPLETO PERO INACTIVO:
+// ambas Cloud Functions responden failed-precondition/feature_disabled hasta
+// que config/app.paramServerCreationEnabled se active manualmente. No se usan
+// desde ninguna pantalla habilitada por default -- ver CreateCustomServer.js.
+export async function callPreviewServerConfig(maxMembers, creditPriceUSD, tierQuantities) {
+  const fn = httpsCallable(functions, 'previewServerConfig');
+  const res = await fn({ maxMembers, creditPriceUSD, tierQuantities });
+  return res.data;
+}
+
+export async function callCreateServerCustom(name, maxMembers, creditPriceUSD, tierQuantities) {
+  const fn = httpsCallable(functions, 'createServerCustom');
+  const res = await fn({ name, maxMembers, creditPriceUSD, tierQuantities });
+  return res.data;
+}
+
 export async function callGetServers() {
   const fn = httpsCallable(functions, 'getServers');
   const res = await fn({});
@@ -32,31 +48,50 @@ export async function callMineCube(cubeNumber, serverId) {
 }
 
 // Peaks: server-authoritative status (prevents client manipulation)
+// Cambio 1 (picos por cadena): picos/ads viven por chainId, no más globales
+// por usuario — chainId es REQUERIDO (el backend rechaza si falta).
 // Expected response shape from backend:
 // {
 //   picks: number,
 //   serverNow: number, // millis
-//   nextDailyAt: number, // millis when daily becomes available
-//   ad1NextAt: number, // millis when ad1 becomes available
-//   ad2NextAt: number  // millis when ad2 becomes available
+//   adNextAt: { [slotIndex: number]: number }, // millis when each slot becomes available again
+//   dailyAdSlots: number, // cantidad de slots de picos incondicionales (2, toda cadena)
 // }
-export async function callGetPeaksStatus() {
+export async function callGetPeaksStatus(chainId) {
   const fn = httpsCallable(functions, 'getPeaksStatus');
+  const res = await fn({ chainId });
+  return res.data;
+}
+
+// Cambio 5 (compliance anuncios, 2026-07-03): reemplaza claimDailyPick +
+// createAdSession/claimAdSession (timer web condicionado al anuncio). El
+// pico se entrega incondicional al tocar el botón del slot; cualquier
+// anuncio que se muestre en esa pantalla es pasivo, sin relación con este
+// claim.
+export async function callClaimAdSlotPick(index, chainId) {
+  const fn = httpsCallable(functions, 'claimAdSlotPick');
+  const res = await fn({ index, chainId });
+  return res.data; // expect updated status like callGetPeaksStatus
+}
+
+// Cambio 6 (modo Chain, cubo invertido) — SE ENTREGA COMPLETO PERO INACTIVO,
+// gateado server-side por config/app.blockchainModeEnabled. Un solo cubo
+// global (no por-server): status, pico diario (con captcha) y colocar cubo.
+export async function callGetChainBlockchainStatus() {
+  const fn = httpsCallable(functions, 'getChainBlockchainStatus');
   const res = await fn({});
   return res.data;
 }
 
-// Claims a daily pick if eligible on server
-export async function callClaimDailyPick() {
-  const fn = httpsCallable(functions, 'claimDailyPick');
-  const res = await fn({});
-  return res.data; // expect updated status like callGetPeaksStatus
+export async function callClaimChainPick(captchaToken) {
+  const fn = httpsCallable(functions, 'claimChainPick');
+  const res = await fn({ captchaToken });
+  return res.data;
 }
 
-// Creates a web ad session (timer page); returns { sessionId, token }
-export async function callCreateAdSession(index) {
-  const fn = httpsCallable(functions, 'createAdSession');
-  const res = await fn({ index });
+export async function callPlaceCube(cubeNumber) {
+  const fn = httpsCallable(functions, 'placeCube');
+  const res = await fn({ cubeNumber });
   return res.data;
 }
 
@@ -67,10 +102,18 @@ export async function callCheckServerAccess(serverId) {
   return res.data; // { hasAccess: bool, serverCredits: number }
 }
 
-// Une al usuario a un server consumiendo 1 crédito
-export async function callJoinServer(serverId) {
+// Une al usuario a un server consumiendo 1 crédito. captchaToken solo hace
+// falta la primera vez que se entra al Free (servers pagos lo ignoran).
+export async function callJoinServer(serverId, captchaToken = null) {
   const fn = httpsCallable(functions, 'joinServer');
-  const res = await fn({ serverId });
+  const res = await fn({ serverId, captchaToken });
+  return res.data;
+}
+
+// Cambio 16: gate de captcha de una sola vez para desbloquear Chain.
+export async function callUnlockChain(captchaToken) {
+  const fn = httpsCallable(functions, 'unlockChain');
+  const res = await fn({ captchaToken });
   return res.data;
 }
 
@@ -115,17 +158,59 @@ export async function callCheckReferralCode(code) {
 
 // Claims a gem as NFT to the user's wallet (creates pendingMints record)
 // Cash redemption is done on the external website using the gem code
-export async function callClaimGemNFT(gemId, walletAddress) {
+// Round 2 Commit B: walletAddress se ignora en backend (Agentes #1 + #6 + #8) —
+// la única vía de setear wallet es callSetUserWallet (que tiene cooldown 24h).
+export async function callClaimGemNFT(gemId) {
   const fn = httpsCallable(functions, 'claimGemNFT');
-  const res = await fn({ gemId, walletAddress });
+  const res = await fn({ gemId });
   return res.data;
 }
 
-// Creates a pending crypto payment (USDC/Polygon) with a unique amount
-// Returns { paymentId, amount, expiresAt }
-export async function callCreateCryptoPayment() {
-  const fn = httpsCallable(functions, 'createCryptoPayment');
+// Round 2 Commit B (Agente #6 CRIT): reset de password con revoke de tokens
+// + email branded con notice de "sesiones cerradas". Reemplaza el
+// sendPasswordResetEmail directo del Firebase Web SDK que no revocaba tokens
+// existentes (ventana 60min de account takeover post-reset).
+export async function callRequestPasswordReset(email) {
+  const fn = httpsCallable(functions, 'requestPasswordReset');
+  const res = await fn({ email });
+  return res.data;
+}
+
+// Round 2 Commit F (Agente #6 + #10 + #11): self-serve account ops.
+// deleteMyAccount: GDPR/Play Store right to erasure. Anonimiza el user doc
+// y borra el Auth user. Gemas + history preservados anonimizados por 5y
+// (AML/KYC). Username liberado.
+export async function callDeleteMyAccount() {
+  const fn = httpsCallable(functions, 'deleteMyAccount');
   const res = await fn({});
+  return res.data;
+}
+
+// revokeMySessions: "logout everywhere" — usuario sospecha takeover y cierra
+// todas las sesiones desde otros devices. Equivalente a un admin llamando
+// revokeRefreshTokens manualmente.
+export async function callRevokeMySessions() {
+  const fn = httpsCallable(functions, 'revokeMySessions');
+  const res = await fn({});
+  return res.data;
+}
+
+// Creates a pending crypto payment (USDC/Polygon).
+// Audit feedback 2026-06-23+:
+//   - `senderWalletAddress` (opcional): si el caller la declara, el backend
+//     devuelve $15.00 redondo y matchea por `from` address en el processor.
+//     Sin esto, fallback a cents random ($15.XX) por amount.
+//   - `saveWallet` (opcional, default false): opt-in para que el processor
+//     guarde la `from` wallet como walletAddress del user al confirmar el
+//     pago. Si false (o no se pasa), la wallet NO se guarda — útil para
+//     pagos desde wallets temporales / compartidas.
+// Returns { paymentId, amount, wallet, expiresAt }
+export async function callCreateCryptoPayment(senderWalletAddress, opts) {
+  const fn = httpsCallable(functions, 'createCryptoPayment');
+  const payload = {};
+  if (senderWalletAddress) payload.senderWalletAddress = senderWalletAddress;
+  if (opts && opts.saveWallet) payload.saveWallet = true;
+  const res = await fn(payload);
   return res.data;
 }
 

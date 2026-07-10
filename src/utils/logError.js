@@ -17,6 +17,31 @@ function safeMsg(e) {
 // Si un caller pasa accidentalmente `{ password: '...' }` o `{ idToken: '...' }`
 // como ctx, lo enmascaramos antes de mandar a Firestore.
 const _SENSITIVE_KEY_RE = /(password|passwd|token|secret|wallet|authorization|api[_-]?key|private[_-]?key|cookie|session)/i;
+
+// MED (Round 2 Agente #4 MED-FE-23 + Agente #11 MED-11-41): scrub PII como
+// VALOR, no solo por nombre de key. Pre-fix: `logError('X', e, { formData:
+// { email: 'a@b.com' } })` no scrubeaba — `formData` no matchea
+// _SENSITIVE_KEY_RE, el email leakeaba a errorLog.
+// Patrones que aplicamos a TODOS los valores string del ctx:
+// - Emails (RFC 5322 simplificado).
+// - Wallets Ethereum (0x + 40 hex).
+// - Phones internacionales (+CC seguido de 8-15 dígitos).
+// Reemplazamos por placeholders genéricos preservando el resto del string
+// para que el contexto siga siendo útil para debug.
+const _PII_VALUE_RES = [
+  { re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, to: '[redacted-email]' },
+  { re: /\b0x[a-fA-F0-9]{40}\b/g, to: '[redacted-wallet]' },
+  { re: /\+\d{1,3}[\s\-]?\d{6,14}/g, to: '[redacted-phone]' },
+];
+export function scrubPiiValue(s) {
+  if (typeof s !== 'string') return s;
+  let out = s;
+  for (const { re, to } of _PII_VALUE_RES) {
+    out = out.replace(re, to);
+  }
+  return out;
+}
+
 function safeCtx(ctx) {
   if (!ctx || typeof ctx !== 'object') return '';
   try {
@@ -26,13 +51,26 @@ function safeCtx(ctx) {
       if (typeof v === 'string') {
         // Stacks pueden ser >200 chars y son útiles; truncar a 2000.
         const limit = k === 'stack' || k === 'componentStack' ? 2000 : 200;
-        if (v.length > limit) return v.slice(0, limit) + '…';
+        let val = scrubPiiValue(v);
+        if (val.length > limit) val = val.slice(0, limit) + '…';
+        return val;
       }
       return v;
     });
   } catch {
     return '[unserializable ctx]';
   }
+}
+
+// Ultrareview bug_011: variante que devuelve OBJETO scrubeado (no JSON string)
+// para pasar a Sentry.scope.setExtras. Sin esto, el path a Sentry recibía el
+// ctx raw — violando privacy.html disclosure ("Sentry procesa stack traces
+// anonimizados sin email/uid") + exponiendo password/wallet keys directo a
+// Sentry UI. Reutiliza safeCtx vía parse del JSON ya scrubeado.
+function scrubCtxObject(ctx) {
+  const json = safeCtx(ctx);
+  if (!json) return undefined;
+  try { return JSON.parse(json); } catch { return undefined; }
 }
 
 // Reporte remoto: debouncea + cap diario para no saturar Firestore/Cloud Functions.
@@ -76,6 +114,18 @@ export function logError(scope, err, ctx) {
     // En __DEV__ no enviamos al backend para no saturarlo durante desarrollo.
     if (typeof __DEV__ === 'undefined' || !__DEV__) {
       reportRemote(scope, err, ctx);
+      // Pipeline dual: además del backend propio (Firestore errorLog) mandamos
+      // a Sentry. Sentry da issue grouping, source maps, breadcrumbs y release
+      // tracking. Firestore conserva search + dedupe que controlamos nosotros.
+      // Lazy import para evitar ciclo con utils/sentry → logError.
+      // Ultrareview bug_011: pasamos ctx SCRUBBED (no raw) — Sentry.setExtras
+      // serializa cualquier objeto que reciba; sin scrub, email/wallet/password
+      // leakean a Sentry contradiciendo el disclosure de privacy.html.
+      try {
+        const safeCtxObj = scrubCtxObject(ctx);
+        // eslint-disable-next-line no-unused-expressions
+        import('./sentry').then((s) => s.captureException(err, safeCtxObj, scope)).catch(() => {});
+      } catch (_) {}
     }
   } catch (_) { /* swallow — no relanzar */ }
 }

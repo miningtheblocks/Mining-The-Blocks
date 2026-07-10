@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking, TextInput } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppAlert } from '../components/AppAlert';
@@ -18,6 +18,10 @@ const PAYMENT_CACHE_KEY = '@mtb/activePayment';
 // NO hardcodear en cliente — un APK modificado podría reemplazar la constante
 // y redirigir todos los pagos al wallet del atacante.
 
+// MEDIO-C21: validar wallet (anti unicode/look-alike). Se usa para el wallet
+// recibido del backend Y para la wallet que el user tipea en el form.
+const ETH_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+
 function formatTimer(ms) {
   if (ms <= 0) return '00:00';
   const totalSec = Math.floor(ms / 1000);
@@ -34,6 +38,14 @@ export default function BuyCredits({ onClose }) {
   const [status, setStatus] = useState(null); // 'waiting' | 'completed' | 'expired'
   const [timeLeft, setTimeLeft] = useState(0);
   const [userData, setUserData] = useState(null);
+  // Audit feedback 2026-06-23+: opt-in para auto-link de wallet en el pago.
+  // Default OFF: respetamos consent del user. Si lo tilda + paga, el processor
+  // guarda la `from` del Transfer event como walletAddress.
+  const [saveWalletOpt, setSaveWalletOpt] = useState(false);
+  // 2026-06-24: wallet del user obligatoria en el formulario. Pre-llenada con
+  // la guardada si existe. El backend cobra $15.00 exacto cuando se le pasa
+  // senderWalletAddress, así que ya no hay $15.XX random.
+  const [walletInput, setWalletInput] = useState('');
   const timerRef = useRef(null);
   const unsubRef = useRef(null);
   const userUnsubRef = useRef(null);
@@ -62,22 +74,46 @@ export default function BuyCredits({ onClose }) {
     const u = auth.currentUser;
     if (!u) return;
     userUnsubRef.current = onSnapshot(doc(db, 'users', u.uid), (snap) => {
-      setUserData(snap.exists() ? snap.data() : null);
+      const data = snap.exists() ? snap.data() : null;
+      setUserData(data);
+      // Pre-fill del input con la wallet guardada del user (si la tiene) sólo
+      // si el input aún está vacío para no pisar lo que el user esté tipeando.
+      if (data?.walletAddress) {
+        setWalletInput((prev) => prev || data.walletAddress);
+      }
     }, () => {});
     return () => userUnsubRef.current && userUnsubRef.current();
   }, []);
 
+  const trimmedWallet = (walletInput || '').trim();
+  const walletValid = ETH_ADDR_RE.test(trimmedWallet);
+
   const generatePayment = async () => {
+    if (!walletValid) {
+      showAlert('Error', t('buyCredits.walletInvalid'));
+      return;
+    }
     setLoading(true);
     try {
-      const result = await callCreateCryptoPayment();
+      // 2026-06-24: la wallet del user ahora es obligatoria. El backend cobra
+      // $15.00 exacto cuando se le pasa senderWalletAddress válida (sin
+      // centavos random del legacy $15.XX). El checkbox saveWalletOpt sólo
+      // controla si se guarda la wallet en su cuenta para próximos pagos.
+      const senderWallet = trimmedWallet;
+      const result = await callCreateCryptoPayment(senderWallet, { saveWallet: !!saveWalletOpt });
       setPayment(result);
       setStatus('waiting');
       // ALTO-49: persistir para recovery si el user cierra la app.
       try {
+        // Round 2 Agente #4 ALTO-FE-14: persist amount+wallet también, no solo
+        // paymentId+expiresAt. Pre-fix, el restore en mount dejaba amount=null
+        // y wallet=null → el user vuelve a la app después de un crash/swipe y
+        // ve el timer corriendo pero NO sabe cuánto pagar ni a qué wallet.
         await AsyncStorage.setItem(PAYMENT_CACHE_KEY, JSON.stringify({
           paymentId: result.paymentId,
           expiresAt: result.expiresAt,
+          amount: result.amount,
+          wallet: result.wallet,
         }));
       } catch {}
     } catch (e) {
@@ -98,8 +134,15 @@ export default function BuyCredits({ onClose }) {
         if (cancelled || !raw) return;
         const parsed = JSON.parse(raw);
         if (parsed?.expiresAt && parsed.expiresAt > Date.now() && parsed.paymentId) {
-          // Restaurar listener; el snapshot lo va a mostrar como waiting/completed/expired.
-          setPayment({ paymentId: parsed.paymentId, expiresAt: parsed.expiresAt, amount: null, wallet: null });
+          // Round 2 Agente #4 ALTO-FE-14: restaurar amount + wallet si fueron
+          // cacheados (post-fix de arriba). Para caches viejos sin estos
+          // campos, quedan null y el user va a tener que regenerar el pago.
+          setPayment({
+            paymentId: parsed.paymentId,
+            expiresAt: parsed.expiresAt,
+            amount: parsed.amount || null,
+            wallet: parsed.wallet || null,
+          });
           setStatus('waiting');
         } else {
           AsyncStorage.removeItem(PAYMENT_CACHE_KEY).catch(() => {});
@@ -127,10 +170,7 @@ export default function BuyCredits({ onClose }) {
     }
   };
 
-  // MEDIO-C21: validar wallet del backend antes de mostrar/usar. Si el backend
-  // devolviera un wallet con caracteres unicode RTL/look-alike (`0х...` cirílica),
-  // el usuario podría copiar visualmente correcto pero enviar a otro destino.
-  const ETH_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+  // safeWallet — validación del wallet recibido del backend (anti unicode/look-alike).
   const safeWallet = payment && ETH_ADDR_RE.test(String(payment.wallet || '')) ? payment.wallet : null;
 
   if (status === 'completed') {
@@ -161,7 +201,6 @@ export default function BuyCredits({ onClose }) {
       {/* Header info */}
       <View style={s.infoBox}>
         <Text style={s.infoTitle}>USDC · Polygon</Text>
-        <Text style={s.infoSub}>{t('buyCredits.subtitle')}</Text>
       </View>
 
       {!payment ? (
@@ -169,11 +208,63 @@ export default function BuyCredits({ onClose }) {
         <View style={s.centerBox}>
           <Text style={s.price}>$15 <Text style={s.priceCurrency}>USDC</Text></Text>
           <Text style={s.priceNote}>{t('buyCredits.priceNote')}</Text>
-          <TouchableOpacity style={s.btn} onPress={generatePayment} disabled={loading} activeOpacity={0.85}>
+
+          {/* Wallet del user — OBLIGATORIA. El backend cobra $15.00 exacto
+              cuando la recibe (sin $15.XX random). */}
+          <View style={s.walletInputWrap}>
+            <Text style={s.walletInputLabel}>{t('buyCredits.walletInputLabel')}</Text>
+            <Text style={s.walletWarning}>{t('buyCredits.walletWarning')}</Text>
+            <TextInput
+              value={walletInput}
+              onChangeText={setWalletInput}
+              placeholder={t('buyCredits.walletInputPlaceholder')}
+              placeholderTextColor="#555"
+              autoCapitalize="none"
+              autoCorrect={false}
+              spellCheck={false}
+              style={[
+                s.walletInputField,
+                walletInput.length > 0 && !walletValid && s.walletInputFieldInvalid,
+                walletValid && s.walletInputFieldValid,
+              ]}
+              accessibilityLabel={t('buyCredits.walletInputLabel')}
+            />
+            {walletInput.length > 0 && !walletValid && (
+              <Text style={s.walletInputError}>{t('buyCredits.walletInvalid')}</Text>
+            )}
+          </View>
+
+          {/* Checkbox: guardar billetera en la cuenta para próximos pagos.
+              Se muestra siempre. Si la billetera ingresada ya coincide con la
+              que tiene guardada, marcar no cambia nada (idempotente backend). */}
+          <TouchableOpacity
+            onPress={() => setSaveWalletOpt((v) => !v)}
+            activeOpacity={0.75}
+            style={[s.checkboxRow, saveWalletOpt && s.checkboxRowActive]}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: saveWalletOpt }}
+          >
+            <View style={[s.checkboxBox, saveWalletOpt && s.checkboxBoxActive]}>
+              {saveWalletOpt && <Text style={s.checkboxCheck}>✓</Text>}
+            </View>
+            <Text style={s.checkboxLabel}>
+              {t('buyCredits.saveWalletCheckbox')}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[s.btn, !walletValid && s.btnDisabled]}
+            onPress={generatePayment}
+            disabled={loading || !walletValid}
+            activeOpacity={0.85}
+          >
             {loading
               ? <ActivityIndicator color="#fff" />
-              : <Text style={s.btnTxt}>{t('buyCredits.generate')}</Text>}
+              : <Text style={[s.btnTxt, !walletValid && s.btnTxtDisabled]}>{t('buyCredits.generate')}</Text>}
           </TouchableOpacity>
+          {!walletValid && walletInput.length === 0 && (
+            <Text style={s.walletHint}>{t('buyCredits.walletRequired')}</Text>
+          )}
           <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL).catch(() => {})} style={s.termsBtn}>
             <Text style={s.termsTxt}>{t('buyCredits.termsNote')}</Text>
           </TouchableOpacity>
@@ -182,7 +273,14 @@ export default function BuyCredits({ onClose }) {
         /* Pago expirado */
         <View style={s.centerBox}>
           <Text style={s.expiredTxt}>⏱ {t('buyCredits.expired')}</Text>
-          <TouchableOpacity style={s.btn} onPress={generatePayment} disabled={loading} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={s.btn}
+            onPress={generatePayment}
+            disabled={loading}
+            activeOpacity={0.85}
+            accessibilityLabel={t('buyCredits.newPayment')}
+            accessibilityState={{ disabled: loading, busy: loading }}
+          >
             {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.btnTxt}>{t('buyCredits.newPayment')}</Text>}
           </TouchableOpacity>
         </View>
@@ -191,7 +289,13 @@ export default function BuyCredits({ onClose }) {
         <View style={s.paymentBox}>
           {/* Monto */}
           <Text style={s.fieldLabel}>{t('buyCredits.sendExactly')}</Text>
-          <TouchableOpacity style={s.copyRow} onPress={() => copyToClipboard(payment.amount, 'amount')} activeOpacity={0.75}>
+          <TouchableOpacity
+            style={s.copyRow}
+            onPress={() => copyToClipboard(payment.amount, 'amount')}
+            activeOpacity={0.75}
+            accessibilityLabel={`${t('buyCredits.copy')} ${payment.amount} USDC`}
+            accessibilityHint={t('buyCredits.sendExactly')}
+          >
             <Text style={s.amount}>{payment.amount} USDC</Text>
             <View style={s.copyBtn}><Text style={s.copyTxt}>{t('buyCredits.copy')}</Text></View>
           </TouchableOpacity>
@@ -199,7 +303,13 @@ export default function BuyCredits({ onClose }) {
 
           {/* Wallet — MEDIO-C21: solo mostrar si pasa validación de formato. */}
           <Text style={[s.fieldLabel, { marginTop: 16 }]}>{t('buyCredits.toAddress')}</Text>
-          <TouchableOpacity style={s.copyRow} onPress={() => safeWallet && copyToClipboard(safeWallet, 'wallet')} activeOpacity={0.75}>
+          <TouchableOpacity
+            style={s.copyRow}
+            onPress={() => safeWallet && copyToClipboard(safeWallet, 'wallet')}
+            activeOpacity={0.75}
+            accessibilityLabel={`${t('buyCredits.copy')} ${t('buyCredits.toAddress')}`}
+            accessibilityState={{ disabled: !safeWallet }}
+          >
             <Text style={s.walletTxt} numberOfLines={1} ellipsizeMode="middle">{safeWallet || '(inválido)'}</Text>
             <View style={s.copyBtn}><Text style={s.copyTxt}>{t('buyCredits.copy')}</Text></View>
           </TouchableOpacity>
@@ -244,7 +354,17 @@ const s = StyleSheet.create({
   priceNote:    { color: '#666', fontSize: 13, textAlign: 'center' },
   btn:          { backgroundColor: '#1a3a1a', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12, alignItems: 'center', minWidth: 200 },
   btnSecondary: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#333', marginTop: 8 },
+  btnDisabled:  { backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2a2a2a' },
   btnTxt:       { color: '#5cb85c', fontWeight: '800', fontSize: 15 },
+  btnTxtDisabled: { color: '#555' },
+  walletInputWrap:  { width: '100%', maxWidth: 360, marginTop: 4 },
+  walletInputLabel: { color: '#888', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 },
+  walletInputField: { backgroundColor: '#12121a', borderWidth: 1, borderColor: '#2a2a2a', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, color: '#fff', fontFamily: 'monospace', fontSize: 13 },
+  walletInputFieldInvalid: { borderColor: '#7a2222' },
+  walletInputFieldValid: { borderColor: '#2e7d32' },
+  walletInputError: { color: '#ff6666', fontSize: 11, marginTop: 4 },
+  walletHint:   { color: '#777', fontSize: 11, marginTop: 4, textAlign: 'center', maxWidth: 280 },
+  walletWarning:{ color: '#ff9944', fontSize: 12, marginBottom: 8, lineHeight: 16 },
   paymentBox:   { flex: 1 },
   fieldLabel:   { color: '#888', fontSize: 12, fontWeight: '700', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 },
   copyRow:      { flexDirection: 'row', alignItems: 'center', backgroundColor: '#12121a', borderRadius: 10, borderWidth: 1, borderColor: '#222', padding: 12, gap: 10 },
@@ -255,6 +375,54 @@ const s = StyleSheet.create({
   warning:      { color: '#ff9944', fontSize: 11, marginTop: 6 },
   networkBadge: { backgroundColor: '#0d1a2e', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, alignSelf: 'flex-start', marginTop: 16 },
   networkTxt:   { color: '#4a9eff', fontSize: 12, fontWeight: '700' },
+  // Audit feedback 2026-06-23+: checkbox opt-in "guardar billetera". Estética
+  // MTB (dark + verde primary cuando activo).
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginTop: 12,
+    marginBottom: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    backgroundColor: '#0e0e0e',
+    width: '100%',
+    maxWidth: 360,
+  },
+  checkboxRowActive: {
+    borderColor: '#2e7d32',
+    backgroundColor: '#1a3a1a22',
+  },
+  checkboxBox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#555',
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  checkboxBoxActive: {
+    borderColor: '#5cb85c',
+    backgroundColor: '#1a3a1a',
+  },
+  checkboxCheck: {
+    color: '#5cb85c',
+    fontSize: 14,
+    fontWeight: '900',
+    lineHeight: 16,
+  },
+  checkboxLabel: {
+    flex: 1,
+    color: '#bbb',
+    fontSize: 12,
+    lineHeight: 17,
+  },
   timerRow:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 20, backgroundColor: '#12121a', borderRadius: 10, padding: 12 },
   timerLabel:   { color: '#888', fontSize: 13 },
   timerVal:     { color: '#fff', fontSize: 20, fontWeight: '900', fontFamily: 'monospace' },

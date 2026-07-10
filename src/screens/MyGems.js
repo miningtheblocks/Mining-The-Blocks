@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   ActivityIndicator, Share, ScrollView,
@@ -7,6 +7,7 @@ import { GEMS } from '../utils/gems';
 import { callGetUserGems, callClaimGemNFT } from '../firebase/functions';
 import { auth, db } from '../firebase/client';
 import { doc, onSnapshot } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { useI18n } from '../utils/i18n';
 import GemPixelArt from '../components/GemPixelArt';
 import { useAppAlert } from '../components/AppAlert';
@@ -23,6 +24,27 @@ function shortenAddress(addr) {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+// Audit feedback 2026-06-23+: countdown de expiración (90d desde fin del
+// episodio). El backend (getUserGems) enriquece cada gem con `expiresAt`
+// derivado del completedAt del episode. Si la gem no tiene expiresAt
+// significa que el episodio sigue activo → no expira todavía.
+//
+// Devuelve { state, label, color }:
+//   - 'active' (episodio en curso): null/null/null — no mostrar nada
+//   - 'days' (>=2 días) verde
+//   - 'soon' (1 día o menos) naranja
+//   - 'expired' (ya pasó) rojo
+function getExpiryInfo(expiresAt) {
+  if (!expiresAt) return null;
+  const remaining = expiresAt - Date.now();
+  if (remaining <= 0) return { state: 'expired', color: '#e57373' };
+  const days = Math.floor(remaining / (24 * 60 * 60 * 1000));
+  const hours = Math.floor(remaining / (60 * 60 * 1000));
+  if (days >= 2) return { state: 'days', days, color: '#5cb85c' };
+  if (days >= 1) return { state: 'soon', days, hours, color: '#f59e0b' };
+  return { state: 'soon', days: 0, hours, color: '#f59e0b' };
+}
+
 export default function MyGems({ asModal = false, visible = true, onClose }) {
   const { t, language } = useI18n();
   const { showAlert, AlertComponent } = useAppAlert();
@@ -32,35 +54,125 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
   const [claiming, setClaiming] = useState(null); // gemId en proceso
   const [selected, setSelected] = useState(null); // gemId para detalle
 
-  // Escuchar wallet del usuario en tiempo real
+  // Escuchar wallet del usuario en tiempo real.
+  // v1.3.14: reactivar suscripción cuando el user de auth cambia. Antes solo
+  // se suscribía si `auth.currentUser` ya existía en el mount → si el modal
+  // se abría antes de que auth hidratara, nunca aparecía la wallet.
   useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) return;
-    const ref = doc(db, 'users', u.uid);
-    const unsub = onSnapshot(ref, (snap) => {
-      setWallet(snap.exists() ? (snap.data().walletAddress || null) : null);
+    let unsubDoc = null;
+    const subscribeFor = (uid) => {
+      try { if (unsubDoc) unsubDoc(); } catch {}
+      unsubDoc = null;
+      if (!uid) { setWallet(null); return; }
+      const ref = doc(db, 'users', uid);
+      unsubDoc = onSnapshot(ref, (snap) => {
+        setWallet(snap.exists() ? (snap.data().walletAddress || null) : null);
+      }, (err) => {
+        console.warn('MyGems.walletListener error', err?.code, err?.message);
+      });
+    };
+    subscribeFor(auth.currentUser?.uid || null);
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      subscribeFor(user?.uid || null);
     });
-    return () => unsub();
+    return () => {
+      try { if (unsubDoc) unsubDoc(); } catch {}
+      try { unsubAuth && unsubAuth(); } catch {}
+    };
   }, []);
 
+  // v1.3.14: refactor para resolver "unauthenticated" intermitente.
+  //   1. Esperar `auth.authStateReady()` antes de la primera llamada — el
+  //      modal puede abrirse antes que el SDK termine de hidratar el user
+  //      desde el storage, y `currentUser` es null aunque haya sesión válida.
+  //   2. Tres intentos con backoff (0ms, 500ms, 2s) si el server devuelve
+  //      `unauth`. Antes solo había UNO con `getIdToken(true)`; si la fuga
+  //      es por token refresh todavía en curso, el reintento tarda 1-2s.
+  //   3. Listener `onAuthStateChanged` que dispara `loadGems` si el user
+  //      cambia mientras el modal está abierto.
+  //   4. console.warn detallado en cada fallo para diagnosticar via logcat.
+  // v1.3.16: mutex para deduplicar calls concurrentes. El useEffect [visible]
+  // y el listener onAuthStateChanged podían disparar loadGems al mismo tiempo
+  // → dos calls al backend, una fallaba con unauth (token siendo refrescado)
+  // y mostraba el alert aunque la otra hubiera tenido éxito.
+  const loadingRef = useRef(false);
   const loadGems = useCallback(async () => {
-    const u = auth.currentUser;
-    if (!u) { setLoading(false); return; }
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     try {
-      const { gems: list } = await callGetUserGems();
-      setGems(list || []);
-    } catch (e) {
-      showAlert('Error', e?.message || t('myGems.errorLoad'));
+      try { await auth.authStateReady(); } catch (e) {
+        console.warn('MyGems.loadGems: authStateReady failed', e?.message);
+      }
+      const u = auth.currentUser;
+      if (!u) {
+        console.warn('MyGems.loadGems: no currentUser tras authStateReady');
+        setLoading(false);
+        return;
+      }
+      const attemptOnce = async (forceRefresh) => {
+        try { await u.getIdToken(forceRefresh); } catch (e) {
+          console.warn('MyGems.loadGems: getIdToken failed', { force: forceRefresh, msg: e?.message });
+        }
+        return callGetUserGems();
+      };
+      // Intento 1: token actual.
+      try {
+        const { gems: list } = await attemptOnce(false);
+        setGems(list || []);
+        return;
+      } catch (e1) {
+        const code1 = String(e1?.code || e1?.message || '').toLowerCase();
+        console.warn('MyGems.loadGems attempt 1 failed', { uid: u.uid, code: e1?.code, msg: e1?.message });
+        if (!code1.includes('unauth') || !auth.currentUser) {
+          showAlert('Error', e1?.message || t('myGems.errorLoad'));
+          return;
+        }
+      }
+      // Intento 2: force refresh del token, 500ms después.
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        const { gems: list } = await attemptOnce(true);
+        setGems(list || []);
+        return;
+      } catch (e2) {
+        console.warn('MyGems.loadGems attempt 2 failed', { uid: u.uid, code: e2?.code, msg: e2?.message });
+      }
+      // Intento 3: último retry con backoff 2s + force refresh.
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const { gems: list } = await attemptOnce(true);
+        setGems(list || []);
+        return;
+      } catch (e3) {
+        console.warn('MyGems.loadGems attempt 3 failed', { uid: u.uid, code: e3?.code, msg: e3?.message });
+        showAlert('Error', e3?.message || t('myGems.errorLoad'));
+      }
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
   }, []);
 
-  // Load when modal opens (visible goes true) or on standalone mount
+  // Load cuando el modal se abre (visible→true) o en mount standalone.
   useEffect(() => {
     if (asModal ? visible : true) loadGems();
   }, [visible]);
+
+  // v1.3.14: reintentar si el user de auth cambia mientras el modal está
+  // abierto (login tardío, refresh de sesión, etc.).
+  // v1.3.16: el listener disparaba `loadGems` también en el mount inicial con
+  // el user actual → call duplicado con el useEffect [visible]. Ahora solo
+  // dispara si el uid CAMBIA respecto al inicial.
+  useEffect(() => {
+    if (!(asModal ? visible : true)) return;
+    const initialUid = auth.currentUser?.uid || null;
+    const unsub = onAuthStateChanged(auth, (user) => {
+      const newUid = user?.uid || null;
+      if (newUid && newUid !== initialUid) loadGems();
+    });
+    return () => unsub();
+  }, [visible, loadGems]);
 
   const copyCode = async (code) => {
     try { await Share.share({ message: code }); } catch {}
@@ -73,7 +185,10 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
     }
     setClaiming(gem.id);
     try {
-      await callClaimGemNFT(gem.id, wallet);
+      // Round 2 Commit B: el segundo arg (wallet) se removió de la signature;
+      // el backend ahora lee users/{uid}.walletAddress (set via callSetUserWallet
+      // con cooldown 24h) para evitar wallet hot-swap.
+      await callClaimGemNFT(gem.id);
       await loadGems();
     } catch (e) {
       logError('MyGems.handleClaimNFT', e, { gemId: gem.id, tier: gem.gemTier });
@@ -115,6 +230,33 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
             </View>
             <Text style={styles.gemPrice}>${gd.price} USD</Text>
             <Text style={styles.gemDate}>{new Date(item.discoveredAt).toLocaleDateString()}</Text>
+            {(() => {
+              // Audit feedback 2026-06-23+: countdown de expiración. Solo se
+              // muestra si el episodio cerró (gem.expiresAt definido) y la
+              // gem aún no fue canjeada (status != 'redeemed').
+              if (item.status === 'redeemed') return null;
+              const exp = getExpiryInfo(item.expiresAt);
+              if (!exp) return null;
+              if (exp.state === 'expired') {
+                return (
+                  <Text style={[styles.gemExpiry, { color: exp.color }]}>
+                    ⚠ {t('myGems.expired', { defaultValue: 'Expirado' })}
+                  </Text>
+                );
+              }
+              if (exp.state === 'soon') {
+                return (
+                  <Text style={[styles.gemExpiry, { color: exp.color }]}>
+                    ⏰ {t('myGems.expiresHours', { hours: exp.hours, defaultValue: `Expira en ${exp.hours} hs` })}
+                  </Text>
+                );
+              }
+              return (
+                <Text style={[styles.gemExpiry, { color: exp.color }]}>
+                  ⏳ {t('myGems.expiresDays', { days: exp.days, defaultValue: `Expira en ${exp.days} días` })}
+                </Text>
+              );
+            })()}
           </View>
 
           {/* Status */}
@@ -134,7 +276,12 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
 
             {/* Código */}
             <Text style={styles.detailLabel}>{t('myGems.code')}</Text>
-            <TouchableOpacity style={styles.codeBox} onPress={() => copyCode(item.code)}>
+            <TouchableOpacity
+              style={styles.codeBox}
+              onPress={() => copyCode(item.code)}
+              accessibilityLabel={`${t('myGems.tapCopy')} ${item.code}`}
+              accessibilityHint={t('myGems.code')}
+            >
               <Text style={styles.codeText}>{item.code}</Text>
               <Text style={styles.copyHint}>{t('myGems.tapCopy')}</Text>
             </TouchableOpacity>
@@ -144,6 +291,39 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
               {t('myGems.foundAt')} EP {item.episodeNumber} · {t('myGems.layer')} {item.layerK} · #{item.cubeNumber}
             </Text>
 
+            {/* Audit feedback 2026-06-23+: ventana de canje exacta en el detalle. */}
+            {item.status !== 'redeemed' && item.expiresAt && (() => {
+              const exp = getExpiryInfo(item.expiresAt);
+              if (!exp) return null;
+              const expDate = new Date(item.expiresAt).toLocaleDateString();
+              return (
+                <View style={[styles.expiryBox, { borderColor: exp.color + '55', backgroundColor: exp.color + '10' }]}>
+                  <Text style={[styles.expiryBoxTitle, { color: exp.color }]}>
+                    {exp.state === 'expired'
+                      ? t('myGems.expiryDetailExpired', { defaultValue: 'Ventana de canje vencida' })
+                      : t('myGems.expiryDetailActive', { defaultValue: 'Ventana de canje' })}
+                  </Text>
+                  <Text style={styles.expiryBoxBody}>
+                    {exp.state === 'expired'
+                      ? t('myGems.expiryDetailBodyExpired', { date: expDate, defaultValue: `El plazo venció el ${expDate}. Ya no se puede canjear.` })
+                      : t('myGems.expiryDetailBodyActive', { date: expDate, defaultValue: `Tenés hasta el ${expDate} para reclamar (90 días desde el cierre del episodio).` })}
+                  </Text>
+                </View>
+              );
+            })()}
+            {/* Si la gema NO tiene expiresAt (episodio sigue activo), avisar
+                que la ventana se activa cuando termine. */}
+            {item.status !== 'redeemed' && !item.expiresAt && (
+              <View style={[styles.expiryBox, { borderColor: '#5cb85c55', backgroundColor: '#5cb85c10' }]}>
+                <Text style={[styles.expiryBoxTitle, { color: '#5cb85c' }]}>
+                  ✓ {t('myGems.expiryEpisodeActive', { defaultValue: 'Episodio en curso' })}
+                </Text>
+                <Text style={styles.expiryBoxBody}>
+                  {t('myGems.expiryEpisodeActiveBody', { defaultValue: 'El premio no expira mientras el episodio sigue activo. Después tendrás 90 días para canjearlo.' })}
+                </Text>
+              </View>
+            )}
+
             {/* Acciones */}
             {item.status === 'unclaimed' && (
               <View style={styles.actions}>
@@ -152,6 +332,8 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
                     style={[styles.actionBtn, styles.actionBtnNFT]}
                     onPress={() => handleClaimNFT(item)}
                     disabled={claiming === item.id}
+                    accessibilityLabel={t('myGems.claimNFT')}
+                    accessibilityState={{ disabled: claiming === item.id, busy: claiming === item.id }}
                   >
                     {claiming === item.id
                       ? <ActivityIndicator size="small" color="#fff" />
@@ -184,7 +366,13 @@ export default function MyGems({ asModal = false, visible = true, onClose }) {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>{t('myGems.title')}</Text>
-        <TouchableOpacity onPress={loadGems} style={styles.refreshBtn}>
+        <TouchableOpacity
+          onPress={loadGems}
+          style={styles.refreshBtn}
+          accessibilityLabel={t('myGems.refresh') || 'Refresh'}
+          accessibilityRole="button"
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
           <Text style={styles.refreshTxt}>↻</Text>
         </TouchableOpacity>
       </View>
@@ -271,6 +459,10 @@ const styles = StyleSheet.create({
   tierTxt: { fontSize: 10, fontWeight: '800' },
   gemPrice: { color: '#aaa', fontSize: 12, fontWeight: '700' },
   gemDate: { color: '#555', fontSize: 11, marginTop: 1 },
+  // Audit feedback 2026-06-23+: countdown de expiración en la card principal
+  // (línea debajo de la fecha de discovery). Color dinámico según urgencia
+  // (verde >2d / naranja <=1d / rojo expired).
+  gemExpiry: { fontSize: 11, marginTop: 3, fontWeight: '700' },
 
   statusBadge: {
     borderWidth: 1,
@@ -297,6 +489,16 @@ const styles = StyleSheet.create({
   copyHint: { color: '#555', fontSize: 11, marginTop: 3 },
 
   detailMeta: { color: '#666', fontSize: 12 },
+  // Audit feedback 2026-06-23+: cajita info de expiración en el panel
+  // expandible. Color dinámico inline según el estado (verde/naranja/rojo).
+  expiryBox: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  expiryBoxTitle: { fontSize: 12, fontWeight: '800', marginBottom: 4 },
+  expiryBoxBody: { color: '#bbb', fontSize: 11, lineHeight: 16 },
 
   actions: { marginTop: 10 },
   actionBtn: {

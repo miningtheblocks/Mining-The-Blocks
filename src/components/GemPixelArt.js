@@ -1,13 +1,24 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Animated, Text, StyleSheet } from 'react-native';
-import { GEM_SHAPE, GEMS } from '../utils/gems';
+import { View, Animated, StyleSheet, Image } from 'react-native';
+import { GEMS } from '../utils/gems';
 
-const CELL = 19; // screen px per pixel
+const GRID_W = 190;
+const GRID_H = 190;
 
-const GRID_COLS = GEM_SHAPE[0].length; // 10
-const GRID_ROWS = GEM_SHAPE.length;    // 10
-const GRID_W = GRID_COLS * CELL;       // 190
-const GRID_H = GRID_ROWS * CELL;       // 190
+// Assets reales por tier (reemplaza el grid de colores pixel-art anterior).
+// Exportado para que otras pantallas (HUD del cubo) usen los mismos assets
+// en vez de puntos de color.
+export const GEM_IMAGES = {
+  1: require('../../assets/gems/gem_1.png'),
+  2: require('../../assets/gems/gem_2.png'),
+  3: require('../../assets/gems/gem_3.png'),
+  4: require('../../assets/gems/gem_4.png'),
+  5: require('../../assets/gems/gem_5.png'),
+  6: require('../../assets/gems/gem_6.png'),
+  7: require('../../assets/gems/gem_7.png'),
+  8: require('../../assets/gems/gem_8.png'),
+  9: require('../../assets/gems/gem_9.png'),
+};
 
 // Five sparkle star positions around the gem
 const SPARKLE_POS = [
@@ -19,7 +30,9 @@ const SPARKLE_POS = [
 ];
 
 export default function GemPixelArt({ gemIndex }) {
-  const gem = GEMS[(gemIndex ?? 1) - 1];
+  const tier = gemIndex ?? 1;
+  const gem = GEMS[tier - 1];
+  const image = GEM_IMAGES[tier];
 
   const scaleAnim = useRef(new Animated.Value(0)).current;
   const glowAnim  = useRef(new Animated.Value(0.3)).current;
@@ -68,7 +81,7 @@ export default function GemPixelArt({ gemIndex }) {
     return () => running.forEach(a => a.stop());
   }, [gem]);
 
-  if (!gem) return null;
+  if (!gem || !image) return null;
 
   return (
     <View style={styles.container}>
@@ -84,21 +97,9 @@ export default function GemPixelArt({ gemIndex }) {
         },
       ]} />
 
-      {/* Pixel art grid with spring scale */}
+      {/* Gema real con spring scale */}
       <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-        {GEM_SHAPE.map((row, ri) => (
-          <View key={ri} style={styles.row}>
-            {row.map((ci, cj) => (
-              <View
-                key={cj}
-                style={[
-                  styles.cell,
-                  ci !== 0 && { backgroundColor: gem.palette[ci] },
-                ]}
-              />
-            ))}
-          </View>
-        ))}
+        <Image source={image} style={styles.gemImage} resizeMode="contain" />
       </Animated.View>
 
       {/* Sparkle stars */}
@@ -124,12 +125,9 @@ const styles = StyleSheet.create({
   glow: {
     position: 'absolute',
   },
-  row: {
-    flexDirection: 'row',
-  },
-  cell: {
-    width:  CELL,
-    height: CELL,
+  gemImage: {
+    width: GRID_W,
+    height: GRID_H,
   },
   sparkle: {
     position: 'absolute',

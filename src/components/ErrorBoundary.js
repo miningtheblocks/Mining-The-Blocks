@@ -19,6 +19,10 @@ export default class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(err, info) {
+    // logError ya dispara ambos pipelines (Firestore errorLog + Sentry via
+    // lazy import en src/utils/logError.js). Ultrareview bug_014: antes
+    // llamábamos captureException acá adicionalmente → cada error iba 2×
+    // a Sentry quemando el free tier de 5k events/mes.
     logError('ErrorBoundary', err, { componentStack: info && info.componentStack });
   }
 

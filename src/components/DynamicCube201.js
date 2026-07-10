@@ -1,14 +1,15 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { createRealisticPickaxeTexture, getHighDefinitionPickaxeTexture } from './PickaxeFromPNG';
 import { findClosestFaceFixed, resetFaceDetection, setForcedFace } from './FaceDetection';
-import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform } from 'react-native';
+import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform, ActivityIndicator, BackHandler } from 'react-native';
+import { WebView } from 'react-native-webview';
 import { useAppAlert } from './AppAlert';
 import { GLView } from 'expo-gl';
-import { Renderer } from 'expo-three';
 import * as THREE from 'three';
 import { ensureUser } from '../firebase/client';
-import { callMineCube } from '../firebase/functions';
+import { callMineCube, callGetChainBlockchainStatus, callPlaceCube, callClaimChainPick } from '../firebase/functions';
 import { auth, db } from '../firebase/client';
+import ChainClaimPickModal from './ChainClaimPickModal';
 import { doc, onSnapshot, collection, query, where, limit, orderBy, setDoc, addDoc, serverTimestamp, increment, runTransaction } from 'firebase/firestore';
 import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { signOut, onAuthStateChanged } from 'firebase/auth';
@@ -17,19 +18,58 @@ import { logError } from '../utils/logError';
 import { useOverlayModals } from './OverlayModalsProvider';
 import { useServer } from '../utils/serverContext';
 import { GEMS, GEM_SHAPE } from '../utils/gems';
-import GemPixelArt from './GemPixelArt';
+import GemPixelArt, { GEM_IMAGES as GEM_HUD_IMAGES } from './GemPixelArt';
 import { createRewardIndicatorSprite, MinedCubesRewardStore, clearIndicatorCache } from './MinedCellIndicators';
 import audioManager from '../utils/audioManager';
+import perfTier from '../utils/perfTier';
 
-// Suprimir warnings conocidos de expo-gl que no afectan la funcionalidad
-const originalConsoleLog = console.log;
-console.log = (...args) => {
-  const message = args[0];
-  if (typeof message === 'string' && message.includes('gl.pixelStorei() doesn\'t support this parameter yet')) {
-    return; // Silenciar este warning específico
-  }
-  originalConsoleLog.apply(console, args);
-};
+// Round 2 audit #5 HIGH-1: reemplazado `expo-three.Renderer` por
+// THREE.WebGLRenderer nativo. expo-three está deprecated y arrastraba 8
+// paquetes con CVEs (node-fetch@1.7.3 CVSS 8.8, fbjs, fbemitter, isomorphic-
+// fetch, uuid@8.3.2 ...). Three.js 0.166+ acepta un canvas-mock + el `gl`
+// context de expo-gl directamente; el render loop llama `gl.endFrameEXP()`
+// manualmente al final de cada frame, así que no perdemos nada del wrapper.
+function createGLRenderer(gl, opts = {}) {
+  const { antialias = false } = opts;
+  const width = gl.drawingBufferWidth || 0;
+  const height = gl.drawingBufferHeight || 0;
+  const canvas = {
+    width, height,
+    clientWidth: width, clientHeight: height,
+    style: {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    getContext: () => gl,
+  };
+  // [1] Audit gráfico 2026-06-23+: hint al driver de preferir GPU de bajo
+  // consumo (no integrada de Snapdragon vs Adreno discreto). En la mayoría
+  // de devices Android este flag es ignorable (1 sola GPU disponible), pero
+  // donde sí aplica reduce thermal throttling en sesiones largas y baja el
+  // battery drain ~5-10%. Sin impacto en rendering quality.
+  return new THREE.WebGLRenderer({
+    canvas,
+    context: gl,
+    antialias,
+    powerPreference: 'low-power',
+  });
+}
+
+// CRIT (Round 2 Agente #4 CRIT-FE-06): override global de console.log REMOVIDO.
+// Pre-fix:
+//   const originalConsoleLog = console.log;
+//   console.log = (...args) => { if (warning conocido) return; original.apply... };
+// Anti-pattern:
+// 1. HMR (hot module reload) re-importa este módulo → wrappea otra vez →
+//    cadena infinita de wrappers (cada uno con el "original" siendo el wrapper
+//    del round anterior). Stack overflow eventual.
+// 2. babel-plugin-transform-remove-console YA strippea console.log en release
+//    (excluyendo error/warn explícitamente). En prod no hay logs → el filter
+//    es dead code.
+// 3. El warning específico (gl.pixelStorei) viene de expo-gl native code y va
+//    a logcat directo en release, no a console.log JS. El filter no lo
+//    silenciaba en prod de todas formas.
+// Si en dev el warning molesta, hacerlo opt-in con un EXPO_PUBLIC_SILENCE_GL
+// env var y aplicarlo SOLO si __DEV__ + el flag.
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -40,6 +80,10 @@ const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 // Capa 0 (centro): 1 cubo solo
 // La capa economica actual - iniciar en 100 (mas externa) y bajar progresivamente
 const CURRENT_ECON_LAYER = 100;
+// Debe coincidir con BLOCKCHAIN_LAYER_COUNT en functions/blockchainConfig.js.
+// Cambio 9: mecánica estándar -- Chain es un cubo de tamaño fijo (como
+// servers), solo que con 250 capas en vez de 100.
+const CHAIN_LAYER_COUNT = 250;
 
 // Funcion para obtener el tamano de grilla de una capa K
 function getLayerGridSize(K) {
@@ -53,6 +97,21 @@ const TOTAL_FACE_CUBES = CUBES_PER_FACE * 6; // 242406
 // La capa externa inicia en 8,120,610 y va bajando.
 // El cubo central (K=0) seria 1 en ascendente, por lo que en descendente seria DISPLAY_START - (ascend - 1)
 const DISPLAY_START = 8120610;
+
+// Cambio 5 (compliance anuncios, 2026-07-03): banner pasivo (Social Bar)
+// solo en la carga inicial del cubo, estirado a este mínimo para que cuente
+// como impresión viewable aunque el build real sea más rápido.
+// Subido de 1100 a 3000 (2026-07-06): el anuncio ahora carga vía
+// docs/ad-safe.html (iframe sandboxed que a su vez carga ad-frame.html y
+// el script externo de Adsterra) -- un hop extra de red que 1100ms no
+// alcanzaba a cubrir en servers estándar (el cubo se construye muy rápido
+// ahí, dejando poco margen). En Chain esto nunca se notaba porque
+// construir K=250 ya tarda más que el mínimo de por sí.
+const ENTRY_BANNER_MIN_MS = 3000;
+// Fix "abre el navegador" (2026-07-05): ver docs/ad-safe.html -- el
+// anuncio va dentro de un iframe sandboxed sin allow-popups/
+// allow-top-navigation, en vez de cargarse directo.
+const AD_FRAME_URL = 'https://miningtheblocks.com/ad-safe.html?type=banner';
 
 
 function faceGridToCubeNumber(faceIndex, gridX, gridY) {
@@ -115,7 +174,11 @@ function getIntersectables(scene) {
   if (_intersectablesCache) return _intersectablesCache;
   const list = [];
   scene.traverse((child) => {
-    if (child.isMesh && child.userData && child.userData.faceIndex !== undefined) {
+    // Solo backgrounds (1 plano por cara, 6 totales). NO incluir cubesMesh (InstancedMesh
+    // con hasta ~60k instancias en K=50). El raycast contra InstancedMesh con muchas instancias
+    // bloquea el JS thread ~1s. El backgroundMesh cubre toda el área de la cara y el cálculo
+    // de gridX/gridY se hace desde intersection.point, no necesita las instancias.
+    if (child.isMesh && child.userData && child.userData.kind === 'bg') {
       list.push(child);
     }
   });
@@ -124,16 +187,46 @@ function getIntersectables(scene) {
 }
 
 // CACHE DE TEXTURAS PARA EVITAR RECREACIÃƒâ€œN CONSTANTE
-// LRU simple: máximo MAX_TEXTURE_CACHE entradas; cuando se supera se elimina la más antigua
-const MAX_TEXTURE_CACHE = 500;
-const textureCacheOrder = []; // keys en orden de inserción (FIFO para LRU simple)
+// LRU O(1) usando Map (mantiene orden de inserción en JS moderno).
+// HIGH: 400, MID: 250, LOW: 150 — en devices flojos menos VRAM pero más
+// regeneraciones; en devices buenos menos thrashing.
+// v1.3.12: refactor — antes usábamos textureCacheOrder array con indexOf O(N)
+// en cada hit. En pan rápido con 2000+ números visibles a 60Hz, era un costo
+// real. Ahora delete+set en hit (O(1)) renueva la posición; keys().next()
+// da la más vieja para evict.
+let _cachedMaxTextureCache = null;
+const getMaxTextureCache = () => {
+  if (_cachedMaxTextureCache != null) return _cachedMaxTextureCache;
+  try {
+    const p = perfTier.getPreset();
+    _cachedMaxTextureCache = (p && p.textureCacheMax) || 250;
+  } catch { _cachedMaxTextureCache = 250; }
+  return _cachedMaxTextureCache;
+};
 const textureCache = new Map();
+let textureCacheEvictionCount = 0;
+// v1.3.13: performance.now() en lugar de Date.now() — Android puede dar
+// Date.now() con granularidad de ~16ms, que es justo el tamaño de la ventana
+// de eviction. performance.now() da microsegundos confiables.
+let textureCacheEvictionWindow = performance.now();
 
 // Store global para recompensas de cubos minados
 const minedRewardsStore = new MinedCubesRewardStore();
 
 // Geometría compartida para todos los number meshes (evita crear/destruir PlaneGeometry cada frame)
 const sharedNumberPlaneGeo = new THREE.PlaneGeometry(0.8, 0.8);
+sharedNumberPlaneGeo.userData = { shared: true };
+
+// [5] Audit gráfico 2026-06-23+: geometry pooling para reducir VRAM redundante.
+// Las 6 caras de cada capa K crean la misma BoxGeometry (0.88×0.88×0.01) y
+// los mined patches crean la misma PlaneGeometry (0.88×0.88). Compartiéndolas
+// a module-level: ahorramos ~15-25MB en K=100 (con ~242k InstancedMesh data
+// + ~hundreds de mined patches). El cleanup loop (buildLayer) skipea dispose
+// si userData.shared === true.
+const sharedCubeGeometry = new THREE.BoxGeometry(0.88, 0.88, 0.01);
+sharedCubeGeometry.userData = { shared: true };
+const sharedMinedPatchGeo = new THREE.PlaneGeometry(0.88, 0.88);
+sharedMinedPatchGeo.userData = { shared: true };
 // CRIT-12: marcamos la geometría como compartida para que ni el cleanup
 // per-layer en buildLayer ni el cleanup global del unmount la disponga.
 sharedNumberPlaneGeo.userData = { shared: true };
@@ -205,17 +298,18 @@ function createNumberTexture(number, options = {}) {
   const safeNumber = String(Math.floor(Math.abs(number))); // Asegurar string vÃƒÂ¡lido
   const cacheKey = `${safeNumber}_${!!options.transparentBackground}_${JSON.stringify(options.digitColor || [0,0,0,255])}`;
   if (textureCache.has(cacheKey)) {
-    // MEDIO-27: LRU real — mover al final del orden cuando hay hit.
-    // Antes el array era FIFO simple y las texturas más usadas podían ser
-    // evictadas tan pronto como las nuevas. Ahora "usar" = renovar.
-    const idx = textureCacheOrder.indexOf(cacheKey);
-    if (idx >= 0 && idx !== textureCacheOrder.length - 1) {
-      textureCacheOrder.splice(idx, 1);
-      textureCacheOrder.push(cacheKey);
-    }
-    return textureCache.get(cacheKey);
+    // v1.3.12: LRU O(1) — delete + set mueve la entry al final del orden
+    // de iteración del Map. Antes hacíamos indexOf O(N) + splice en cada hit.
+    const tex = textureCache.get(cacheKey);
+    textureCache.delete(cacheKey);
+    textureCache.set(cacheKey, tex);
+    return tex;
   }
-  const size = 64;
+  // size 48 (antes 64): cada textura ocupa 44% menos VRAM (~9KB vs 16KB).
+  // No bajamos a 32 porque la fuente es 5×7 con charWidth=6 — un número de
+  // 6 dígitos ocupa 36px y se recortaría. 48px deja margen hasta 8 dígitos
+  // y mantiene NearestFilter perfecto (visualmente idéntico).
+  const size = 48;
   const data = new Uint8Array(size * size * 4);
   const transparentBg = !!options.transparentBackground;
   const digitColor = options.digitColor || [0, 0, 0, 255]; // negro por defecto
@@ -239,16 +333,27 @@ function createNumberTexture(number, options = {}) {
   texture.magFilter = THREE.NearestFilter;
   
   // Guardar en cache con evicción LRU
-  if (textureCache.size >= MAX_TEXTURE_CACHE) {
-    const oldest = textureCacheOrder.shift();
-    if (oldest) {
+  if (textureCache.size >= getMaxTextureCache()) {
+    // v1.3.12: O(1) eviction — la primera key del Map es la más vieja.
+    const oldest = textureCache.keys().next().value;
+    if (oldest != null) {
       const old = textureCache.get(oldest);
       if (old && old.dispose) old.dispose();
       textureCache.delete(oldest);
+      // [2] Audit gráfico 2026-06-23+: trackear eviction rate. Si supera
+      // 50/seg sustained, log warning (síntoma de cache thrashing).
+      textureCacheEvictionCount += 1;
+      const nowEv = performance.now();
+      if (nowEv - textureCacheEvictionWindow >= 1000) {
+        if (textureCacheEvictionCount > 50) {
+          console.warn(`[gfx] texture cache thrashing: ${textureCacheEvictionCount} evictions/sec`);
+        }
+        textureCacheEvictionCount = 0;
+        textureCacheEvictionWindow = nowEv;
+      }
     }
   }
   textureCache.set(cacheKey, texture);
-  textureCacheOrder.push(cacheKey);
   return texture;
 }
 
@@ -297,17 +402,19 @@ function setMinedCubeColor(faceIndex, gridX, gridY, faceGroupsRef) {
     let instanced = null;
     let indexByGrid = null;
     const simpleRoot = faceGroupEntry.userData?.simpleMesh || faceGroupEntry.simpleMesh;
-    if (simpleRoot && simpleRoot.traverse) {
+    // v1.3.12: ref directa a cubesMesh (almacenada en createFaceInstancesForLayer).
+    // Fallback a traversal/children[1] solo si la ref no existe (compat con
+    // faceGroups viejos durante una transición de capa).
+    let cubesMesh = simpleRoot?.userData?.cubesMesh || null;
+    if (!cubesMesh && simpleRoot && simpleRoot.traverse) {
       simpleRoot.traverse((o) => {
-        if (o.isInstancedMesh) instanced = o;
+        if (o.isInstancedMesh && !cubesMesh) cubesMesh = o;
       });
     }
-    // Intentar leer indexByGrid del mesh de cubos (hijo [1])
-    try {
-      const cubesMesh = faceGroupEntry.userData?.simpleMesh?.children?.[1] || faceGroupEntry.children?.[1]?.children?.[1];
-      if (cubesMesh?.userData?.indexByGrid) indexByGrid = cubesMesh.userData.indexByGrid;
-      if (!instanced && cubesMesh?.isInstancedMesh) instanced = cubesMesh;
-    } catch {}
+    if (cubesMesh) {
+      if (cubesMesh.userData?.indexByGrid) indexByGrid = cubesMesh.userData.indexByGrid;
+      if (cubesMesh.isInstancedMesh) instanced = cubesMesh;
+    }
     if (!instanced) return;
     let idx = -1;
     if (indexByGrid) {
@@ -592,111 +699,261 @@ function findCubeAtScreenPosition(screenX, screenY, camera, scene, screenWidth, 
 
 // Sistema de animaciÃƒÂ³n de minado
 function createCrackGeometry(position, faceNormal) {
-  // Grietas tipo roca. Cada camino completo se convierte en UN solo LineSegments
-  // (en lugar de uno por par de puntos) → reduce draw calls de ~70 a ~5.
+  // Grietas tipo roca real: nacen de UN punto de impacto y se ramifican
+  // radialmente, con sub-ramas que se separan de cada rama principal.
+  // Cada path completo es un único LineSegments para minimizar draw calls.
   const segs = [];
   const faceSize = 1.0;
+  const half = faceSize / 2;
   const n = faceNormal.clone().normalize();
   const upRef = Math.abs(n.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
   const right = upRef.clone().cross(n).normalize();
   const up = n.clone().cross(right).normalize();
   const offsetN = 0.002;
 
-  const jitter = (s) => (Math.random() - 0.5) * s;
+  // EPICENTROS: 2-4 puntos de impacto distribuidos en distintas zonas de la
+  // cara, apareciendo desincronizados a lo largo de los ~3.2s del sonido.
+  // Cada epicentro genera su propio set de ramas radiales → la grieta total
+  // abarca más superficie del cubo, no queda concentrada en un solo punto.
+  // Para evitar que se encimen, se eligen celdas distintas de una grilla 3x3.
+  const GRID_CELLS = [
+    { x: -0.25, y:  0.25 }, { x: 0, y:  0.25 }, { x: 0.25, y:  0.25 },
+    { x: -0.25, y:  0.00 }, { x: 0, y:  0.00 }, { x: 0.25, y:  0.00 },
+    { x: -0.25, y: -0.25 }, { x: 0, y: -0.25 }, { x: 0.25, y: -0.25 },
+  ];
+  // Shuffle (Fisher-Yates) para tomar celdas únicas al azar
+  for (let s = GRID_CELLS.length - 1; s > 0; s--) {
+    const r = Math.floor(Math.random() * (s + 1));
+    const tmp = GRID_CELLS[s]; GRID_CELLS[s] = GRID_CELLS[r]; GRID_CELLS[r] = tmp;
+  }
+  const epicenterCount = 2 + Math.floor(Math.random() * 3); // 2..4
+  const epicenters = [];
+  for (let e = 0; e < epicenterCount; e++) {
+    const cell = GRID_CELLS[e];
+    const jx = (Math.random() - 0.5) * 0.10;
+    const jy = (Math.random() - 0.5) * 0.10;
+    const origin = new THREE.Vector2(cell.x + jx, cell.y + jy);
+    let appearAt;
+    if (e === 0) {
+      appearAt = 0;
+    } else {
+      // Gap aleatorio entre epicentros: 450..900ms desde el anterior.
+      // Mantenemos el último epicentro <= 2400ms para que su rama más larga
+      // alcance a extenderse dentro del ~3.2s total del sonido.
+      const gap = 450 + Math.random() * 450;
+      appearAt = Math.min(epicenters[e - 1].appearAt + gap, 2400);
+    }
+    epicenters.push({ origin, appearAt });
+  }
 
-  const makePath = (fromEdge) => {
-    const pts = [];
-    const steps = 8; // reducido de 16 → menos vértices, misma apariencia en mobile
-    const half = faceSize / 2;
-    let x = fromEdge === 'L' ? -half : fromEdge === 'R' ? half : (Math.random() * faceSize - half);
-    let y = fromEdge === 'T' ? half : fromEdge === 'B' ? -half : (Math.random() * faceSize - half);
-    for (let i = 0; i <= steps; i++) {
-      const tx = fromEdge === 'L' ? half : fromEdge === 'R' ? -half : (Math.random() * faceSize - half);
-      const ty = fromEdge === 'T' ? -half : fromEdge === 'B' ? half : (Math.random() * faceSize - half);
-      x = THREE.MathUtils.damp(x, tx, 5.5, 0.016) + jitter(0.06);
-      y = THREE.MathUtils.damp(y, ty, 5.5, 0.016) + jitter(0.06);
-      pts.push(new THREE.Vector2(x, y));
+  // Random walk con sesgo direccional. Empieza en un punto, avanza en una
+  // dirección aproximada hasta agotar la longitud o chocar contra el borde.
+  const walkBranch = (startPt, baseAngle, length, angleJitterPerStep) => {
+    const pts = [startPt.clone()];
+    const steps = Math.max(4, Math.floor(length * 14));
+    const stepSize = length / steps;
+    let angle = baseAngle;
+    let cx = startPt.x;
+    let cy = startPt.y;
+    for (let i = 0; i < steps; i++) {
+      angle += (Math.random() - 0.5) * angleJitterPerStep;
+      const nx = cx + Math.cos(angle) * stepSize;
+      const ny = cy + Math.sin(angle) * stepSize;
+      const clampedX = THREE.MathUtils.clamp(nx, -half, half);
+      const clampedY = THREE.MathUtils.clamp(ny, -half, half);
+      cx = clampedX;
+      cy = clampedY;
+      pts.push(new THREE.Vector2(cx, cy));
+      // Cortar si chocó contra un borde de la cara
+      if (clampedX !== nx || clampedY !== ny) break;
     }
     return pts;
   };
 
-  // Convertir un array de Vector2 en un único LineSegments (pares p[i-1]→p[i])
-  const pathToLineSegments = (path, delay) => {
+  // Convertir un path en LineSegments. Grosor "2px" = 2 líneas paralelas
+  // con offset perpendicular ±0.003 dentro del plano (el original era 1 línea).
+  // Los vertices se ordenan POR STEP (no por offset) para que setDrawRange()
+  // pueda revelar la grieta progresivamente desde el origen hacia el extremo.
+  const CRACK_HALF_THICKNESS = 0.003;
+  const THICK_OFFSETS = [-CRACK_HALF_THICKNESS, CRACK_HALF_THICKNESS];
+  const VERTS_PER_STEP = THICK_OFFSETS.length * 2; // 2 offsets × 2 vertices/segmento = 4
+  const pathToLineSegments = (path, delay, growDuration) => {
     const verts = [];
     for (let i = 1; i < path.length; i++) {
       const p0 = path[i - 1];
       const p1 = path[i];
-      verts.push(
-        position.clone().add(right.clone().multiplyScalar(p0.x)).add(up.clone().multiplyScalar(p0.y)).add(n.clone().multiplyScalar(offsetN)),
-        position.clone().add(right.clone().multiplyScalar(p1.x)).add(up.clone().multiplyScalar(p1.y)).add(n.clone().multiplyScalar(offsetN))
-      );
+      const dx2 = p1.x - p0.x;
+      const dy2 = p1.y - p0.y;
+      const segLen = Math.hypot(dx2, dy2) || 1;
+      const perpX = -dy2 / segLen;
+      const perpY = dx2 / segLen;
+      for (let k = 0; k < THICK_OFFSETS.length; k++) {
+        const off = THICK_OFFSETS[k];
+        const ox = perpX * off;
+        const oy = perpY * off;
+        verts.push(
+          position.clone().add(right.clone().multiplyScalar(p0.x + ox)).add(up.clone().multiplyScalar(p0.y + oy)).add(n.clone().multiplyScalar(offsetN)),
+          position.clone().add(right.clone().multiplyScalar(p1.x + ox)).add(up.clone().multiplyScalar(p1.y + oy)).add(n.clone().multiplyScalar(offsetN))
+        );
+      }
     }
     if (!verts.length) return null;
     const geo = new THREE.BufferGeometry().setFromPoints(verts);
-    const mat = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.0, depthWrite: false, depthTest: false });
+    // Empezar con 0 segmentos visibles; showCracksAnimation va a expandir
+    // setDrawRange progresivamente hasta verts.length.
+    geo.setDrawRange(0, 0);
+    const mat = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2, transparent: true, opacity: 0.0, depthWrite: false, depthTest: false });
     const line = new THREE.LineSegments(geo, mat);
     line.renderOrder = 10000;
-    line.userData = { delay };
+    line.userData = {
+      delay,
+      growDuration,
+      totalVerts: verts.length,
+      vertsPerStep: VERTS_PER_STEP,
+    };
     return line;
   };
 
-  const mainCount = 2 + Math.floor(Math.random() * 2); // 2-3 caminos (antes 3-4)
-  const edges = ['L', 'R', 'T', 'B'];
-  for (let i = 0; i < mainCount; i++) {
-    const path = makePath(edges[(Math.random() * 4) | 0]);
-    const line = pathToLineSegments(path, i * 60);
-    if (line) segs.push(line);
+  // Velocidad de propagación por step. Calibrado para que la animación total
+  // (epicentros desincronizados + ramas + sub-ramas) dure ~3.2s, igual que el
+  // sonido de rotura. Rama típica de 12 steps → 12 * 75 = 900ms; último
+  // epicentro a 2400ms + 900ms = 3300ms, espacio ajustado para terminar a 3.2s.
+  const SPEED_MS_PER_STEP = 75;
 
-    // Una ramificación por camino (15% prob), también como LineSegments único
-    if (Math.random() < 0.15 && path.length >= 4) {
-      const mid = Math.floor(path.length / 2);
-      const p0 = path[mid];
-      const p1 = path[mid + 1];
-      const dir = new THREE.Vector2().subVectors(p1, p0);
-      const side = Math.random() < 0.5 ? 1 : -1;
-      const branch = new THREE.Vector2(-dir.y, dir.x).setLength(dir.length() * (0.4 + Math.random() * 0.3) * side);
-      const q = new THREE.Vector2().addVectors(p0.clone().lerp(p1, 0.5), branch);
-      const branchPath = [p0.clone().lerp(p1, 0.5), q];
-      const bl = pathToLineSegments(branchPath, i * 60 + 30);
-      if (bl) segs.push(bl);
+  // Para cada epicentro: 2-4 ramas radiales, cada una con posible sub-rama.
+  epicenters.forEach((epi) => {
+    const branchCount = 2 + Math.floor(Math.random() * 3); // 2..4
+    const angleStep = (Math.PI * 2) / branchCount;
+    const angleJitterMain = angleStep * 0.4;
+    for (let i = 0; i < branchCount; i++) {
+      const baseAngle = i * angleStep + Math.random() * Math.PI * 2 / branchCount + (Math.random() - 0.5) * angleJitterMain;
+      const length = 0.30 + Math.random() * 0.40; // 0.30..0.70 unidades
+      const path = walkBranch(epi.origin, baseAngle, length, 0.45);
+      if (path.length < 2) continue;
+      const mainDelay = epi.appearAt + i * 60; // escalonar ramas del mismo epicentro
+      const mainGrowDuration = (path.length - 1) * SPEED_MS_PER_STEP;
+      const line = pathToLineSegments(path, mainDelay, mainGrowDuration);
+      if (line) segs.push(line);
+
+      // Sub-ramificaciones: 1-2 por rama principal, con 55% de probabilidad
+      if (Math.random() < 0.55 && path.length >= 4) {
+        const subBranchCount = 1 + (Math.random() < 0.4 ? 1 : 0);
+        for (let j = 0; j < subBranchCount; j++) {
+          // Punto a 30%-80% del recorrido (cuerpo de la grieta, no extremos)
+          const idx = Math.max(1, Math.min(path.length - 1, Math.floor(path.length * (0.3 + Math.random() * 0.5))));
+          const startPt = path[idx];
+          const prev = path[idx - 1];
+          const baseDir = Math.atan2(startPt.y - prev.y, startPt.x - prev.x);
+          const side = Math.random() < 0.5 ? 1 : -1;
+          const deviation = (0.5 + Math.random() * 0.7) * side; // 0.5..1.2 rad off main
+          const subLength = 0.12 + Math.random() * 0.22;
+          const subPath = walkBranch(startPt, baseDir + deviation, subLength, 0.55);
+          if (subPath.length < 2) continue;
+          const branchFraction = idx / (path.length - 1);
+          const subDelay = mainDelay + branchFraction * mainGrowDuration + 50;
+          const subGrowDuration = (subPath.length - 1) * SPEED_MS_PER_STEP;
+          const subLine = pathToLineSegments(subPath, subDelay, subGrowDuration);
+          if (subLine) segs.push(subLine);
+        }
+      }
     }
-  }
+  });
   return segs;
 }
 
 function createFragments(position, faceNormal, cubeSize = 1.0) {
   const fragments = [];
-  // Reducir fragmentos en pantallas pequeÃƒÂ±as para evitar presiÃƒÂ³n de GPU/driver mÃƒÂ³vil
-  const smallScreen = (screenWidth * screenHeight) <= (1080 * 1920 * 0.75);
-  const fragmentsPerSide = smallScreen ? 4 : 6; // 4x4=16 en low/med, 6x6=36 en high
+  const fragmentsPerSide = 4;
   const fragmentSize = cubeSize / fragmentsPerSide;
-  
+
   try {
     for (let x = 0; x < fragmentsPerSide; x++) {
       for (let y = 0; y < fragmentsPerSide; y++) {
-        const geometry = new THREE.BoxGeometry(
-          fragmentSize * 0.9,
-          fragmentSize * 0.9,
-          fragmentSize * 0.3
-        );
-        // Material bÃƒÂ¡sico con transparencia real habilitada (se modifica opacity durante la animaciÃƒÂ³n)
-        const material = new THREE.MeshBasicMaterial({ 
-          color: 0xffffff, 
-          transparent: true, 
-          opacity: 1.0, 
-          depthWrite: false 
+        // Tamaño base random por pieza: variabilidad ±15% para que no
+        // todas sean iguales — algunas más grandes, otras más chicas.
+        const sizeJitter = 0.85 + Math.random() * 0.30;
+        const sx = fragmentSize * 0.9 * sizeJitter;
+        const sy = fragmentSize * 0.9 * sizeJitter;
+        const sz = fragmentSize * 0.6 * sizeJitter;
+        const geometry = new THREE.BoxGeometry(sx, sy, sz);
+
+        // Deformación de vértices: cada uno de los 8 corners del box recibe
+        // un offset random de ±12% del tamaño → forma irregular tipo roca
+        // rota. EdgesGeometry hereda automáticamente la deformación.
+        try {
+          const pos = geometry.attributes.position;
+          const dispMax = Math.min(sx, sy, sz) * 0.18;
+          // Agrupar vértices por posición (BoxGeometry repite vertices por cara,
+          // necesitamos que los duplicados en el mismo corner se muevan juntos).
+          const cornerMap = new Map();
+          const KEY = (x_, y_, z_) =>
+            `${x_.toFixed(3)}|${y_.toFixed(3)}|${z_.toFixed(3)}`;
+          for (let i = 0; i < pos.count; i++) {
+            const k = KEY(pos.getX(i), pos.getY(i), pos.getZ(i));
+            if (!cornerMap.has(k)) {
+              cornerMap.set(k, {
+                dx: (Math.random() - 0.5) * 2 * dispMax,
+                dy: (Math.random() - 0.5) * 2 * dispMax,
+                dz: (Math.random() - 0.5) * 2 * dispMax,
+              });
+            }
+          }
+          for (let i = 0; i < pos.count; i++) {
+            const k = KEY(pos.getX(i), pos.getY(i), pos.getZ(i));
+            const d = cornerMap.get(k);
+            if (d) {
+              pos.setXYZ(i, pos.getX(i) + d.dx, pos.getY(i) + d.dy, pos.getZ(i) + d.dz);
+            }
+          }
+          pos.needsUpdate = true;
+          geometry.computeVertexNormals();
+        } catch (deformError) {
+          console.warn('Error deforming fragment:', deformError.message);
+        }
+
+        const material = new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 1.0,
+          depthWrite: false,
+          // depthTest: false → fragmento siempre visible encima del parche
+          // oscuro y de los cubitos blancos, sin importar la posición Z.
+          // Es lo único que garantiza visibilidad inmediata en el primer frame.
+          depthTest: false,
         });
         const fragment = new THREE.Mesh(geometry, material);
-        
-        // Contorno negro para mayor contraste - con manejo de errores
+
+        // Contorno negro grueso. WebGL ignora linewidth>1 en muchos drivers,
+        // así que renderizamos los bordes 2 veces con offset perpendicular
+        // chico (mismo truco que las grietas) para forzar grosor visible.
         try {
           const edgeGeom = new THREE.EdgesGeometry(geometry);
-          const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 });
+          const edgeMat = new THREE.LineBasicMaterial({
+            color: 0x000000,
+            linewidth: 3,
+            depthTest: false,
+            depthWrite: false,
+          });
           const edges = new THREE.LineSegments(edgeGeom, edgeMat);
+          // renderOrder por encima del mesh para que los bordes negros se
+          // vean siempre sobre el blanco del fragmento (y sobre todo lo demás).
+          edges.renderOrder = 1000001;
           fragment.add(edges);
+          // 3 capas paralelas con scales 1.03 y 1.06 — un píxel más gruesos
+          // que la versión anterior (que tenía 2 capas: 1.00 + 1.04).
+          // Resultado: stripe negra continua de ~3px de ancho.
+          const edges2 = edges.clone();
+          edges2.scale.setScalar(1.03);
+          edges2.material = edgeMat.clone();
+          edges2.renderOrder = 1000002;
+          fragment.add(edges2);
+          const edges3 = edges.clone();
+          edges3.scale.setScalar(1.06);
+          edges3.material = edgeMat.clone();
+          edges3.renderOrder = 1000003;
+          fragment.add(edges3);
         } catch (edgeError) {
           console.warn('Error creating fragment edges:', edgeError.message);
-          // Continuar sin edges si hay error
         }
         
         const offsetX = (x - fragmentsPerSide / 2 + 0.5) * fragmentSize;
@@ -704,12 +961,38 @@ function createFragments(position, faceNormal, cubeSize = 1.0) {
         fragment.position.copy(position);
         fragment.position.x += offsetX;
         fragment.position.y += offsetY;
-        // Empuje inicial hacia fuera de la cara + ruido
-        const outward = faceNormal.clone().multiplyScalar(0.6 + Math.random() * 1.0);
-        const jitter = new THREE.Vector3((Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6);
+        // Empujar la pieza ligeramente hacia adelante de la cara (en dirección
+        // de la normal) para que NO quede ocluida por el parche oscuro que se
+        // aplica al mismo tiempo. Sin esto, los fragmentos están exactamente
+        // en el plano del cubo original y depthTest los descarta al primer frame.
+        fragment.position.add(faceNormal.clone().multiplyScalar(fragmentSize * 0.55));
+        // renderOrder >1000000 para superar a TODO el resto del cubo:
+        //   parche oscuro      → 9999
+        //   grietas            → 10000
+        //   números/colorCube  → 10001
+        //   sprites (rewards)  → 999999
+        // Los fragmentos son la animación principal de "se rompe el cubo" y
+        // tienen que verse SIEMPRE encima de cualquier otra capa visual.
+        fragment.renderOrder = 1000000;
+        // Velocidades calibradas para 1760ms de animación a 60fps (~106 frames),
+        // 20% más rápido que la versión previa (2200ms). Velocidades 25% más
+        // altas para mantener la misma distancia recorrida en menos tiempo.
+        //   outward 0.031..0.075/frame → 3.3-7.9u recorridos
+        //   jitter ±0.063/frame        → caos lateral leve
+        //   angular ±0.125/frame       → rotación apreciable
+        const outward = faceNormal.clone().multiplyScalar(0.031 + Math.random() * 0.044);
+        const jitter = new THREE.Vector3(
+          (Math.random() - 0.5) * 0.063,
+          (Math.random() - 0.5) * 0.063,
+          (Math.random() - 0.5) * 0.063
+        );
         fragment.userData = {
           velocity: outward.add(jitter),
-          angularVelocity: new THREE.Vector3((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3),
+          angularVelocity: new THREE.Vector3(
+            (Math.random() - 0.5) * 0.125,
+            (Math.random() - 0.5) * 0.125,
+            (Math.random() - 0.5) * 0.125
+          ),
           life: 1.0,
         };
         fragments.push(fragment);
@@ -723,9 +1006,15 @@ function createFragments(position, faceNormal, cubeSize = 1.0) {
   return fragments;
 }
 
-function animateFragments(fragments, scene, duration = 1800, cancelRef = null) {
+function animateFragments(fragments, scene, duration = 1760, cancelRef = null) {
   const startTime = Date.now();
-  const gravity = -0.02;
+  // Gravedad acumulativa calibrada para 1760ms (~106 frames a 60fps):
+  // caída total = sum(0.0016*i for i=1..106) ≈ 9u, equivalente a la versión
+  // anterior pero comprimida en menos tiempo (sensación más fluida).
+  const gravity = -0.0016;
+  // Drag suave por frame: pedazos arrancan rápido y se desaceleran al caer
+  // → sensación más natural que velocidad constante + gravedad acumulativa.
+  const DRAG = 0.985;
 
   return new Promise((resolve) => {
   const cleanup = () => {
@@ -761,16 +1050,27 @@ function animateFragments(fragments, scene, duration = 1800, cancelRef = null) {
         try {
           const userData = fragment.userData;
           if (!userData) return;
+          // Drag horizontal solamente — la gravedad sigue aplicando full
+          // sobre la componente vertical. Esto da el efecto "vuelan, se
+          // frenan y caen" en lugar de "vuelan en línea recta + caen".
+          userData.velocity.x *= DRAG;
+          userData.velocity.z *= DRAG;
           userData.velocity.y += gravity;
           fragment.position.add(userData.velocity);
           fragment.rotation.x += userData.angularVelocity.x;
           fragment.rotation.y += userData.angularVelocity.y;
           fragment.rotation.z += userData.angularVelocity.z;
           userData.life = 1.0 - progress;
+          // Opacity: sólido 100% hasta el 82% del vuelo, fade out solo en
+          // el último 18%. Esto garantiza que los pedazos sean claramente
+          // visibles cayendo durante casi toda la animación.
+          const fadeT = Math.max(0, (progress - 0.82) / 0.18);
           if (fragment.material && fragment.material.opacity !== undefined) {
-            fragment.material.opacity = userData.life;
+            fragment.material.opacity = 1.0 - fadeT;
           }
-          const scale = 0.5 + userData.life * 0.5;
+          // Scale: mantener 1.0 hasta el 85%, encoge solo al final a 0.7.
+          const shrinkT = Math.max(0, (progress - 0.85) / 0.15);
+          const scale = 1.0 - shrinkT * 0.3;
           fragment.scale.setScalar(scale);
         } catch {}
       });
@@ -951,12 +1251,24 @@ function showXAnimation(scene, worldPosition, THREE, color = [220, 40, 40]) {
 
     let t = 0;
     const duration = 0.5;
+    let done = false;
+    // v1.3.12: watchdog. Si scene.remove tira excepción o el RAF nunca se
+    // dispara (app en background), el sprite queda huérfano. Después de
+    // duration+1s forzamos cleanup.
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      try { scene.remove(sprite); } catch {}
+      try { sprite.material.dispose(); } catch {}
+      try { if (sprite.material.map) sprite.material.map.dispose(); } catch {}
+    };
+    const watchdog = setTimeout(cleanup, (duration + 1) * 1000);
     const step = () => {
+      if (done) return;
       t += 0.016;
       if (t >= duration) {
-        scene.remove(sprite);
-        sprite.material.dispose();
-        if (sprite.material.map) sprite.material.map.dispose();
+        clearTimeout(watchdog);
+        cleanup();
         return;
       }
       const progress = t / duration;
@@ -1020,12 +1332,22 @@ function showGemAnimation(scene, worldPosition, THREE, gemDef) {
 
     let t = 0;
     const duration = 0.8;
+    let done = false;
+    // v1.3.12: watchdog idéntico al de showXAnimation.
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      try { scene.remove(sprite); } catch {}
+      try { sprite.material.dispose(); } catch {}
+      try { if (sprite.material.map) sprite.material.map.dispose(); } catch {}
+    };
+    const watchdog = setTimeout(cleanup, (duration + 1) * 1000);
     const step = () => {
+      if (done) return;
       t += 0.016;
       if (t >= duration) {
-        scene.remove(sprite);
-        sprite.material.dispose();
-        if (sprite.material.map) sprite.material.map.dispose();
+        clearTimeout(watchdog);
+        cleanup();
         return;
       }
       const progress = t / duration;
@@ -1140,6 +1462,17 @@ function shellSize(K){
   return 24*K*K + 2;
 }
 
+// Suma acumulada de shellSize(0..K) -- mismo cálculo que shellBelow() usa
+// inline más abajo para asignar el cursor de numeración, pero reusable
+// module-level para el modo Chain (rango de cubeNumber de la capa K:
+// [cumSumDedup(K-1)+1, cumSumDedup(K)]). Coincide con cumSumDedup del
+// backend (functions/helpers.js) -- misma fórmula, dos lados.
+function cumSumDedup(K) {
+  let s = 0;
+  for (let t = 0; t <= K; t++) s += shellSize(t);
+  return s;
+}
+
 // DueÃƒÂ±o ÃƒÂºnico de una celda del shell (evita duplicados en aristas/esquinas)
 function ownerFaceIndex(ix,iy,iz,K){
   if (Math.max(Math.abs(ix),Math.abs(iy),Math.abs(iz)) !== K) return -1;
@@ -1151,6 +1484,22 @@ function ownerFaceIndex(ix,iy,iz,K){
   if (iy === K) return 4;
   if (iy === -K) return 5;
   return -1;
+}
+
+// 2026-06-24: devuelve TODAS las caras donde aparece el cubo (1 si interior,
+// 2 si está en arista, 3 si está en esquina). Antes ownerFaceIndex daba sólo
+// la cara dueña con prioridad — necesario para apiCubeNumber canónico — pero
+// el rendering ahora dibuja el cubo en todas. Faces order matches FACES[].
+function getFacesShowingCube(ix, iy, iz, K) {
+  if (Math.max(Math.abs(ix), Math.abs(iy), Math.abs(iz)) !== K) return [];
+  const faces = [];
+  if (iz === K)  faces.push(0); // front
+  if (iz === -K) faces.push(1); // back
+  if (ix === K)  faces.push(2); // right
+  if (ix === -K) faces.push(3); // left
+  if (iy === K)  faces.push(4); // top
+  if (iy === -K) faces.push(5); // bottom
+  return faces;
 }
 
 // Crear una cara de la capa K con ownership ÃƒÂºnico
@@ -1169,7 +1518,9 @@ function createFaceInstancesForLayer(K, faceIndex){
   backgroundMesh.userData.faceIndex = faceIndex;
   backgroundMesh.userData.kind = 'bg';
 
-  const cubeGeometry = new THREE.BoxGeometry(cubeSize, cubeSize, 0.01);
+  // [5] Audit gráfico 2026-06-23+: reusar sharedCubeGeometry (module-level)
+  // en vez de crear una BoxGeometry nueva por face. cubeSize es 0.88 fijo.
+  const cubeGeometry = sharedCubeGeometry;
   const cubeMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.FrontSide, depthTest: true, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
 
   // Pre-coleccionar posiciones y nÃƒÂºmeros con ownership
@@ -1192,9 +1543,14 @@ function createFaceInstancesForLayer(K, faceIndex){
         case 'top':    iy = K;    ix = a;  iz = -b; break;
         case 'bottom': iy = -K;   ix = a;  iz = b;  break;
       }
-      const owner = ownerFaceIndex(ix,iy,iz,K);
-      if (owner === faceIndex){
-        // posiciÃƒÂ³n local de la celda en la cara
+      // 2026-06-24: cubos de arista/esquina ahora se dibujan en TODAS las caras
+      // donde aparecen (no sólo en la "owner"). Eso elimina las franjas negras
+      // en las aristas. La condición es "está en el shell" (alguna coord ±K).
+      // Para una cara dada, todos los (gx, gy) producen un cubo con la coord
+      // del plano respectivo (iz=K, etc.) ya en ±K, por lo que el cubo siempre
+      // pertenece al shell — la condición sólo descarta combinaciones inválidas.
+      if (Math.max(Math.abs(ix), Math.abs(iy), Math.abs(iz)) === K){
+        // posición local de la celda en la cara
         const x = a * gridSpacing;
         const y = b * gridSpacing;
         positions.push({gx,gy,x,y});
@@ -1244,11 +1600,15 @@ function createFaceInstancesForLayer(K, faceIndex){
   const faceRoot = new THREE.Group();
   faceRoot.add(backgroundMesh);
   faceRoot.add(cubesMesh);
+  // v1.3.12: referencia directa al cubesMesh para evitar acceso vía
+  // children[1] mágico en setMinedCubeColor / addDarkPatch / etc.
+  faceRoot.userData.cubesMesh = cubesMesh;
+  faceRoot.userData.backgroundMesh = backgroundMesh;
   return { simpleMesh: faceRoot, borderMesh: new THREE.Group(), createDetailedMesh: () => [], faceIndex };
 }
 
 // Agregar parche gris oscuro en la celda minada (cara local)
-function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0) {
+function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0, skipRewardIndicator = false) {
   try {
     const faceGroupEntry = faceGroupsRef.current?.[faceIndex];
     if (!faceGroupEntry) {
@@ -1258,7 +1618,9 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
     const zOffsetCubes = 0.4;
     const a = gridX - K;
     const b = gridY - K;
-    const planeGeo = new THREE.PlaneGeometry(cubeSize, cubeSize);
+    // [5] Audit gráfico 2026-06-23+: shared geo para evitar miles de
+    // PlaneGeometry idénticas en capas con muchas celdas minadas.
+    const planeGeo = sharedMinedPatchGeo;
     // Render overlay fully on top of the cube face to cover it completely
     const mat = new THREE.MeshBasicMaterial({ color: 0x333333, side: THREE.FrontSide, depthTest: false, depthWrite: false, transparent: true, opacity: 1.0 });
     const patch = new THREE.Mesh(planeGeo, mat);
@@ -1274,7 +1636,10 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
     // Crear sprite del nÃƒÂºmero en gris y guardarlo para control de visibilidad en el render loop
     try {
       // localizar el InstancedMesh para obtener el nÃƒÂºmero de esta celda
-      const cubesMesh = faceGroupEntry.userData?.simpleMesh?.children?.[1] || faceGroupEntry.children?.[1]?.children?.[1] || null;
+      const cubesMesh = faceGroupEntry.userData?.simpleMesh?.userData?.cubesMesh
+                     || faceGroupEntry.userData?.simpleMesh?.children?.[1]
+                     || faceGroupEntry.children?.[1]?.children?.[1]
+                     || null;
       if (cubesMesh && cubesMesh.userData) {
         const GRID_SIZE = cubesMesh.userData.GRID_SIZE || (2 * K + 1);
         const indexByGrid = cubesMesh.userData.indexByGrid;
@@ -1324,7 +1689,10 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
         }
         
         // SIEMPRE CREAR INDICADOR DE RECOMPENSA (X o picos) - FUERA del if del número
-        try {
+        // Modo Chain: no hay gemas/premios por cubo individual (solo aporte
+        // al pool vía placeCube) -- omitir el sprite por completo, ni
+        // siquiera la "X" de sin-recompensa tiene sentido acá.
+        if (!skipRewardIndicator) try {
           const rewardSprite = createRewardIndicatorSprite(
             rewardPicks,
             new THREE.Vector3(a, b - 0.25, zOffsetCubes + 0.012),
@@ -1347,13 +1715,154 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
   }
 }
 
-export default function DynamicCube201() {
+export default function DynamicCube201({ chainMode = false, onExitChain } = {}) {
   const navigation = useNavigation && typeof useNavigation === 'function' ? useNavigation() : null;
   const { t, language } = useI18n();
   const { openModal } = useOverlayModals ? useOverlayModals() : { openModal: () => {} };
-  const { activeServer } = useServer ? useServer() : { activeServer: null };
+  const { activeServer: contextActiveServer } = useServer ? useServer() : { activeServer: null };
+  // Modo Chain (blockchain invertido, 2026-07-05): no hay doc real en
+  // `servers/{id}` -- el estado viene de callGetChainBlockchainStatus() y se
+  // empaqueta con la MISMA forma que activeServer para no tener que tocar
+  // los ~12 usos existentes de esa variable en el resto del componente.
+  const [chainSyntheticServer, setChainSyntheticServer] = useState(null);
+  const activeServer = chainMode ? chainSyntheticServer : contextActiveServer;
+  const [chainStatus, setChainStatus] = useState(null); // status completo (picks, pool, rate, streak) -- activeServer solo copia currentLayer/config
+  const [showChainClaimModal, setShowChainClaimModal] = useState(false);
+  const [claimingChainPick, setClaimingChainPick] = useState(false);
   const { showAlert, AlertComponent } = useAppAlert();
-  const serverId = activeServer?.id || null;
+  const serverId = chainMode ? 'chain-main' : (activeServer?.id || null);
+
+  // Modo Chain: el identificador operacional (usado para minedCubes.has() y
+  // para llamar a la API) es el número canónico dedup (obj.cubeNumber), no
+  // apiCubeNumber/faceGridToCubeNumber -- ese esquema asume FACE_GRID_SIZE
+  // fijo basado en CURRENT_ECON_LAYER=100 y no escala a K>100 (Chain llega
+  // a 250). En modo server, comportamiento IDÉNTICO a antes.
+  const resolveApiId = useCallback((obj) => {
+    if (!obj) return null;
+    if (chainMode) return obj.cubeNumber ?? null;
+    return obj.apiCubeNumber || faceGridToCubeNumber(obj.faceIndex, obj.gridX, obj.gridY);
+  }, [chainMode]);
+
+  // Cambio 9: mecánica estándar en ambos modos -- minedCubes.has(apiId)
+  // siempre significa "ya minado" (server y chain). Se mantiene como helper
+  // (no inline) porque hay ~6 puntos de selección/interacción que lo usan.
+  const isCellAvailable = useCallback((apiId) => {
+    if (apiId == null) return false;
+    return !minedCubes.has(apiId);
+  }, [minedCubes]);
+
+  // Refresca el status de Chain contra el backend y lo empaqueta como
+  // "activeServer" sintético. Se llama al montar, tras cada placeCube propio,
+  // y cuando el listener de blockchainState/main detecta currentLayer
+  // adelantado por OTRO usuario (evita quedar colocando contra una capa ya
+  // cerrada).
+  // transitionToLayerRef: se puebla más abajo (transitionToLayer se declara
+  // después por las mismas razones de TDZ que showHudToast/recomputeFaceRanges).
+  // Cambio 9: mecánica estándar -- el cubo tiene tamaño FIJO (BLOCKCHAIN_LAYER_COUNT,
+  // igual que servers usan su layerCount fijo), ya no crece con el tiempo.
+  const transitionToLayerRef = useRef(null);
+  const refreshChainStatus = useCallback(async () => {
+    if (!chainMode) return;
+    try {
+      const data = await callGetChainBlockchainStatus();
+      setChainStatus(data);
+      // El valor ya viene correcto para la capa vigente (el backend lo
+      // resetea a 0 cuando layerComplete) -- no hace falta un listener
+      // separado de "mined count" como en servers (blockchainState/main no
+      // tiene la colección layers/{K} de servers).
+      setLayerMinedCount(data.placedInCurrentLayer || 0);
+      setChainSyntheticServer({
+        id: 'chain-main',
+        chainId: 'chain-main',
+        currentLayer: data.currentLayer,
+        config: { layerCount: data.layerCount, isChain: true },
+        name: data.name,
+      });
+      // Si ya está montado y el backend reporta una capa distinta a la que
+      // tenemos localmente (propio placeCube con layerComplete, u otro
+      // usuario que la completó primero), transicionar con el mismo
+      // mecanismo que servers -- no reconstruir a mano.
+      if (chainMountedRef.current && data.currentLayer !== currentLayerRef.current && transitionToLayerRef.current) {
+        transitionToLayerRef.current(data.currentLayer);
+      }
+    } catch (e) {
+      console.warn('refreshChainStatus error', e && e.message);
+    }
+  }, [chainMode]);
+
+  const onClaimChainPick = useCallback(async (token) => {
+    setClaimingChainPick(true);
+    try {
+      await callClaimChainPick(token);
+      await refreshChainStatus();
+      setShowChainClaimModal(false);
+    } catch (e) {
+      const code = e?.code || '';
+      if (code.endsWith('failed-precondition')) {
+        showAlert(t('chain.errorTitle'), t('chain.pickNotReadyBody'));
+      } else {
+        showAlert(t('chain.errorTitle'), t('chain.errorClaimPick'));
+      }
+    } finally {
+      setClaimingChainPick(false);
+    }
+  }, [refreshChainStatus, showAlert, t]);
+
+  useEffect(() => {
+    if (!chainMode) return;
+    refreshChainStatus();
+  }, [chainMode, refreshChainStatus]);
+
+  // Cambio 11 (2026-07-05): botón/gesto de "atrás" dentro del cubo de Chain
+  // vuelve a la lista de Chain (onExitChain) en vez de propagarse y
+  // minimizar la app. Se registra DESPUÉS que el listener equivalente de
+  // ServerList (que vuelve de la lista de Chain a Servers) porque este
+  // componente está más adentro en el árbol -- BackHandler en RN consulta
+  // los listeners en orden LIFO, así que este intercepta primero.
+  useEffect(() => {
+    if (!chainMode || !onExitChain) return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onExitChain();
+      return true;
+    });
+    return () => sub.remove();
+  }, [chainMode, onExitChain]);
+
+  // Listener liviano solo para detectar avances de capa de OTROS usuarios
+  // (blockchainState/main.currentLayer). No sustituye refreshChainStatus
+  // (picks/streak/rate son por-usuario, no viven en este doc compartido).
+  const lastKnownLayerRef = useRef(null);
+  useEffect(() => {
+    if (!chainMode) return;
+    const unsub = onSnapshot(doc(db, 'blockchainState', 'main'), (snap) => {
+      if (!snap.exists()) return;
+      const remoteLayer = snap.data().currentLayer;
+      if (lastKnownLayerRef.current == null) {
+        lastKnownLayerRef.current = remoteLayer;
+        return;
+      }
+      if (remoteLayer !== lastKnownLayerRef.current) {
+        lastKnownLayerRef.current = remoteLayer;
+        refreshChainStatus();
+      }
+    }, () => {});
+    return () => unsub();
+  }, [chainMode, refreshChainStatus]);
+  // Cambio 2/3 (server Free / a medida): la capa inicial ya no es siempre 100.
+  // Varias calibraciones de cámara (distancia a la superficie externa) se
+  // escriben como "100 + offset" -- acá generalizamos la base a la capa
+  // inicial real del server activo, preservando exactamente el comportamiento
+  // actual cuando layerCount es 100 (o no hay config, servers estándar).
+  // chainMode: mismo motivo que el fallback de currentLayer arriba -- antes
+  // de que refreshChainStatus() resuelva, activeServer es null y este
+  // fallback caía en CURRENT_ECON_LAYER=100, calibrando cámara/zoom para un
+  // cubo de radio 100 cuando el real (K=0) es casi un punto.
+  const startK = activeServer?.config?.layerCount || (chainMode ? CHAIN_LAYER_COUNT : CURRENT_ECON_LAYER);
+  // Ref-shadow (mismo patrón que camStateRef/cameraModeRef en este archivo)
+  // para poder leer el valor fresco dentro de useCallbacks con deps [] sin
+  // forzar su recreación en cada cambio de activeServer.
+  const startKRef = useRef(startK);
+  useEffect(() => { startKRef.current = startK; }, [startK]);
   const glRef = useRef(null);
   const rendererRef = useRef(null);
   const sceneRef = useRef(null);
@@ -1365,11 +1874,31 @@ export default function DynamicCube201() {
   // programado por RAF pero se saltea `renderer.render()`. Esto preserva el
   // estado de la cámara/escena para reanudar sin reinicializar.
   const renderPausedRef = useRef(false);
+  const contextLostHandledRef = useRef(false);
+  const buildingLayerRef = useRef(false);
+  // v1.3.19: state acompaña al ref para poder mostrar el loading overlay.
+  // Arranca en true porque al mount el buildLayer todavía no terminó.
+  const [isBuildingLayer, setIsBuildingLayer] = useState(true);
+  // Cambio 5 (compliance anuncios, 2026-07-03): banner pasivo solo en la
+  // carga INICIAL del cubo (al entrar a la pantalla), no en cada transición
+  // de capa completa (transitionToLayer -- evento raro, community-paced,
+  // pero igual no es "entrar al cubo"). initialCubeLoadRef se apaga después
+  // del primer buildLayer y nunca se vuelve a prender.
+  const initialCubeLoadRef = useRef(true);
+  const [showEntryBanner, setShowEntryBanner] = useState(true);
+  const buildStartRef = useRef(0);
+  // Cola incremental de rawN para pre-cargar texturas en background. Se llena
+  // cuando el viewport cambia y se vacía en cada frame del render loop con
+  // un budget de tiempo, sólo cuando NO hay gesto activo.
+  const lookaheadQueueRef = useRef({ list: [], seen: new Set() });
   // PERF-001: timestamp de la última interacción (touch/pan/pinch/animaciones).
   // El render loop usa esto para bajar el FPS cuando el user está inactivo.
   const lastActivityRef = useRef(Date.now());
   const markActive = () => { lastActivityRef.current = performance.now(); };
   const faceGroupsRef = useRef([]);
+  // Modo Chain: mapa número canónico dedup -> posiciones {faceIndex,gridX,gridY}
+  // donde aparece (ver bloque de asignación de cursor más abajo).
+  const numberToPositionsRef = useRef(new Map());
 
   // Sincroniza tamaños de renderer/cámara/viewport usando drawingBuffer (YA escalado por expo-gl)
   const syncRendererSize = useCallback(() => {
@@ -1425,10 +1954,12 @@ const gridExitTimerRef = useRef(null);
 const handleZoomButton = useCallback((direction) => {
   const isZoomOut = direction === -1;
   if (isZoomOut && cameraModeRef.current === 'grid') {
-    // Umbral donde termina el modo grilla (tempDist=dist-100 <= 255.2 → dist <= 355.2)
-    const GRID_EXIT_THRESHOLD = 355.2;
+    // Umbral donde termina el modo grilla (tempDist=dist-startK <= 255.2 → dist <= startK+255.2).
+    // Con startK=100 (server estándar) da 355.2, igual que antes.
+    const GRID_EXIT_THRESHOLD = startKRef.current + 255.2;
     const currentDist = camStateRef.current?.distance ?? 300;
-    const step = currentDist < 150 ? 5 : 25;
+    // Mismo fix de escala que en el resto de handleZoomButton (ver más abajo).
+    const step = currentDist < startKRef.current + 50 ? 5 : 25;
     const nextDist = currentDist + step;
 
     if (nextDist >= GRID_EXIT_THRESHOLD) {
@@ -1448,8 +1979,8 @@ const handleZoomButton = useCallback((direction) => {
         requestedFaceRef.current = null;
         resetFaceDetection();
         setCamState((prev) => {
-          const jumpOut = Math.max(prev.distance + 100, 350);
-          return { ...prev, distance: THREE.MathUtils.clamp(jumpOut, 106.6, 3000) };
+          const jumpOut = Math.max(prev.distance + startKRef.current, 350);
+          return { ...prev, distance: THREE.MathUtils.clamp(jumpOut, startKRef.current + 6.6, 3000) };
         });
       } else {
         // Primer press: mostrar hint
@@ -1467,16 +1998,35 @@ const handleZoomButton = useCallback((direction) => {
     // No está en el límite → zoom out normal (continúa abajo)
   }
   setCamState((prev) => {
-    const minDist = 106.6;
+    // BUG (server Free, layerCount=150): minDist estaba hardcodeado en 106.6,
+    // que asume startK=100 (106.6 - 100 = 6.6 de margen desde la superficie
+    // del cubo, ver comentario en línea ~2436). Para layerCount=150 esto deja
+    // minDist POR DEBAJO del radio real del cubo (106.6 - 150 = -43.4),
+    // permitiendo que la cámara cruce "adentro" del cubo -- justo donde la
+    // detección de modo grid (que sí escala con startKRef) queda en un
+    // estado inconsistente con este clamp fijo y rebota a zoom lejano.
+    const minDist = startKRef.current + 6.6;
     const maxDist = 3000;
-    const step = prev.distance < 150 ? 5 : 25;
+    // Mismo bug de escala: el umbral de 150 asumía startK=100 (150-100=50 de
+    // margen por encima de la superficie donde todavía conviene el paso
+    // fino). Para layerCount=150 (Free), CUALQUIER distancia cercana ya es
+    // >=156.6, siempre por encima de 150 -- el paso fino (5) nunca se
+    // activaba, todo el rango "cerca" usaba el paso grande (25).
+    const step = prev.distance < startKRef.current + 50 ? 5 : 25;
     const next = THREE.MathUtils.clamp(prev.distance - direction * step, minDist, maxDist);
     return { ...prev, distance: next };
   });
 }, []);
 
   // Capa actual (shell) 0..100; 100 = externa
-  const [currentLayer, setCurrentLayer] = useState(activeServer?.currentLayer ?? 100);
+  // chainMode: activeServer (chainSyntheticServer) todavía es null en el
+  // primer render -- refreshChainStatus() es async y no resolvió todavía.
+  // Caer al fallback de 100 (tamaño de server estándar) haría que
+  // onContextCreate arranque construyendo una capa de 240,002 instancias
+  // para lo que debería ser un solo cubo (K=0), colgando el hilo de JS y
+  // crasheando por OOM antes de que la reconstrucción correcta llegue a
+  // correr. En chainMode el fallback barato es 0 (1 solo cubo).
+  const [currentLayer, setCurrentLayer] = useState(chainMode ? (activeServer?.currentLayer ?? CHAIN_LAYER_COUNT) : (activeServer?.currentLayer ?? 100));
 
   // Keep ref updated
   camStateRef.current = camState;
@@ -1498,11 +2048,19 @@ const handleZoomButton = useCallback((direction) => {
   
   // Estados para sistema de minado
   const [miningModal, setMiningModal] = useState(null); // { cubeNumber, position, screenPos }
+  // Sincronizar miningModalRef con el state para que el panResponder (cuyo
+  // useMemo deps es []) pueda leerlo y bloquear pan mientras está abierto.
+  // Round 2 Agente #5: state `miningAnimations` removido. setMiningAnimations
+  // nunca se llamaba → siempre new Map() vacío. Referencias residuales en el
+  // cleanup del useEffect (línea ~2219) y en el render loop (línea ~3193)
+  // fueron reemplazadas por no-ops / `false` literals.
   const [minedCubes, setMinedCubes] = useState(new Set()); // Cubitos ya minados
   const [rewardModal, setRewardModal] = useState(null); // { title, message, reward }
   const [episodeCompleteModal, setEpisodeCompleteModal] = useState(null); // { episodeNumber, totalMined }
+  useEffect(() => { miningModalRef.current = miningModal; }, [miningModal]);
   
-  const [miningAnimations, setMiningAnimations] = useState(new Map()); // Animaciones activas
+  // Round 2 Agente #5: removido `const [miningAnimations, setMiningAnimations]`
+  // (estado dead — setter nunca se llamaba). Ver comment de arriba.
   const [longPressActive, setLongPressActive] = useState(false); // Indicador visual de long press
   const longPressInitiatedRef = useRef(false); // Flag para bloquear pan durante TODO el proceso de long press
   const visibleNumbersRef = useRef([]); // Números visibles — ref para evitar re-renders en render loop
@@ -1517,6 +2075,8 @@ const handleZoomButton = useCallback((direction) => {
   const [globalMinedCurrentLayer, setGlobalMinedCurrentLayer] = useState(0);
   const [layerMinedCount, setLayerMinedCount] = useState(0); // mined en capa actual
   const [totalMinedAllLayers, setTotalMinedAllLayers] = useState(0); // suma de mined en todas las capas
+  // v1.3.13: cantidad de jugadores que se unieron al server (memberCount)
+  const [serverMemberCount, setServerMemberCount] = useState(0);
   // Menú hamburguesa
   const [menuOpen, setMenuOpen] = useState(false);
   // Modal "Cómo se juega?"
@@ -1547,6 +2107,7 @@ const handleZoomButton = useCallback((direction) => {
   const preHoldTimerRef = useRef(null); // indicador temprano de hold (~300ms)
   const modalTimerRef = useRef(null);
   const longPressStartPos = useRef(null);
+  const prePickedCubeRef = useRef(null); // cache del raycast del confirm para evitar duplicarlo en handleLongPress
   const raycasterRef = useRef(new THREE.Raycaster());
   const buildLayerRef = useRef(null);
   // PosiciÃƒÂ³n del ÃƒÂºltimo toque de 1 dedo para rotaciÃ³n incremental
@@ -1555,7 +2116,7 @@ const handleZoomButton = useCallback((direction) => {
   const gestureZoomingRef = useRef(false);
   // Flag: hay un gesto activo — suspende reconstrucción de número meshes
   const isGesturingRef = useRef(false);
-  const minedByLayerRef = useRef(new Map()); // K -> Set of 'ix,iy,iz'
+  // v1.3.12: minedByLayerRef removido — era dead code, nunca leído ni asignado.
   const minedAppliedRef = useRef(new Set()); // keys: `${faceIndex}:${gridX}:${gridY}` para evitar duplicados
   // Celdas con animaciÃƒÂ³n local en curso para no aplicar parche por realtime antes de tiempo
   const pendingAnimCellsRef = useRef(new Set()); // keys: `${K}:${faceIndex}:${gridX}:${gridY}`
@@ -1570,6 +2131,11 @@ const handleZoomButton = useCallback((direction) => {
   const panVelocityRef = useRef({ x: 0, y: 0 });
   const lastPanMoveTimeRef = useRef(0);
   const inertiaAnimRef = useRef(null);
+  // Velocidad e inercia para rotación (modo cubo / zoom lejano).
+  // Se llena en cada move con smooth exponencial y se consume en release.
+  const rotationVelocityRef = useRef({ x: 0, y: 0 });
+  const lastRotateMoveTimeRef = useRef(0);
+  const rotationInertiaAnimRef = useRef(null);
   // Para dos dedos: recordar el punto medio previo para pan de grilla
   const lastTwoFingerMidRef = useRef(null);
   // Cara activa detectada (para suscripciÃƒÂ³n granular de minados)
@@ -1583,6 +2149,7 @@ const handleZoomButton = useCallback((direction) => {
   const [musicEnabled, setMusicEnabled] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const roturaPlayedRef = useRef(false);
+  const roturaStartTimeRef = useRef(0);
   // Throttle para state updates en render loop
   const lastStateUpdate = useRef(0);
   // Throttle para setCamState durante gestos (~15fps en lugar de 60)
@@ -1603,6 +2170,10 @@ const handleZoomButton = useCallback((direction) => {
   const miningWatchdogRef = useRef(null);
   // Cancelación de animaciones de fragmentos al desmontar
   const fragmentsCancelRef = useRef(false);
+  // miningModalRef: leído por el PanResponder (useMemo con deps vacías) para
+  // bloquear el pan mientras el modal de minado está abierto. Sin esto el
+  // touch en el botón "Sí" se pasa al fondo y mueve el pan del cubo.
+  const miningModalRef = useRef(null);
   // Nombre de usuario cacheado para historial de cadena
   const userDisplayNameRef = useRef('Jugador');
 
@@ -1622,6 +2193,7 @@ const handleZoomButton = useCallback((direction) => {
 
     return () => {
       if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
+      if (rotationInertiaAnimRef.current) { cancelAnimationFrame(rotationInertiaAnimRef.current); rotationInertiaAnimRef.current = null; }
     };
   }, []);
 
@@ -1634,6 +2206,10 @@ const handleZoomButton = useCallback((direction) => {
       if (nextAppState === 'background' || nextAppState === 'inactive') {
         renderPausedRef.current = true;
         audioManager.pauseBackgroundMusic();
+        // v1.3.17: cortar TAMBIÉN los SFX activos (mining, rotura, explosion,
+        // etc.) — antes solo pausábamos la música ambiental y los SFX seguían
+        // sonando 1-2s después de bloquear el celular.
+        try { audioManager.stopAllSfx(); } catch {}
       } else if (nextAppState === 'active') {
         renderPausedRef.current = false;
         audioManager.resumeBackgroundMusic();
@@ -1649,16 +2225,26 @@ const handleZoomButton = useCallback((direction) => {
     };
   }, []);
 
-  // Reset layer when the active server changes (user switches servers)
+  // Reset layer when the active server changes (user switches servers).
+  // Cambio 9: chainMode con mecánica estándar ya no necesita reaccionar a
+  // cada cambio de activeServer.currentLayer acá -- las transiciones de capa
+  // (propias o de otros usuarios) llaman transitionToLayer directamente
+  // (ver refreshChainStatus y el listener de blockchainState/main más abajo),
+  // el mismo mecanismo que usa el juego estándar. Este efecto solo necesita
+  // correr en el MONTAJE inicial de Chain (serverId es fijo 'chain-main', no
+  // cambia con cada capa como sí pasa con serverId en servers).
+  const chainMountedRef = useRef(false);
   useEffect(() => {
+    if (chainMode && chainMountedRef.current) return;
     if (activeServer?.currentLayer != null) {
+      if (chainMode) chainMountedRef.current = true;
       setCurrentLayer(activeServer.currentLayer);
       setMinedCubes(new Set());
       setLayerMinedCount(0);
       setTotalMinedAllLayers(0);
       try { minedAppliedRef.current.clear(); } catch {}
     }
-  }, [serverId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [serverId, chainMode ? activeServer?.currentLayer : null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Guard y helper de transiciÃƒÂ³n de capa (elimina capa actual y construye la siguiente)
   const transitioningRef = useRef(false);
@@ -1694,9 +2280,15 @@ const handleZoomButton = useCallback((direction) => {
           if (v > maxAsc) maxAsc = v;
         }
         if (isFinite(minAsc) && isFinite(maxAsc)) {
-          const start = DISPLAY_START - minAsc + 1;
-          const end = DISPLAY_START - maxAsc + 1;
-          faceRangesRef.current[fIdx] = { start, end };
+          // Mostrar directamente el número real y acumulado de cada cubo
+          // (posición en la numeración ascendente 1..total de TODA la
+          // economía, no un offset relativo a la capa actual), en orden
+          // descendente para la lectura del botón. Antes se restaba de un
+          // DISPLAY_START fijo (pensado solo para capa 100) para simular una
+          // "cuenta regresiva" prolija, pero para cualquier otra config esa
+          // resta cancelaba los dígitos grandes y dejaba un rango chico sin
+          // sentido (ej. "540,002 a 1" en vez de los ~27 millones reales).
+          faceRangesRef.current[fIdx] = { start: maxAsc, end: minAsc };
         }
       }
     } catch {}
@@ -1705,46 +2297,140 @@ const handleZoomButton = useCallback((direction) => {
   const transitionToLayer = useCallback((nextK) => {
     if (transitioningRef.current) return;
     transitioningRef.current = true;
-    try {
+    // IIFE async porque buildLayer ahora retorna Promise (yieldea entre caras
+    // en tier LOW). Sin esto, recomputeFaceRanges corre con faceGroupsRef
+    // a medio actualizar y los rangos del HUD quedan mal en el primer frame.
+    (async () => {
+     try {
       setCurrentLayer(nextK);
       visibleNumbersRef.current = [];
       setSelectedCube(null);
       setMiningModal(null);
       // Limpiar cache de celdas aplicadas
       try { minedAppliedRef.current.clear(); } catch {}
+      // B1 fix (audit gráfico 2026-06-23+): clear del MinedCubesRewardStore
+      // al cambiar de capa. Pre-fix: el store acumulaba rewardPicks de
+      // capas anteriores (~50-200MB de leak en sesiones largas con >20k
+      // celdas minadas). El store tiene LRU cap por (K, faceIndex, gridX, gridY)
+      // pero el cap es por-key — al pasar a otra capa K, las keys viejas
+      // ya no se usan pero quedan en el Map ocupando memory hasta que el
+      // GC eventual elimine la instancia entera del store.
+      try { minedRewardsStore.clear(); } catch {}
       // Reconstruir capa
       if (buildLayerRef.current) {
-        buildLayerRef.current(nextK);
+        await buildLayerRef.current(nextK);
       }
       // Recalcular rangos para HUD/números
       try { recomputeFaceRanges(); } catch {}
       try { showHudToast && showHudToast(`Capa ${nextK} lista`); } catch {}
-    } finally {
+     } finally {
       transitioningRef.current = false;
-    }
+     }
+    })();
   }, [recomputeFaceRanges, showHudToast]);
+  useEffect(() => { transitionToLayerRef.current = transitionToLayer; }, [transitionToLayer]);
 
-  // Aplica visualmente una celda minada (parche + ocultar instancia) una sola vez
+  // Aplica visualmente una celda minada (parche + ocultar instancia) una sola vez.
+  // 2026-06-24: ahora propaga el patch a TODAS las caras donde aparece el cubo
+  // (1 si interior, 2 si está en arista, 3 si esquina). Sin esto, minar un
+  // cubo de arista deja la cara vecina sin marca de minado.
+  // Retorna true si se aplicó (o ya estaba aplicado), false si la escena
+  // todavía no estaba lista — el caller puede reintentar.
   const applyMinedCell = useCallback((faceIndex, gridX, gridY, rewardPicks = 0) => {
     try {
-      if (typeof faceIndex !== 'number') return;
+      if (typeof faceIndex !== 'number') return false;
       const key = `${currentLayer}:${faceIndex}:${gridX}:${gridY}`;
-      if (minedAppliedRef.current.has(key)) return;
+      if (minedAppliedRef.current.has(key)) return true;
       const K = currentLayer;
-      const patched = addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks);
-      if (!patched) return; // escena no lista aún, no marcar como aplicada para poder reintentar
-      setMinedCubeColor(faceIndex, gridX, gridY, faceGroupsRef);
+      // Calcular coord 3D del cubo a partir de (faceIndex, gridX, gridY) — el
+      // inverso de coordToGrid. Necesario para enumerar las otras caras donde
+      // aparece el mismo cubo.
+      const a = gridX - K, b = gridY - K;
+      let ix=0, iy=0, iz=0;
+      const fname = FACES[faceIndex]?.name;
+      switch(fname){
+        case 'front':  iz = K;   ix = a;  iy = b; break;
+        case 'back':   iz = -K;  ix = -a; iy = b; break;
+        case 'right':  ix = K;   iz = -a; iy = b; break;
+        case 'left':   ix = -K;  iz = a;  iy = b; break;
+        case 'top':    iy = K;   ix = a;  iz = -b; break;
+        case 'bottom': iy = -K;  ix = a;  iz = b;  break;
+        default: return;
+      }
+      const facesShowing = getFacesShowingCube(ix, iy, iz, K);
+      let anyPatched = false;
+      for (const fi of facesShowing) {
+        const { gridX: gxF, gridY: gyF } = coordToGrid(K, fi, ix, iy, iz);
+        const patched = addDarkPatch(fi, gxF, gyF, faceGroupsRef, K, rewardPicks);
+        if (patched) {
+          setMinedCubeColor(fi, gxF, gyF, faceGroupsRef);
+          anyPatched = true;
+        }
+      }
+      if (!anyPatched) return false; // escena no lista aún — el caller debe reintentar
       minedAppliedRef.current.add(key);
+      return true;
     } catch (e) {
       console.warn('applyMinedCell error', e);
+      return false;
     }
   }, [currentLayer]);
+
+  // Modo Chain: listener de "placed" (equivalente de "mined" de servers,
+  // Cambio 9 -- mecánica estándar, ya no invertida). El doc id es el número
+  // canónico dedup directo (String(n), sin prefijo K -- el backend de
+  // placeCube ya lo escribe así, ver functions/index.js placeCube ->
+  // stateRef.collection("placed").doc(String(n))). Cada N que llega se
+  // AGREGA a minedCubes (semántica estándar: estar en el set = ya minado,
+  // igual que servers) y se le pone el patch en TODAS sus posiciones
+  // (numberToPositionsRef, cubre aristas/esquinas -- Chain no puede usar el
+  // apiCubeNumber/faceGridToCubeNumber de servers porque ese esquema no
+  // escala a K>100 y Chain llega a 250, así que sigue haciendo falta este
+  // mapeo inverso número->posiciones incluso con la mecánica estándar).
+  // docChanges()+'added' en vez de forEach: procesar solo lo nuevo, no
+  // TODO el resultado en cada cambio (evita reprocesar cubos ya pintados).
+  useEffect(() => {
+    if (!chainMode || !serverId) return;
+    const K = currentLayer;
+    const rangeMin = K > 0 ? cumSumDedup(K - 1) : 0;
+    const rangeMax = cumSumDedup(K);
+    const placedCol = collection(db, 'blockchainState', 'main', 'placed');
+    const q = query(
+      placedCol,
+      where('__name__', '>=', String(rangeMin + 1)),
+      where('__name__', '<=', String(rangeMax)),
+      limit(3000)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const idsToAdd = [];
+      snap.docChanges().forEach((ch) => {
+        if (ch.type !== 'added') return;
+        const n = Number(ch.doc.id);
+        if (!Number.isFinite(n)) return;
+        const positions = numberToPositionsRef.current.get(n);
+        if (positions) {
+          for (const pos of positions) {
+            try { addDarkPatch(pos.faceIndex, pos.gridX, pos.gridY, faceGroupsRef, K, 0, true); } catch {}
+          }
+        }
+        idsToAdd.push(n);
+      });
+      if (idsToAdd.length > 0) {
+        setMinedCubes((prev) => {
+          const s = new Set(prev);
+          for (const id of idsToAdd) s.add(id);
+          return s;
+        });
+      }
+    }, (err) => console.warn('placed onSnapshot error', err));
+    return () => unsub();
+  }, [chainMode, serverId, currentLayer]);
 
   // Rehidratación + realtime de minados globales (todos los usuarios)
   // CRÍTICO: Suscribirse a TODA la capa, no solo activeFaceIndex
   // En modo cubo se ven múltiples caras simultáneamente
   useEffect(() => {
-    if (!serverId) return;
+    if (chainMode || !serverId) return;
     let unsub = null;
     try {
       const col = collection(db, 'servers', serverId, 'mined');
@@ -1763,10 +2449,19 @@ const handleZoomButton = useCallback((direction) => {
         const idsToAdd = [];
         snap.docChanges().forEach((ch) => {
           if (ch.type !== 'added') return; // en primera carga llegan todos como added
-          const id = ch.doc.id;
+          const docId = ch.doc.id;
+          // v1.3.9: el backend escribe el doc con id `${K}_${cubeNumber}` desde
+          // el fix CRIT-1 (Round 2 Agente #1) para evitar colisiones entre capas.
+          // El frontend espera el número puro; sin este parseo `Number("99_12345")`
+          // daba NaN y `cubeNumberToFaceGrid` retornaba null → todos los mineds
+          // previos se ignoraban en cold start (modal se abría en cubos ya minados
+          // y los parches no persistían). Backward-compat: si no hay "_" aceptamos
+          // el formato viejo (solo N).
+          const n = docId.includes('_') ? Number(docId.split('_')[1]) : Number(docId);
+          if (!Number.isFinite(n)) return;
           const docData = ch.doc.data();
           const rewardPicksFromDB = Number(docData?.rewardPicks || 0);
-          const map = cubeNumberToFaceGrid(id);
+          const map = cubeNumberToFaceGrid(n);
           if (!map) return;
           const { faceIndex, gridX, gridY } = map;
           // Aplicar sólo si corresponde a la capa actual
@@ -1782,8 +2477,20 @@ const handleZoomButton = useCallback((direction) => {
               minedRewardsStore.set(currentLayer, faceIndex, gridX, gridY, rewardPicks);
             }
 
-            applyMinedCell(faceIndex, gridX, gridY, rewardPicks);
-            idsToAdd.push(id);
+            const ok = applyMinedCell(faceIndex, gridX, gridY, rewardPicks);
+            // v1.3.9: usar `n` (número de cubo) en el Set, NO el docId completo
+            // "K_N". El resto del componente (findClosestVisibleNumber, render
+            // loop, etc.) hace `minedCubes.has(apiId)` con apiId numérico, así
+            // que el formato debe ser consistente con el del flujo manual de
+            // minado (que también agrega `apiId` numérico al set).
+            idsToAdd.push(n);
+            // Si la escena no estaba lista (ok=false), reintentar con delay
+            // para no perder la marca visual de minados que llegan en cold start.
+            if (!ok) {
+              setTimeout(() => {
+                try { applyMinedCell(faceIndex, gridX, gridY, rewardPicks); } catch {}
+              }, 800);
+            }
           } catch {}
         });
         // Un solo re-render para todos los cubos del snapshot
@@ -1794,6 +2501,13 @@ const handleZoomButton = useCallback((direction) => {
             return s;
           });
         }
+      }, (err) => {
+        // v1.3.10: error handler — antes Firestore podía rechazar la query
+        // (auth no listo, rules deny, network) sin que el usuario lo viera.
+        // El toast de diagnóstico se quitó en v1.3.11 una vez confirmado que el
+        // cap de rules estaba desalineado; el handler queda como protección
+        // por si reaparece otro permission-denied (sería visible en logcat).
+        console.warn('mined onSnapshot error', err);
       });
     } catch (e) {
       console.warn('mined realtime subscribe error', e);
@@ -1803,10 +2517,64 @@ const handleZoomButton = useCallback((direction) => {
     };
   }, [db, serverId, currentLayer, applyMinedCell]);
 
+  // Retry visual: reintenta aplicar parches de todos los cubos del set
+  // que no estén en minedAppliedRef. Cubre dos casos:
+  //   1) cold start: listener Firestore llega antes que faceGroupsRef esté
+  //      poblado → applyMinedCell retorna false y el listener solo reintenta
+  //      una vez (800ms). En LOW tier con buildLayer async lento, no alcanza.
+  //   2) realtime: cuando llega un mined nuevo (de otro user u otra sesión)
+  //      mientras la capa está construyéndose.
+  //
+  // SKIP de `pendingAnimCellsRef`: el flujo manual de minado agrega la key
+  // ANTES del setMinedCubes optimista y la borra después de startMining.
+  // Eso evita que este efecto pinte el parche gris ANTES de la explosión.
+  useEffect(() => {
+    const tryApply = () => {
+      if (!faceGroupsRef.current || faceGroupsRef.current.length === 0) return false;
+      if (!minedCubes || minedCubes.size === 0) return true;
+      let allApplied = true;
+      for (const apiId of minedCubes) {
+        try {
+          const map = cubeNumberToFaceGrid(apiId);
+          if (!map) continue;
+          const key = `${currentLayer}:${map.faceIndex}:${map.gridX}:${map.gridY}`;
+          if (minedAppliedRef.current.has(key)) continue;
+          // Skip claves en vuelo de minado manual — startMining hará el patch
+          if (pendingAnimCellsRef.current.has(key)) continue;
+          const rewardPicks = minedRewardsStore.has(currentLayer, map.faceIndex, map.gridX, map.gridY)
+            ? minedRewardsStore.get(currentLayer, map.faceIndex, map.gridX, map.gridY)
+            : 0;
+          const ok = applyMinedCell(map.faceIndex, map.gridX, map.gridY, rewardPicks);
+          if (!ok) allApplied = false;
+        } catch {}
+      }
+      return allApplied;
+    };
+    // v1.3.10: retry indefinido hasta que todo aplicó (o el component se
+    // desmonte). Antes abandonábamos a 15s, lo que en Redmi LOW tier con K=100
+    // podía no alcanzar — buildLayer + numeración global tardan más. Tope de
+    // seguridad: 5 min (600 iteraciones × 500ms) para no consumir CPU si algo
+    // realmente está roto.
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts++;
+      const ok = tryApply();
+      if (ok || attempts >= 600) {
+        clearInterval(timer);
+      }
+    }, 500);
+    tryApply();
+    return () => clearInterval(timer);
+  }, [currentLayer, minedCubes, applyMinedCell]);
+
   // Suscripción a estadísticas de la capa actual (una sola suscripción para layerMinedCount Y globalMinedCurrentLayer)
   // + suscripción a todas las capas para totalMinedAllLayers
   useEffect(() => {
-    if (!serverId) return;
+    // chainMode: no hay doc real en servers/{serverId} (serverId='chain-main'
+    // es sintético) -- este listener quedaba consultando servers/chain-main/
+    // layers/{K}, un path inexistente, seteando layerMinedCount=0 sin
+    // sentido (Chain usa su propio conteo vía chainStatus.placedInCurrentLayer).
+    if (chainMode || !serverId) return;
     let unsubCurrentLayer = null;
     let unsubAllLayers = null;
     try {
@@ -1816,30 +2584,62 @@ const handleZoomButton = useCallback((direction) => {
         const n = Number(mined) || 0;
         setLayerMinedCount(n);
         setGlobalMinedCurrentLayer(n);
+      }, (err) => {
+        // v1.3.13: error handler explícito. Mismo motivo que el listener de
+        // mined — sin esto un permission-denied o problema de red queda silencioso.
+        console.warn('subscribe current layer stats onSnapshot error', err);
       });
     } catch (e) {
       console.warn('subscribe current layer stats error', e);
     }
     try {
+      // v1.3.13: limit(101) explícito. La colección layers tiene como máximo
+      // 101 docs (K=0..100), pero ponerlo explícito es defensa: si en el
+      // futuro las rules tienen cap por limit, o aparecen docs basura, no
+      // descarga toda la colección.
       const colRef = collection(db, 'servers', serverId, 'layers');
-      unsubAllLayers = onSnapshot(colRef, (snapshot) => {
+      const allLayersQuery = query(colRef, limit(101));
+      unsubAllLayers = onSnapshot(allLayersQuery, (snapshot) => {
         let sum = 0;
         snapshot.forEach((docSnap) => {
           sum += Number(docSnap.data()?.stats?.mined || 0);
         });
         setTotalMinedAllLayers(sum);
+      }, (err) => {
+        console.warn('subscribe all layers stats onSnapshot error', err);
       });
     } catch (e) {
       console.warn('subscribe all layers stats error', e);
     }
+    // v1.3.13: listener al doc del server para memberCount (Players Online).
+    let unsubServer = null;
+    try {
+      const serverRef = doc(db, 'servers', serverId);
+      unsubServer = onSnapshot(serverRef, (snap) => {
+        const n = snap.exists() ? Number(snap.data()?.memberCount || 0) : 0;
+        setServerMemberCount(n);
+      }, (err) => {
+        console.warn('subscribe server memberCount error', err);
+      });
+    } catch (e) {
+      console.warn('subscribe server memberCount setup error', e);
+    }
     return () => {
       try { unsubCurrentLayer && unsubCurrentLayer(); } catch {}
       try { unsubAllLayers && unsubAllLayers(); } catch {}
+      try { unsubServer && unsubServer(); } catch {}
     };
   }, [db, serverId, currentLayer]);
 
   // Transición global: si las estadísticas del backend indican que la capa actual está completa, avanzar a la siguiente
+  // chainMode: usa transiciones EXPLÍCITAS (refreshChainStatus llama
+  // transitionToLayer directamente cuando el backend reporta un currentLayer
+  // distinto), no este mecanismo indirecto basado en layerMinedCount local --
+  // Chain no tiene el equivalente de servers/{id}/layers/{K} para alimentar
+  // layerMinedCount en tiempo real de forma barata, así que confía en la
+  // respuesta directa de getChainBlockchainStatus/placeCube en su lugar.
   useEffect(() => {
+    if (chainMode) return;
     try {
       const need = shellSize(currentLayer);
       if (Number(layerMinedCount) >= need && currentLayer > 0) {
@@ -1857,8 +2657,8 @@ const handleZoomButton = useCallback((direction) => {
 
     visibleNumbersRef.current.forEach(numberData => {
       // Ignorar cubitos ya minados para interacción - USAR apiCubeNumber único
-      const apiId = numberData.apiCubeNumber || faceGridToCubeNumber(numberData.faceIndex, numberData.gridX, numberData.gridY);
-      if (apiId && minedCubes.has(apiId)) return;
+      const apiId = resolveApiId(numberData);
+      if (apiId && !isCellAvailable(apiId)) return;
       const dx = touchX - numberData.screenX;
       const dy = touchY - numberData.screenY;
       const distance = Math.sqrt(dx * dx + dy * dy);
@@ -1870,16 +2670,18 @@ const handleZoomButton = useCallback((direction) => {
     });
 
     return closestNumber;
-  }, [minedCubes]);
+  }, [minedCubes, resolveApiId]);
 
   // Animar cámara hacia una cara específica con easing suave (rotación y distancia)
   const goToFaceCenter = useCallback((faceName, forceGridMode = false) => {
     // Configuración para ambos modos
     // FIX: Usar distancia dentro del rango de números visibles (6.6-31.1)
-    // Calcular distancia desde superficie: 106.6 = distToCenter, 106.6 - 100 = 6.6 desde superficie
+    // Calcular distancia desde superficie: 106.6 = distToCenter, 106.6 - startK = 6.6 desde superficie
     // Para estar en medio del rango: (6.6 + 31.1) / 2 = 18.85 desde superficie
-    // Distancia al centro: 18.85 + 100 = 118.85
-    const targetDistance = forceGridMode ? 118.85 : 398.5;
+    // Distancia al centro: 18.85 + startK. Con startK=100 (server estándar) da 118.85, igual que antes.
+    // El modo "cubo completo" (398.5) queda fijo -- no hay relación 100+offset
+    // documentada para esa constante, así que no se generaliza acá.
+    const targetDistance = forceGridMode ? (startKRef.current + 18.85) : 398.5;
     
     // Mapear caras a orientaciones (rotX, rotY)
     const faceAngles = {
@@ -1927,10 +2729,21 @@ const handleZoomButton = useCallback((direction) => {
     const ZOOM_OUT_DIST = 650;                          // distancia de vista completa del cubo
     const needsZoomOut = start.distance < ZOOM_OUT_DIST;
     const zoomOutDist = needsZoomOut ? ZOOM_OUT_DIST : start.distance;
-    const DUR_1 = needsZoomOut ? 300 : 0;               // fase 1: zoom out
-    const DUR_2 = 520;                                   // fase 2: rotación
-    const DUR_3 = 420;                                   // fase 3: zoom in
+    // animFactor del preset (1.0 high / 0.85 mid / 0.7 low) — en devices low
+    // las duraciones se acortan ~30% para que se pierdan menos frames y la
+    // anim se sienta más fluida sin cambiar el movimiento.
+    // 2026-06-24: doblado las duraciones base — el user pidió que el alejarse,
+    // rotar y acercarse sea más pausado/cinematográfico.
+    const _animFactor = perfTier.getPreset().animFactor || 1.0;
+    const DUR_1 = needsZoomOut ? Math.round(500 * _animFactor) : 0;
+    const DUR_2 = Math.round(760 * _animFactor);
+    const DUR_3 = Math.round(600 * _animFactor);
     const TOTAL_DUR = DUR_1 + DUR_2 + DUR_3;
+    // PERF: throttle de setCamState a ~30 Hz (en lugar de cada RAF a 60 Hz)
+    // para reducir reconciliaciones de React durante la animación. camStateRef
+    // se actualiza cada frame para que el render loop vea la cámara fluida.
+    let lastCamSetStateAt = 0;
+    const CAM_SETSTATE_THROTTLE_MS = 33;
 
     suppressAutoGridRef.current = Date.now() + TOTAL_DUR + 700;
     lastRotationTimeRef.current = Date.now();
@@ -1948,37 +2761,48 @@ const handleZoomButton = useCallback((direction) => {
       const dur = phase === 1 ? DUR_1 : phase === 2 ? DUR_2 : DUR_3;
       const t = dur > 0 ? Math.min(1, (now - phaseStart) / dur) : 1;
 
+      // Computar el siguiente estado en una variable local, mutar camStateRef
+      // (que el render loop lee) y propagar a React state con throttle.
+      const prev = camStateRef.current || start;
+      let next;
       if (phase === 1) {
         // Zoom out + centrar pan
         const e = easeOut(t);
-        setCamState((prev) => ({
+        next = {
           ...prev,
           distance: start.distance + (ZOOM_OUT_DIST - start.distance) * e,
           tx: start.tx * (1 - e),
           ty: start.ty * (1 - e),
-        }));
+        };
       } else if (phase === 2) {
         // Rotar a la cara destino manteniendo distancia alejada
         const e = easeInOut(t);
-        setCamState((prev) => ({
+        next = {
           ...prev,
           rotX: start.rotX + dRotX * e,
           rotY: start.rotY + dRotY * e,
           distance: zoomOutDist,
           tx: 0,
           ty: 0,
-        }));
+        };
       } else {
         // Zoom in a la cara destino
         const e = easeOut(t);
-        setCamState((prev) => ({
+        next = {
           ...prev,
           rotX: target.rotX,
           rotY: target.rotY,
           distance: zoomOutDist + (targetDistance - zoomOutDist) * e,
           tx: 0,
           ty: 0,
-        }));
+        };
+      }
+      camStateRef.current = next;
+      const isPhaseEnd = t >= 1;
+      const nowMs = now;
+      if (isPhaseEnd || nowMs - lastCamSetStateAt >= CAM_SETSTATE_THROTTLE_MS) {
+        lastCamSetStateAt = nowMs;
+        setCamState(next);
       }
 
       if (t < 1) {
@@ -2001,24 +2825,29 @@ const handleZoomButton = useCallback((direction) => {
 
     const sz = glSizeRef.current || { width: screenWidth, height: screenHeight };
 
-    // PRIORIDAD 1: RAYCAST 3D (preciso al cubo tocado)
+    // PRIORIDAD 1: REUSAR raycast cacheado por el confirm del long-press (evita doblar el costo ~30-80ms)
+    // Si no hay cache (ej: confirm sin pick válido), recién entonces raycastear acá.
     let selectedCube = null;
     try {
-      const picked = findCubeAtScreenPosition(
-        screenX,
-        screenY,
-        cameraRef.current,
-        sceneRef.current,
-        sz.width,
-        sz.height,
-        currentLayer,
-        0,
-        0
-      );
-      const pickedApiId = picked ? (picked.apiCubeNumber || faceGridToCubeNumber(picked.faceIndex, picked.gridX, picked.gridY)) : null;
-      if (picked && pickedApiId && !minedCubes.has(pickedApiId)) {
+      let picked = prePickedCubeRef.current;
+      prePickedCubeRef.current = null; // consumir el cache (single-use)
+      if (!picked) {
+        picked = findCubeAtScreenPosition(
+          screenX,
+          screenY,
+          cameraRef.current,
+          sceneRef.current,
+          sz.width,
+          sz.height,
+          currentLayer,
+          0,
+          0
+        );
+      }
+      const pickedApiId = picked ? resolveApiId(picked) : null;
+      if (picked && pickedApiId && isCellAvailable(pickedApiId)) {
         selectedCube = picked;
-      } else if (picked && pickedApiId && minedCubes.has(pickedApiId)) {
+      } else if (picked && pickedApiId && !isCellAvailable(pickedApiId)) {
         showHudToast(t('cube.alreadyMined') || 'Ya minado');
         if (sceneRef.current && picked.worldPosition) showXAnimation(sceneRef.current, picked.worldPosition, THREE);
         return;
@@ -2065,9 +2894,9 @@ const handleZoomButton = useCallback((direction) => {
     }
 
     // USAR apiCubeNumber único para verificar si está minado
-    const closestApiId = closestNumber ? (closestNumber.apiCubeNumber || faceGridToCubeNumber(closestNumber.faceIndex, closestNumber.gridX, closestNumber.gridY)) : null;
-    if (closestNumber && closestApiId && !minedCubes.has(closestApiId)) {
-      
+    const closestApiId = closestNumber ? resolveApiId(closestNumber) : null;
+    if (closestNumber && closestApiId && isCellAvailable(closestApiId)) {
+
       // Mostrar modal de minado
       setMiningModal({
         cubeNumber: closestNumber.cubeNumber,
@@ -2082,7 +2911,7 @@ const handleZoomButton = useCallback((direction) => {
       setSelectedCube(null);
       
       // Ya no necesitamos raycast de refinamiento porque se hizo PRIMERO
-    } else if (closestNumber && closestApiId && minedCubes.has(closestApiId)) {
+    } else if (closestNumber && closestApiId && !isCellAvailable(closestApiId)) {
       showHudToast(t('cube.alreadyMined') || 'Ya minado');
       if (sceneRef.current && closestNumber.worldPosition) showXAnimation(sceneRef.current, closestNumber.worldPosition, THREE);
     } else {
@@ -2090,8 +2919,8 @@ const handleZoomButton = useCallback((direction) => {
         // Fallback: usar el primer número visible NO minado si existe
         if (!closestNumber) {
           let firstNumber = visibleNumbersRef.current.find(n => {
-            const apiId = n.apiCubeNumber || faceGridToCubeNumber(n.faceIndex, n.gridX, n.gridY);
-            return apiId && !minedCubes.has(apiId);
+            const apiId = resolveApiId(n);
+            return apiId && isCellAvailable(apiId);
           });
           if (firstNumber) {
           } else {
@@ -2185,7 +3014,8 @@ const handleZoomButton = useCallback((direction) => {
         const ref = doc(db, 'users', u.uid);
         unsubUser = onSnapshot(ref, (snap) => {
           const data = snap.exists() ? snap.data() : {};
-          setPicks(data?.picks ?? 0);
+          // Cambio 1 (picos por cadena): picks se movió a users/{uid}/chainAccess/{chainId}
+          // (ver el efecto de abajo) -- ya no se lee del doc global users/{uid}.
           const walletData = data && data.wallet;
           // Firestore rules deniegan write de 'wallet' desde cliente.
           // Si el campo no existe aún (user nuevo), mostramos 0.
@@ -2212,25 +3042,47 @@ const handleZoomButton = useCallback((direction) => {
       if (unsubUser) { try { unsubUser(); } catch {} }
       // CRIT-10: cleanup de timers/pollers NO pertenece a este effect (eran
       // los originales del effect auth). Los mantengo defensivamente pero
-      // sin meterlos en deps. miningAnimations Map nunca se mutiplica (setter
-      // jamás llamado), así que el forEach es no-op pero defensivo.
+      // sin meterlos en deps.
+      // Round 2 Agente #5: el forEach sobre miningAnimations fue removido
+      // (el Map nunca se mutaba, setter jamás se llamaba).
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
-      try {
-        miningAnimations.forEach((anim) => {
-          if (anim && typeof anim.cleanup === 'function') anim.cleanup();
-        });
-      } catch {}
       if (minedPollRef.current) {
         clearInterval(minedPollRef.current);
         minedPollRef.current = null;
       }
+      // Round 2 Agente #5: clear adicional de timers que podían sobrevivir al
+      // unmount. Pre-fix: si user navega a otra screen durante un mining flow
+      // activo (mid-watchdog, hud-toast visible, pre-hold counting), el
+      // setTimeout queda corriendo + dispara callbacks contra árbol React
+      // desmontado → setState warning "Can't perform a React state update on
+      // an unmounted component" + memory hold de closures.
+      try { if (hudToastTimerRef.current) { clearTimeout(hudToastTimerRef.current); hudToastTimerRef.current = null; } } catch (_) {}
+      try { if (gridExitTimerRef.current) { clearTimeout(gridExitTimerRef.current); gridExitTimerRef.current = null; } } catch (_) {}
+      try { if (preHoldTimerRef.current) { clearTimeout(preHoldTimerRef.current); preHoldTimerRef.current = null; } } catch (_) {}
+      try { if (miningWatchdogRef.current) { clearTimeout(miningWatchdogRef.current); miningWatchdogRef.current = null; } } catch (_) {}
+      try { if (miningProgressTimerRef.current) { clearInterval(miningProgressTimerRef.current); miningProgressTimerRef.current = null; } } catch (_) {}
     };
     // CRIT-10: deps vacías a propósito. `miningAnimations` en deps re-suscribía
     // onAuthStateChanged cada vez que el Map cambiara, lo que es destructivo
     // para sesiones largas (re-render y nuevo bootstrap de user doc).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  
+
+  // Cambio 1 (picos por cadena): el HUD de picos ahora lee de
+  // users/{uid}/chainAccess/{chainId} en vez del doc global users/{uid} —
+  // mineCube ya no decrementa el campo global, así que ese listener quedaría
+  // stale/congelado si no se migra este efecto también.
+  useEffect(() => {
+    const uid = auth?.currentUser?.uid;
+    const chainId = activeServer?.chainId || null;
+    if (!uid || !chainId) { setPicks(chainId ? null : 0); return; }
+    const ref = doc(db, 'users', uid, 'chainAccess', chainId);
+    const unsub = onSnapshot(ref, (snap) => {
+      setPicks(snap.exists() ? (snap.data()?.picks ?? 0) : 0);
+    }, () => {});
+    return () => { try { unsub(); } catch {} };
+  }, [activeServer?.chainId, authReady]);
+
   // Función para mostrar solo las grietas (llamada al 50% de la barra)
   const showCracksAnimation = useCallback(async (modalData) => {
     if (!modalData || !sceneRef.current) {
@@ -2254,23 +3106,47 @@ const handleZoomButton = useCallback((direction) => {
         scene.add(crackGroup);
         cracksRef.current = { crackGroup, cracks }; // Guardar para limpieza posterior
         
-        // Animar propagación de grietas
+        // Animar propagación de grietas — cada rama crece progresivamente
+        // desde su punto de origen usando setDrawRange. La opacity se llena
+        // rápido (primeros 150ms del crecimiento de cada rama) para que se
+        // vea sólida apenas aparece, y el "extenderse" venga del drawRange.
         await new Promise(resolveAnim => {
-          const dur = 500;
           const start = Date.now();
+          const HOLD_AFTER_DONE = 250; // ms a esperar después que todo terminó
           const step = () => {
             const elapsed = Date.now() - start;
             let allDone = true;
             cracks.forEach(seg => {
-              const dt = Math.max(0, elapsed - (seg.userData?.delay || 0));
-              const tt = Math.min(dt / dur, 1);
-              seg.material.opacity = 0.3 + 0.7 * tt;
+              const ud = seg.userData || {};
+              const delay = ud.delay || 0;
+              const grow = ud.growDuration || 800;
+              const totalVerts = ud.totalVerts || 0;
+              const vertsPerStep = ud.vertsPerStep || 4;
+              const dt = elapsed - delay;
+              if (dt < 0) {
+                allDone = false;
+                return; // todavía no arrancó esta rama
+              }
+              const tt = Math.min(dt / grow, 1);
+              // Easing suave (easeOutQuad) → arranca rápido, frena al final
+              const eased = 1 - (1 - tt) * (1 - tt);
+              // Snap al múltiplo más cercano de vertsPerStep (segmento completo)
+              const targetCount = Math.min(
+                totalVerts,
+                Math.floor((totalVerts * eased) / vertsPerStep) * vertsPerStep
+              );
+              if (seg.geometry && seg.geometry.setDrawRange) {
+                seg.geometry.setDrawRange(0, targetCount);
+              }
+              // Opacity sube en los primeros 150ms del crecimiento de esta rama
+              const opacityT = Math.min(dt / 150, 1);
+              seg.material.opacity = 0.4 + 0.6 * opacityT;
               if (!(seg.isLine || seg.isLineSegments)) {
                 seg.scale.y = Math.max(0.01, tt);
               }
               if (tt < 1) allDone = false;
             });
-            if (!allDone) requestAnimationFrame(step); else setTimeout(resolveAnim, 150);
+            if (!allDone) requestAnimationFrame(step); else setTimeout(resolveAnim, HOLD_AFTER_DONE);
           };
           step();
         });
@@ -2309,7 +3185,7 @@ const handleZoomButton = useCallback((direction) => {
     cracksRef.current = null;
   }, []);
 
-  const startMining = useCallback(async (modalData, reward = 0, gem = null) => {
+  const startMining = useCallback(async (modalData, reward = 0, gem = null, chainModeMining = false) => {
     if (!modalData) {
       console.warn('startMining sin modalData');
       return;
@@ -2329,49 +3205,91 @@ const handleZoomButton = useCallback((direction) => {
         cracksPromiseRef.current = null; // Limpiar referencia
       }
       
-      // FASE 1: Limpiar grietas previas (ahora que terminaron)
-      // CRIT-09: extraído a helper `cleanupCracksNow` (definido más arriba)
-      // para que también se llame desde el catch del callMineCube si la API
-      // falla y startMining nunca se ejecuta. Antes los cracks quedaban
-      // pegados a la escena (leak GPU acumulado por mine fallido).
-      cleanupCracksNow(scene);
-      
-      // FASE 3: Aplicar parche y explotar simultáneamente
-      const K = currentLayerRef.current; // usar ref para evitar closure estale
-      const cellKey = `${K}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
-      try {
-        if (typeof addDarkPatch === 'function') {
-          minedRewardsStore.set(K, modalData.faceIndex, modalData.gridX, modalData.gridY, reward);
-          addDarkPatch(modalData.faceIndex, modalData.gridX, modalData.gridY, faceGroupsRef, K, reward);
-          if (typeof setMinedCubeColor === 'function') {
-            setMinedCubeColor(modalData.faceIndex, modalData.gridX, modalData.gridY, faceGroupsRef);
-          }
-          minedAppliedRef.current.add(cellKey);
+      // FASE 1: Esperar a que termine el sonido de rotura (que arrancó
+      // sincronizado con la animación de grietas) ANTES de hacer la limpieza
+      // y la explosión. De esta forma:
+      //   - Las grietas se ven durante todos los 3.2s del sonido.
+      //   - El parche negro NO aparece prematuramente (antes era visible
+      //     ~1-3s antes de los fragments, dejando un hueco visual).
+      const ROTURA_DURATION_MS = 3200;
+      const startedAt = roturaStartTimeRef.current || 0;
+      if (startedAt > 0) {
+        const elapsed = Date.now() - startedAt;
+        const remaining = ROTURA_DURATION_MS - elapsed;
+        if (remaining > 0) {
+          await new Promise(r => setTimeout(r, remaining));
         }
-      } catch (patchError) {
-        console.error('Error in patch operations:', patchError.message);
       }
 
-      // FASE 5: Explosión + pico aparecen al mismo tiempo cuando se rompe el bloque
+      // FASE 2: Limpiar grietas previas (ahora que el sonido terminó)
+      cleanupCracksNow(scene);
+
+      // FASE 3: SIMULTÁNEO — sonido explosión + fragmentos + X/premio + parche.
+      // Todo arranca en el mismo instante: el parche se aplica debajo, los
+      // fragmentos cubren la posición original y al volar revelan el parche,
+      // y la X (sin recompensa) o el contador de picos sale por encima.
+      const K = currentLayerRef.current;
+      const cellKey = `${K}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
       const hasPickReward = reward > 0;
       const hasGemReward = !!gem;
 
       const gemDef = hasGemReward ? GEMS[gem - 1] : null;
 
+      // Aplicar parche AHORA — mismo instante que explosion + X/premio.
+      try {
+        if (typeof addDarkPatch === 'function') {
+          const a = modalData.gridX - K, b = modalData.gridY - K;
+          let ix=0, iy=0, iz=0;
+          const fname = FACES[modalData.faceIndex]?.name;
+          switch(fname){
+            case 'front':  iz = K;   ix = a;  iy = b; break;
+            case 'back':   iz = -K;  ix = -a; iy = b; break;
+            case 'right':  ix = K;   iz = -a; iy = b; break;
+            case 'left':   ix = -K;  iz = a;  iy = b; break;
+            case 'top':    iy = K;   ix = a;  iz = -b; break;
+            case 'bottom': iy = -K;  ix = a;  iz = b;  break;
+          }
+          const facesShowing = getFacesShowingCube(ix, iy, iz, K);
+          minedRewardsStore.set(K, modalData.faceIndex, modalData.gridX, modalData.gridY, reward);
+          let anyPatched = false;
+          for (const fi of facesShowing) {
+            const { gridX: gxF, gridY: gyF } = coordToGrid(K, fi, ix, iy, iz);
+            const patched = addDarkPatch(fi, gxF, gyF, faceGroupsRef, K, reward, chainModeMining);
+            if (patched) {
+              anyPatched = true;
+              if (typeof setMinedCubeColor === 'function') {
+                setMinedCubeColor(fi, gxF, gyF, faceGroupsRef);
+              }
+            }
+          }
+          if (anyPatched) {
+            minedAppliedRef.current.add(cellKey);
+          }
+        }
+      } catch (patchError) {
+        console.error('Error in patch operations:', patchError.message);
+      }
+
       try {
         audioManager.playSound('explosion', 1.0);
-        if (hasPickReward || hasGemReward) audioManager.playSound('win', 1.0);
+        // Modo Chain: minar SIEMPRE es un resultado positivo (aporta al pool
+        // aunque no dé gemas/picos) -- 'lose' + la X blanca comunicarían
+        // "fallaste", que no aplica acá. Mismo sonido/coreografía que un
+        // acierto en servers, pero sin mostrar ningún asset de gema/pico.
+        if (hasPickReward || hasGemReward || chainModeMining) audioManager.playSound('win', 1.0);
         else audioManager.playSound('lose', 1.0);
         const fragments = createFragments(modalData.position, face.normal, 1.0);
         fragments.forEach(fragment => scene.add(fragment));
         if (hasGemReward && gemDef) showGemAnimation(scene, modalData.position, THREE, gemDef);
         await Promise.all([
-          animateFragments(fragments, scene, 1000, fragmentsCancelRef),
-          hasPickReward
-            ? showRewardAnimation(scene, modalData, reward, THREE)
-            : !hasGemReward
-              ? (showXAnimation(scene, modalData.position, THREE, [255, 255, 255]), Promise.resolve())
-              : Promise.resolve(),
+          animateFragments(fragments, scene, 1760, fragmentsCancelRef),
+          chainModeMining
+            ? Promise.resolve()
+            : hasPickReward
+              ? showRewardAnimation(scene, modalData, reward, THREE)
+              : !hasGemReward
+                ? (showXAnimation(scene, modalData.position, THREE, [255, 255, 255]), Promise.resolve())
+                : Promise.resolve(),
         ]);
       } catch (fragmentError) {
         console.error('Error with fragments, skipping animation:', fragmentError.message);
@@ -2404,7 +3322,7 @@ const handleZoomButton = useCallback((direction) => {
       setTimeout(() => {
         try {
           // USAR apiCubeNumber (único) en lugar de cubeNumber (puede repetirse entre caras)
-          const apiId = faceGridToCubeNumber(modalData.faceIndex, modalData.gridX, modalData.gridY);
+          const apiId = resolveApiId(modalData);
           if (apiId) {
             // CRITICAL: Marcar como minado INMEDIATAMENTE para prevenir doble minado
             setMinedCubes(prev => { const s = new Set(prev); s.add(apiId); return s; });
@@ -2416,11 +3334,11 @@ const handleZoomButton = useCallback((direction) => {
       
       // NO EJECUTAR MÁS CÓDIGO DESPUÉS DE ESTE PUNTO
       return;
-      
+
     } catch (error) {
       console.error('Error durante el minado:', error);
     }
-  }, [sceneRef, rendererRef]);
+  }, [sceneRef, rendererRef, resolveApiId]);
   
   // FunciÃƒÂ³n para cancelar el minado
   const cancelMining = useCallback(() => {
@@ -2431,8 +3349,17 @@ const handleZoomButton = useCallback((direction) => {
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (evt) => evt.nativeEvent.touches.length <= 2,
+        onStartShouldSetPanResponder: () => {
+          // Bloquear pan SOLO mientras el modal de minado esté abierto. Después
+          // que el modal cierre, el user puede tocar/pan (la explosión sigue
+          // animando independientemente).
+          if (miningModalRef.current) return false;
+          return true;
+        },
+        onMoveShouldSetPanResponder: (evt) => {
+          if (miningModalRef.current) return false;
+          return evt.nativeEvent.touches.length <= 2;
+        },
         onPanResponderGrant: (evt) => {
           isGesturingRef.current = true;
           markActive(); // PERF-001: forzar render a 60 FPS durante gesture
@@ -2465,7 +3392,10 @@ const handleZoomButton = useCallback((direction) => {
             };
             // Cancelar inercia pendiente al iniciar nuevo gesto
             if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
+            if (rotationInertiaAnimRef.current) { cancelAnimationFrame(rotationInertiaAnimRef.current); rotationInertiaAnimRef.current = null; }
             panVelocityRef.current = { x: 0, y: 0 };
+            rotationVelocityRef.current = { x: 0, y: 0 };
+            lastRotateMoveTimeRef.current = Date.now();
             lastPanMoveTimeRef.current = Date.now();
             // Inicializar última posición de toque para deltas incrementales (coordenadas locales al target)
             lastTouchPosRef.current = { x: t[0].locationX, y: t[0].locationY };
@@ -2494,7 +3424,7 @@ const handleZoomButton = useCallback((direction) => {
             const currentDistance = camStateRef.current?.distance || camState.distance;
             const tempEye = new THREE.Vector3(0, 0, currentDistance)
               .applyEuler(new THREE.Euler(camStateRef.current?.rotX || camState.rotX, -(camStateRef.current?.rotY || camState.rotY), 0));
-            const tempDist = Math.max(0, tempEye.length() - 100);
+            const tempDist = Math.max(0, tempEye.length() - startKRef.current);
             const inRange = tempDist >= (6.6 - 0.12) && tempDist <= (19.6 + 0.12 * 0.5);
             // Permitir long-press en cualquier zoom; si no hay nÃƒÂºmeros visibles, se usarÃƒÂ¡ raycast en handleLongPress
             {
@@ -2503,7 +3433,7 @@ const handleZoomButton = useCallback((direction) => {
               // Definir punto inicial y registrar inicio antes de programar timers
               const start = { x: touch.locationX, y: touch.locationY };
               longPressStartPos.current = start;
-              // Indicador visual temprano (~250ms) para feedback inmediato de "hold"
+              // Indicador visual temprano (~250ms) para feedback de "hold"
               if (preHoldTimerRef.current) { clearTimeout(preHoldTimerRef.current); preHoldTimerRef.current = null; }
               preHoldTimerRef.current = setTimeout(() => {
                 try {
@@ -2518,7 +3448,7 @@ const handleZoomButton = useCallback((direction) => {
                   setLongPressActive(true);
                 } catch {}
               }, 250);
-              // Iniciar long press con requisito de quietud 0.5s
+              // Iniciar long press con requisito de quietud 0.25s
               longPressTimer.current = setTimeout(() => {
                 try {
                   // Verificar que no se haya convertido en gesto de zoom
@@ -2529,7 +3459,7 @@ const handleZoomButton = useCallback((direction) => {
                   const dx = (curr.x || 0) - start.x;
                   const dy = (curr.y || 0) - start.y;
                   const moved = Math.hypot(dx, dy);
-                  if (moved > 16) return;
+                  if (moved > 24) return;
 
                   // Detener animación de cámara para que las coordenadas del toque sean válidas
                   if (camAnimRef.current) {
@@ -2553,6 +3483,8 @@ const handleZoomButton = useCallback((direction) => {
                       0
                     );
                     if (picked && picked.worldPosition && cameraRef.current) {
+                      // Cachear el picked completo para que handleLongPress lo reuse y evite raycastear de nuevo
+                      prePickedCubeRef.current = picked;
                       const wp = picked.worldPosition.clone();
                       const sp = wp.project(cameraRef.current);
                       const sx = (sp.x * 0.5 + 0.5) * (sz.width || screenWidth);
@@ -2582,7 +3514,9 @@ const handleZoomButton = useCallback((direction) => {
                   
                   // Asegurar indicador activo si aún no se activó por el preHold
                   setLongPressActive((v) => v || true);
-                  // Programar apertura de modal 1 segundo después del long press
+                  // Reproducir sonido de minado durante el long-press (2s aprox, coincide con el modalTimer)
+                  audioManager.playMiningSound();
+                  // Programar apertura de modal 1.9 segundos después del long press (total dedo→modal = 2s)
                   if (modalTimerRef.current) { clearTimeout(modalTimerRef.current); modalTimerRef.current = null; }
                   modalTimerRef.current = setTimeout(() => {
                     if (gestureZoomingRef.current) return; // cancelar si se convirtió en zoom
@@ -2592,15 +3526,24 @@ const handleZoomButton = useCallback((direction) => {
                     // forzar reconstrucción del panResponder en cada cambio.
                     handleLongPressRef.current(touch.locationX, touch.locationY);
                     modalTimerRef.current = null;
-                  }, 1000);
+                  }, 1900);
                 } finally {
                   longPressTimer.current = null;
                 }
-              }, 500);
+              }, 250);
             }
           }
         },
         onPanResponderMove: (evt, gestureState) => {
+          // GUARDIA: si el modal de minado está abierto, ignorar TODO movimiento.
+          // Sin esto, el modal aparece mid-gesture, el bloque defensivo libera
+          // longPressInitiatedRef, el siguiente move ejecuta pan y panVelocityRef
+          // se llena → al soltar arranca inercia y la cámara se va.
+          if (miningModalRef.current) {
+            panVelocityRef.current = { x: 0, y: 0 };
+            rotationVelocityRef.current = { x: 0, y: 0 };
+            return;
+          }
           markActive(); // PERF-001
           const t = evt.nativeEvent.touches;
           // Update touches count continuously
@@ -2651,7 +3594,8 @@ const handleZoomButton = useCallback((direction) => {
             // Zoom por pellizco
             if (Math.abs(ratio - 1) > 0.005) {
               {
-                const minDist = 106.6;
+                // Mismo fix que handleZoomButton -- ver comentario ahí.
+                const minDist = startKRef.current + 6.6;
                 const maxDist = 3000;
                 const zoomFactor = ratio > 1 ? 0.95 : 1.05;
                 const nextDist = THREE.MathUtils.clamp((camStateRef.current?.distance || 300) * zoomFactor, minDist, maxDist);
@@ -2671,7 +3615,7 @@ const handleZoomButton = useCallback((direction) => {
                 const currentDistance = camStateRef.current?.distance || camState.distance;
                 const tempEye = new THREE.Vector3(0, 0, currentDistance)
                   .applyEuler(new THREE.Euler(camStateRef.current?.rotX || camState.rotX, -(camStateRef.current?.rotY || camState.rotY), 0));
-                const tempDist = Math.max(0, tempEye.length() - 100);
+                const tempDist = Math.max(0, tempEye.length() - startKRef.current);
                 const inGrid = tempDist <= 255.2;
                 if (inGrid && cameraRef.current) {
                   const camera = cameraRef.current;
@@ -2714,11 +3658,26 @@ const handleZoomButton = useCallback((direction) => {
             const prevPos = lastTouchPosRef.current || { x: touch.locationX, y: touch.locationY };
             const dxPix = touch.locationX - prevPos.x;
             const dyPix = touch.locationY - prevPos.y;
+            // v1.3.8: guardia anti-saltarín. Si el target del touch cambia mid-
+            // gesture (otra View intercepta), las coordenadas `locationX` pueden
+            // dar un delta gigante que dispara pan rapidísimo o rotación brusca.
+            // Descartar el frame y resincronizar el último touch.
+            if (Math.abs(dxPix) > 120 || Math.abs(dyPix) > 120) {
+              lastTouchPosRef.current = { x: touch.locationX, y: touch.locationY };
+              return;
+            }
 
-            // CANCELAR LONG PRESS SI HAY MOVIMIENTO (umbrales mÃ¡s laxos)
+            // CANCELAR LONG PRESS SI HAY MOVIMIENTO ACUMULADO desde el inicio
+            // del touch (no delta instantáneo del frame). Bug pre-fix: con
+            // deltas chicos (5px/frame) la condición moved>12 nunca se cumplía
+            // en un solo frame, el long press se quedaba "vivo" y bloqueaba
+            // todo el pan via longPressInitiatedRef.current.
             if ((longPressTimer.current || modalTimerRef.current) && longPressStartPos.current) {
-              const moved = Math.hypot(dxPix, dyPix);
-              if (moved > 12) {
+              const startPos = longPressStartPos.current;
+              const totalDx = touch.locationX - startPos.x;
+              const totalDy = touch.locationY - startPos.y;
+              const totalMoved = Math.hypot(totalDx, totalDy);
+              if (totalMoved > 8) {
                 clearTimeout(longPressTimer.current);
                 longPressTimer.current = null;
                 setLongPressActive(false);
@@ -2726,7 +3685,7 @@ const handleZoomButton = useCallback((direction) => {
                 if (modalTimerRef.current) { clearTimeout(modalTimerRef.current); modalTimerRef.current = null; }
                 setSelectedCube(null);
               }
-              if (moved > 28) {
+              if (totalMoved > 20) {
                 clearTimeout(longPressTimer.current);
                 longPressTimer.current = null;
                 longPressStartPos.current = null;
@@ -2739,9 +3698,15 @@ const handleZoomButton = useCallback((direction) => {
 
             // 1 dedo: decidir entre pan (grilla) o rotaciÃ³n (cubo) segÃºn distancia actual (suelta lo antes posible)
             lastTouchPosRef.current = { x: touch.locationX, y: touch.locationY };
-            const deadzone = 3; // px
+            const deadzone = 2; // px — bajo umbral para detectar movimientos chicos sin perderlos
             if (Math.abs(dxPix) + Math.abs(dyPix) < deadzone) return;
             
+            // DEFENSIVO: si no hay timers activos pero el ref sigue en true
+            // (por algún path que limpió timers sin resetear el ref), liberar
+            // ahora para no bloquear el pan eternamente.
+            if (longPressInitiatedRef.current && !longPressTimer.current && !modalTimerRef.current && !longPressActive) {
+              longPressInitiatedRef.current = false;
+            }
             // BLOQUEAR MOVIMIENTO si se inició detección de long press O si está activo
             if (longPressActive || longPressInitiatedRef.current) {
               return; // No permitir pan durante todo el proceso de long press
@@ -2757,7 +3722,7 @@ const handleZoomButton = useCallback((direction) => {
               const cs = camStateRef.current || camState;
               const tempEye = new THREE.Vector3(0, 0, cs.distance)
                 .applyEuler(new THREE.Euler(cs.rotX, -cs.rotY, 0));
-              const tempDist = Math.max(0, tempEye.length() - 100);
+              const tempDist = Math.max(0, tempEye.length() - startKRef.current);
               const EXIT_GRID_DIST = 275.0; // mismo umbral de salida que en render loop
               isInGridMode = tempDist <= EXIT_GRID_DIST;
               // Si ya estamos fuera del umbral de grilla pero cameraMode quedÃƒÂ³ pegado, soltarlo ya
@@ -2780,7 +3745,7 @@ const handleZoomButton = useCallback((direction) => {
               const sz = glSizeRef.current || { width: screenWidth, height: screenHeight };
               const unitsPerPixelY = 2 * dist * Math.tan(fovRad / 2) / (sz.height || screenHeight);
               const unitsPerPixelX = unitsPerPixelY * ((sz.width || screenWidth) / (sz.height || screenHeight));
-              const panK = 1.0; // factor de sensibilidad de pan con 1 dedo en grilla (natural como Google Maps)
+              const panK = 0.8; // factor de sensibilidad de pan con 1 dedo en grilla — balance entre micro-movimientos visibles y no exagerado
               
               // Calcular lÃƒÂ­mites de pan para evitar que el cubo se vaya fuera de pantalla
               const limits = calculateGridPanLimits(
@@ -2795,6 +3760,12 @@ const handleZoomButton = useCallback((direction) => {
                 const nowPan = Date.now();
                 const dtPan = Math.max(8, nowPan - lastPanMoveTimeRef.current);
                 lastPanMoveTimeRef.current = nowPan;
+                // Pan natural estilo Google Maps:
+                //   dedo derecha → contenido derecha → cámara izquierda (gp.x baja)
+                //   dedo abajo   → contenido abajo   → cámara arriba   (gp.y sube)
+                // Con upVector +Y, gp.y > 0 sube la cámara → contenido baja. Así
+                // que el signo correcto para "dedo abajo → contenido abajo" es
+                // +dyPix (no -dyPix).
                 const wdx = -dxPix * unitsPerPixelX * panK;
                 const wdy = dyPix * unitsPerPixelY * panK;
                 // Suavizar velocidad con un promedio exponencial para evitar spikes
@@ -2814,6 +3785,10 @@ const handleZoomButton = useCallback((direction) => {
             } else {
               // Rotación con 1 dedo — sensibilidad adaptativa según distancia de cámara
               // A mayor zoom (menor dist) la rotación se hace más precisa proporcionalmente
+              if (rotationInertiaAnimRef.current) {
+                cancelAnimationFrame(rotationInertiaAnimRef.current);
+                rotationInertiaAnimRef.current = null;
+              }
               const baseSensitivity = 0.008;
               const distNorm = THREE.MathUtils.clamp((camStateRef.current?.distance || 300) / 300, 0.3, 4.0);
               const sensitivity = baseSensitivity * distNorm;
@@ -2826,16 +3801,31 @@ const handleZoomButton = useCallback((direction) => {
               suppressAutoGridRef.current = Date.now() + 2000;
               {
                 const prev = camStateRef.current || {};
-                const targetRotX = prev.rotX + deltaX;
+                // Clamp en pitch (rotX) a (-π/2, π/2) con margen para evitar gimbal lock
+                // y que la cámara cruce el polo (causa visual de "arriba/abajo invertidos"
+                // en zoom lejano, donde la sensibilidad efectiva es ~8× la cercana).
+                const POLE_LIMIT = Math.PI / 2 - 0.01;
+                const targetRotX = THREE.MathUtils.clamp(prev.rotX + deltaX, -POLE_LIMIT, POLE_LIMIT);
                 let targetRotY = prev.rotY + deltaY;
                 targetRotY = THREE.MathUtils.euclideanModulo(targetRotY + Math.PI, Math.PI * 2) - Math.PI;
                 const alpha = 0.5;
+                const appliedDX = (targetRotX - prev.rotX) * alpha;
+                const appliedDY = (targetRotY - prev.rotY) * alpha;
                 const newCamState = {
                   ...prev,
-                  rotX: prev.rotX + (targetRotX - prev.rotX) * alpha,
-                  rotY: prev.rotY + (targetRotY - prev.rotY) * alpha,
+                  rotX: prev.rotX + appliedDX,
+                  rotY: prev.rotY + appliedDY,
                 };
                 camStateRef.current = newCamState;
+                // Capturar velocidad angular (rad/ms) con suavizado exponencial,
+                // para usar en inercia en onPanResponderRelease (modo cubo).
+                const nowRot = Date.now();
+                const dtRot = Math.max(8, nowRot - lastRotateMoveTimeRef.current);
+                lastRotateMoveTimeRef.current = nowRot;
+                rotationVelocityRef.current = {
+                  x: rotationVelocityRef.current.x * 0.4 + (appliedDX / dtRot) * 0.6,
+                  y: rotationVelocityRef.current.y * 0.4 + (appliedDY / dtRot) * 0.6,
+                };
                 const _now4 = Date.now();
                 if (_now4 - lastCamStateReactUpdate.current > 66) {
                   lastCamStateReactUpdate.current = _now4;
@@ -2846,6 +3836,17 @@ const handleZoomButton = useCallback((direction) => {
           }
         },
         onPanResponderRelease: (evt) => {
+          // GUARDIA: si el modal está abierto, soltar el dedo NO debe disparar
+          // inercia. Limpiar velocidad antes de seguir con la lógica de release.
+          const modalOpenAtRelease = !!miningModalRef.current;
+          if (modalOpenAtRelease) {
+            panVelocityRef.current = { x: 0, y: 0 };
+            rotationVelocityRef.current = { x: 0, y: 0 };
+            if (rotationInertiaAnimRef.current) {
+              cancelAnimationFrame(rotationInertiaAnimRef.current);
+              rotationInertiaAnimRef.current = null;
+            }
+          }
           // FIX-P1: mantener FPS alto durante la inercia (no bajar a 30/15 mientras la cámara se desliza)
           markActive();
           // Siempre cancelar timers de long press y modal diferido al soltar
@@ -2866,6 +3867,16 @@ const handleZoomButton = useCallback((direction) => {
             preHoldTimerRef.current = null;
           }
           longPressStartPos.current = null;
+          prePickedCubeRef.current = null; // descartar cache del raycast si soltó sin abrir modal
+          // v1.3.8: resetear el último touch al soltar el dedo. Sin esto, si el
+          // siguiente gesto cambia de target (otra View intercepta el touch),
+          // el primer Move calcula un delta enorme contra coordenadas viejas y
+          // dispara un pan rapidísimo. Grant suele resetearlo, pero hay paths
+          // donde el target del touch cambia entre Grant y el primer Move.
+          lastTouchPosRef.current = null;
+          lastTwoFingerMidRef.current = null;
+          // Cortar el sonido mining al soltar (no-op si no estaba sonando)
+          try { audioManager.stopMiningSound(); } catch {}
           setLongPressActive(false);
           longPressInitiatedRef.current = false; // Liberar bloqueo de pan al soltar
           setSelectedCube(null);
@@ -2881,16 +3892,31 @@ const handleZoomButton = useCallback((direction) => {
           isRotatingRef.current = false;
           lastGridPanTsRef.current = 0;
 
+          // Si el dedo estuvo quieto al menos ~80ms antes de soltar, NO disparar
+          // inercia — el user frenó conscientemente. Sin esto, el smoothing
+          // exponencial (0.4 hist + 0.6 actual) deja velocidad residual de
+          // movimientos previos aunque el último frame haya sido quieto.
+          // Los lastXxxMoveTimeRef solo se actualizan cuando hay delta>deadzone,
+          // así que en frames de "quietud" no se tocan.
+          const QUIET_BEFORE_RELEASE_MS = 80;
+          const nowRel = Date.now();
+          if (nowRel - (lastPanMoveTimeRef.current || 0) > QUIET_BEFORE_RELEASE_MS) {
+            panVelocityRef.current = { x: 0, y: 0 };
+          }
+          if (nowRel - (lastRotateMoveTimeRef.current || 0) > QUIET_BEFORE_RELEASE_MS) {
+            rotationVelocityRef.current = { x: 0, y: 0 };
+          }
+
           // Inercia estilo Google Maps al soltar en modo grilla
           const _inertiaInGrid = (() => {
             try {
               const cs = camStateRef.current || {};
               const eye = new THREE.Vector3(0, 0, cs.distance || 300).applyEuler(new THREE.Euler(cs.rotX || 0, -(cs.rotY || 0), 0));
-              return Math.max(0, eye.length() - 100) <= 275.0;
+              return Math.max(0, eye.length() - startKRef.current) <= 275.0;
             } catch { return false; }
           })();
 
-          if (_inertiaInGrid) {
+          if (_inertiaInGrid && !modalOpenAtRelease) {
             if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
             let vx = panVelocityRef.current.x;
             let vy = panVelocityRef.current.y;
@@ -2900,8 +3926,11 @@ const handleZoomButton = useCallback((direction) => {
               const _sz = glSizeRef.current || { width: screenWidth, height: screenHeight };
               const _limits = calculateGridPanLimits(_dist, _cam?.fov || 60, _sz.width || screenWidth, _sz.height || screenHeight, FACE_GRID_SIZE);
               let _lastT = Date.now();
-              const DECAY = 0.88; // por frame a 60fps (~1.2s hasta detenerse)
-              const MIN_SPEED = 0.00008;
+              // Decay más suave → deslizamientos rápidos siguen viajando más
+              // tiempo antes de frenar. 0.94 por frame a 60fps ≈ 2.7s hasta
+              // detenerse (antes 0.88 ≈ 1.2s).
+              const DECAY = 0.94;
+              const MIN_SPEED = 0.00005;
               const inertiaStep = () => {
                 markActive(); // FIX-P1: mantener FPS alto mientras la inercia anima la cámara
                 const _now = Date.now();
@@ -2919,11 +3948,55 @@ const handleZoomButton = useCallback((direction) => {
               };
               inertiaAnimRef.current = requestAnimationFrame(inertiaStep);
             }
+          } else if (!modalOpenAtRelease) {
+            // Inercia rotacional en modo cubo: si el último gesto fue una rotación,
+            // continuar girando con decay proporcional a la velocidad del swipe.
+            if (rotationInertiaAnimRef.current) {
+              cancelAnimationFrame(rotationInertiaAnimRef.current);
+              rotationInertiaAnimRef.current = null;
+            }
+            let rvx = rotationVelocityRef.current.x;
+            let rvy = rotationVelocityRef.current.y;
+            // Umbral mínimo: por debajo, se considera "soltar quieto" y no gira.
+            if (Math.hypot(rvx, rvy) > 0.00008) {
+              const POLE_LIMIT = Math.PI / 2 - 0.01;
+              const DECAY = 0.94; // mismo feel que la inercia de pan
+              const MIN_SPEED = 0.00002;
+              let _lastT = Date.now();
+              const rotationInertiaStep = () => {
+                markActive();
+                const _now = Date.now();
+                const _dt = Math.min(50, _now - _lastT);
+                _lastT = _now;
+                const decay = Math.pow(DECAY, _dt / 16.67);
+                rvx *= decay; rvy *= decay;
+                if (Math.hypot(rvx, rvy) < MIN_SPEED) {
+                  rotationInertiaAnimRef.current = null;
+                  return;
+                }
+                const prev = camStateRef.current || {};
+                const nextRotXRaw = (prev.rotX || 0) + rvx * _dt;
+                const nextRotX = THREE.MathUtils.clamp(nextRotXRaw, -POLE_LIMIT, POLE_LIMIT);
+                // Si chocamos con un polo, frenar la componente vertical.
+                if (nextRotX !== nextRotXRaw) rvx = 0;
+                let nextRotY = (prev.rotY || 0) + rvy * _dt;
+                nextRotY = THREE.MathUtils.euclideanModulo(nextRotY + Math.PI, Math.PI * 2) - Math.PI;
+                camStateRef.current = { ...prev, rotX: nextRotX, rotY: nextRotY };
+                const _now2 = Date.now();
+                if (_now2 - lastCamStateReactUpdate.current > 66) {
+                  lastCamStateReactUpdate.current = _now2;
+                  setCamState(() => camStateRef.current);
+                }
+                rotationInertiaAnimRef.current = requestAnimationFrame(rotationInertiaStep);
+              };
+              rotationInertiaAnimRef.current = requestAnimationFrame(rotationInertiaStep);
+            }
           }
         },
         onPanResponderTerminate: () => {
           isGesturingRef.current = false;
           if (inertiaAnimRef.current) { cancelAnimationFrame(inertiaAnimRef.current); inertiaAnimRef.current = null; }
+          if (rotationInertiaAnimRef.current) { cancelAnimationFrame(rotationInertiaAnimRef.current); rotationInertiaAnimRef.current = null; }
           try { activeTouchesRef.current = 0; } catch {}
           if (longPressTimer.current) {
             clearTimeout(longPressTimer.current);
@@ -2937,6 +4010,14 @@ const handleZoomButton = useCallback((direction) => {
             clearTimeout(preHoldTimerRef.current);
             preHoldTimerRef.current = null;
           }
+          prePickedCubeRef.current = null;
+          // v1.3.8: ver comentario en onPanResponderRelease — mismo motivo.
+          lastTouchPosRef.current = null;
+          lastTwoFingerMidRef.current = null;
+          longPressInitiatedRef.current = false;
+          panVelocityRef.current = { x: 0, y: 0 };
+          rotationVelocityRef.current = { x: 0, y: 0 };
+          try { audioManager.stopMiningSound(); } catch {}
           setLongPressActive(false);
           setSelectedCube(null);
           setCamState((prev) => {
@@ -2976,15 +4057,11 @@ const handleZoomButton = useCallback((direction) => {
       }
       
       // PERF-001: throttling dinámico según actividad. Mientras hay interacción
-      // (touch/pan/pinch/animaciones) corremos a 60 FPS. Cuando el user está
-      // quieto, bajamos progresivamente a 30 FPS y luego 15 FPS — ahorra
-      // batería significativamente sin afectar UX percibida.
+      // (touch/pan/pinch/animaciones) corremos al ACTIVE_FPS del preset (60 en
+      // high, 45 en mid, 30 en low). Cuando el user está quieto bajamos a IDLE
+      // y luego DEEP_IDLE. perfTier ya detectó el GPU en onContextCreate y se
+      // lee en cada tick para que el toggle "Modo bajo rendimiento" sea live.
       let lastRenderTime = 0;
-      // lastActivityRef ya existe en el scope; lo seteamos en pan/pinch handlers.
-      const ACTIVE_FPS = 60, IDLE_FPS = 30, DEEP_IDLE_FPS = 15;
-      const ACTIVE_THROTTLE_MS = 1000 / ACTIVE_FPS;
-      const IDLE_THROTTLE_MS = 1000 / IDLE_FPS;
-      const DEEP_IDLE_THROTTLE_MS = 1000 / DEEP_IDLE_FPS;
       const IDLE_AFTER_MS = 1500;
       const DEEP_IDLE_AFTER_MS = 6000;
 
@@ -2998,19 +4075,43 @@ const handleZoomButton = useCallback((direction) => {
         // PERF-001: pausa cuando la app está en background. Mantenemos el RAF
         // programado para reanudar sin reinicializar; aumentamos el intervalo
         // a 500ms para no quemar CPU revisando el flag a 60Hz.
-        if (renderPausedRef.current) {
+        // También pausamos mientras buildLayer está construyendo la escena en
+        // chunks (tier LOW) para evitar renderizar una capa medio armada.
+        if (renderPausedRef.current || buildingLayerRef.current) {
           setTimeout(() => {
             animRef.current = requestAnimationFrame(renderLoop);
-          }, 500);
+          }, buildingLayerRef.current ? 50 : 500);
           return;
         }
 
-        // THROTTLING dinámico según actividad reciente.
+        // Context loss recovery (Mali/Adreno bajo presión de memoria a veces
+        // descartan el contexto). Sin esto el siguiente renderer.render()
+        // crashea nativo. Pausamos y forzamos remount del GLView para que
+        // expo-gl recree el contexto y onContextCreate rearme la escena.
+        try {
+          const _gl = glRef.current;
+          if (_gl && typeof _gl.isContextLost === 'function' && _gl.isContextLost()) {
+            if (!contextLostHandledRef.current) {
+              contextLostHandledRef.current = true;
+              renderPausedRef.current = true;
+              try { logError('DynamicCube201.contextLost', new Error('WebGL context lost')); } catch {}
+              try { setFocusKey((k) => k + 1); } catch {}
+            }
+            setTimeout(() => {
+              animRef.current = requestAnimationFrame(renderLoop);
+            }, 500);
+            return;
+          }
+        } catch {}
+
+        // THROTTLING dinámico según actividad reciente. Leemos del perfTier en
+        // cada tick para que el toggle de Modo bajo rendimiento sea live.
         const now = performance.now();
         const sinceActivity = now - (lastActivityRef.current || 0);
-        let throttleMs = ACTIVE_THROTTLE_MS;
-        if (sinceActivity > DEEP_IDLE_AFTER_MS) throttleMs = DEEP_IDLE_THROTTLE_MS;
-        else if (sinceActivity > IDLE_AFTER_MS) throttleMs = IDLE_THROTTLE_MS;
+        const _preset = perfTier.getPreset();
+        let throttleMs = 1000 / _preset.activeFps;
+        if (sinceActivity > DEEP_IDLE_AFTER_MS) throttleMs = 1000 / _preset.deepIdleFps;
+        else if (sinceActivity > IDLE_AFTER_MS) throttleMs = 1000 / _preset.idleFps;
         if (now - lastRenderTime < throttleMs) {
           animRef.current = requestAnimationFrame(renderLoop);
           return;
@@ -3034,7 +4135,7 @@ const handleZoomButton = useCallback((direction) => {
           .applyEuler(_sEuler.set(rotX, -rotY, 0))
           .add(target);
         const tempCollisionDistance = tempEye.distanceTo(target);
-        const tempDistanceToNearestCube = Math.max(0, tempCollisionDistance - 100); // 100 = radio del cubo
+        const tempDistanceToNearestCube = Math.max(0, tempCollisionDistance - startKRef.current); // startK = radio del cubo
         // HISTERESIS de modo grilla para evitar vibraciÃƒÂ³n
         // Histeresis ajustada: entrar a grilla cuando muy cerca y salir apenas te alejas un poco
         // Estos valores estÃƒÂ¡n en "cubitos desde la superficie" (distanceToNearestCube)
@@ -3055,7 +4156,7 @@ const handleZoomButton = useCallback((direction) => {
         
         // Calcular distancia al cubito mÃ¡s cercano (superficie del cubo)
         const collisionDistance = eye.distanceTo(target);
-        const distanceToNearestCube = Math.max(0, collisionDistance - 100); // 100 = radio del cubo
+        const distanceToNearestCube = Math.max(0, collisionDistance - startKRef.current); // startK = radio del cubo
         
         // ELIMINAR ajuste automÃƒÂ¡tico que causaba pantalla negra
         // La cÃ¡mara puede acercarse hasta 2 cubitos sin restricciones adicionales
@@ -3066,6 +4167,15 @@ const handleZoomButton = useCallback((direction) => {
         // Extender ventana de gesto activo para mantener modo grilla estable durante el pan
         // Reducir la ventana de pegajosidad de pan en grilla para que suelte mÃ¡s rÃƒÂ¡pido
         const panActive = nowTs - (lastGridPanTsRef.current || 0) < 800;
+        // v1.3.16: `suppressedAutoGrid` ahora SOLO protege contra LIMPIAR
+        // requestedFaceRef durante la animación de goToFaceCenter — no fuerza
+        // grid mode. En v1.3.11–v1.3.15 forzábamos grid mode toda la animación,
+        // lo que mantenía la cámara perpendicular a la cara solicitada (en
+        // distance=650) y SE PERDÍA LA ANIMACIÓN DE ROTACIÓN visual — saltaba
+        // directo a la cara nueva. Con este cambio, durante zoom-out vuelve a
+        // cube mode (animación visible), y al final reentra a grid con la
+        // cara correcta porque NO la limpiamos en el medio.
+        const suppressedAutoGrid = nowTs < (suppressAutoGridRef.current || 0);
         // CRÃƒÂTICO: Eliminar requestedFaceRef.current para evitar loop infinito
         const shouldUseCameraMode = shouldUseCameraModeForCalc || panActive;
         const stickyGrid = (cameraModeRef.current === 'grid') && shouldUseCameraModeForCalc;
@@ -3078,7 +4188,17 @@ const handleZoomButton = useCallback((direction) => {
           }
           cameraModeRef.current = 'grid';
           setCameraMode('grid');
-          // Al entrar a grilla: NO recentrar pan automÃƒÂ¡ticamente para evitar "volver al inicio" mientras el usuario navega
+          // 2026-06-24: resetear gridPosition al ENTRAR a grilla. Sin esto,
+          // el offset acumulado en sesiones previas se mantiene y al volver a
+          // entrar a grilla la cámara arranca corrida — el pan se siente
+          // "invertido" hasta que el user salga y vuelva a entrar.
+          gridPositionRef.current = { x: 0, y: 0 };
+          panVelocityRef.current = { x: 0, y: 0 };
+          rotationVelocityRef.current = { x: 0, y: 0 };
+          if (rotationInertiaAnimRef.current) {
+            cancelAnimationFrame(rotationInertiaAnimRef.current);
+            rotationInertiaAnimRef.current = null;
+          }
           // CRÍTICO: Capturar la cara que estaba mirando ANTES del zoom para mantenerla en modo grilla
           if (!requestedFaceRef.current) {
             // Usar la última cara detectada como la cara "solicitada" durante el modo grilla
@@ -3092,7 +4212,12 @@ const handleZoomButton = useCallback((direction) => {
               setActiveFaceIndex(faceToKeep);
             }
           }
-        } else if (!shouldUseCameraModeForCalc && !panActive && cameraModeRef.current === 'grid') {
+        } else if (!shouldUseCameraModeForCalc && !panActive && !suppressedAutoGrid && cameraModeRef.current === 'grid') {
+          // v1.3.15: agregado `!suppressedAutoGrid` para no salir de grid
+          // durante la animación de goToFaceCenter. Antes el zoom-out (fase 1,
+          // distance=650) salía de grid y limpiaba requestedFaceRef → al volver
+          // a entrar a grid en zoom-in (fase 3) la cámara aterrizaba en la cara
+          // DETECTADA (front) en lugar de la solicitada por el botón.
           cameraModeRef.current = 'cube';
           setCameraMode('cube');
           // Limpiar cara solicitada y detectada al salir de modo grilla
@@ -3144,18 +4269,25 @@ const handleZoomButton = useCallback((direction) => {
           // Vectores right/up en funciÃƒÂ³n de la cara para desplazar sobre la superficie (grid pan)
           const rightVector = _sv8.set(0, 0, 0);
           const upVector = _sv9.set(0, 0, 0);
+          // v1.3.13: signos según la normal para que el pan se sienta natural
+          // en TODAS las caras. Antes top/bottom (y left/right, front/back)
+          // compartían rightVector/upVector → en una de cada par el pan se
+          // invertía visualmente porque la cámara mira al lado opuesto.
           if (Math.abs(activeFace.normal.y) > 0.9) {
-            // top/bottom
-            rightVector.set(1, 0, 0);  // derecha = X
-            upVector.set(0, 0, 1);     // arriba = Z
+            // top (+Y) mira hacia -Y: en pantalla, "arriba" es -Z.
+            // bottom (-Y) mira hacia +Y: en pantalla, "arriba" es +Z.
+            rightVector.set(1, 0, 0);
+            upVector.set(0, 0, -Math.sign(activeFace.normal.y));
           } else if (Math.abs(activeFace.normal.x) > 0.9) {
-            // left/right - FIX: intercambiar para que X sea horizontal, Y sea vertical
-            rightVector.set(0, 0, 1);  // FIX: derecha = Z (perpendicular a la cara X)
-            upVector.set(0, 1, 0);     // FIX: arriba = Y
+            // right (+X) mira hacia -X: en pantalla, "derecha" es -Z.
+            // left (-X) mira hacia +X: en pantalla, "derecha" es +Z.
+            rightVector.set(0, 0, -Math.sign(activeFace.normal.x));
+            upVector.set(0, 1, 0);
           } else {
-            // front/back
-            rightVector.set(1, 0, 0);  // derecha = X
-            upVector.set(0, 1, 0);     // arriba = Y
+            // front (+Z) mira hacia -Z: en pantalla, "derecha" es +X.
+            // back (-Z) mira hacia +Z: en pantalla, "derecha" es -X.
+            rightVector.set(Math.sign(activeFace.normal.z), 0, 0);
+            upVector.set(0, 1, 0);
           }
           // Usar gridPositionRef para evitar valores obsoletos
           const gp = gridPositionRef.current || { x: 0, y: 0 };
@@ -3189,13 +4321,14 @@ const handleZoomButton = useCallback((direction) => {
         const EPS = 0.12; // ~12cm de tolerancia en unidades de cubito
         const minZoom = 6.6; // Solo mostrar desde zoom 6.6 (cerca)
         const maxZoom = 25;
-        // PROTECCIÃƒâ€œN ANTI-CRASH: No crear números si hay animaciones de minado activas
-        const hasActiveAnimations = miningAnimations && miningAnimations.size > 0;
+        // Round 2 Agente #5: `hasActiveAnimations` queda siempre false post
+        // remove de miningAnimations state (que nunca se mutaba). Si en el
+        // futuro vuelven las animaciones de minado, recuperar el patrón con
+        // un useRef en lugar de useState para no re-renderizar el componente.
+        const hasActiveAnimations = false;
         // IMPORTANTE: NO forzar números fuera del rango de zoom, incluso si hay cara seleccionada
         const shouldShowNumbers = !hasActiveAnimations && (distanceToNearestCube >= (minZoom - EPS) && distanceToNearestCube <= (maxZoom + EPS));
-        
-        // Optimización: Logs eliminados del render loop para mejor rendimiento
-        
+
         // Array para almacenar números visibles
         const currentVisibleNumbers = [];
         
@@ -3388,7 +4521,7 @@ const handleZoomButton = useCallback((direction) => {
                     continue;
                   }
                   // USAR apiCubeNumber (ÃƒÂºnico por cara) para verificar si estÃƒÂ¡ minado
-                  const apiId = faceGridToCubeNumber(faceIndex, gridX, gridY);
+                  const apiId = chainMode ? cubeNumberAsc : faceGridToCubeNumber(faceIndex, gridX, gridY);
                   const isMined = apiId ? minedCubes.has(apiId) : false;
                   
                   // DEBUG: Logging para verificar independencia de caras
@@ -3490,6 +4623,42 @@ const handleZoomButton = useCallback((direction) => {
                 }
               }
               faceGroup.userData.cachedVisibleNumbers = faceNumbers;
+
+              // 2026-06-24 v1.3.2: LOOKAHEAD ASÍNCRONO — en lugar de generar
+              // las ~300 texturas extras AHORA (lo que saturaba el JS thread
+              // en Mali-G52 al panear), sólo ENCOLAMOS los rawN del ring.
+              // La cola se procesa después del render, 3ms/frame, ÚNICAMENTE
+              // cuando no hay gesto activo (isGesturingRef false). Así el
+              // movimiento queda fluido y los costados se pre-cargan en
+              // background mientras el dedo está quieto.
+              try {
+                const _lookRows = perfTier.getPreset().lookaheadRows || 3;
+                const preMinX = Math.max(0, minX - _lookRows);
+                const preMaxX = Math.min(GRID_SIZE - 1, maxX + _lookRows);
+                const preMinY = Math.max(0, minY - _lookRows);
+                const preMaxY = Math.min(GRID_SIZE - 1, maxY + _lookRows);
+                const q = lookaheadQueueRef.current;
+                for (let gy = preMinY; gy <= preMaxY; gy += step) {
+                  for (let gx = preMinX; gx <= preMaxX; gx += step) {
+                    if (gx >= minX && gx <= maxX && gy >= minY && gy <= maxY) continue;
+                    const inst = indexByGrid[gy * GRID_SIZE + gx];
+                    if (inst < 0) continue;
+                    const rawN = cubeNumbers[inst];
+                    if (typeof rawN !== 'number' || !isFinite(rawN)) continue;
+                    if (q.seen.has(rawN)) continue;
+                    q.list.push(rawN);
+                    q.seen.add(rawN);
+                  }
+                }
+                // v1.3.18: cap escalable por tier. Antes 1500 hardcoded. En LOW
+                // tier el thrashing era peor; en HIGH el cap chico desperdiciaba
+                // RAM disponible. Ahora 800/1500/2500 según preset.
+                const _lookCap = (perfTier.getPreset && perfTier.getPreset().lookaheadCapacity) || 1500;
+                while (q.list.length > _lookCap) {
+                  const dropped = q.list.shift();
+                  q.seen.delete(dropped);
+                }
+              } catch {}
               } // fin else (viewport cambió)
 
             } else {
@@ -3517,36 +4686,26 @@ const handleZoomButton = useCallback((direction) => {
         const shouldDoCulling = cullingFrameCounter.current % 3 === 0;
         
         if (shouldDoCulling) {
-          // Controlar visibilidad de sprites SOLO EN CARA ACTIVA
+          // Visibilidad de parches/sprites de cubos minados.
+          // v1.3.8: los PARCHES grises se controlan SOLO con viewport culling
+          // (proyección a NDC). El back-face culling lo hace Three.js
+          // automáticamente porque el material tiene `side: FrontSide` y la
+          // PlaneGeometry queda rotada con la cara del cubo. Antes
+          // dependíamos de `facingCamera` con threshold dot>0.5 que sólo era
+          // verdadero para UNA cara a la vez — en modo cubo (3 caras visibles)
+          // las otras 2 quedaban sin patches y al reabrir la app se veía como
+          // si los parches nunca se hubieran aplicado.
+          // Los NÚMEROS grises e INDICADORES de recompensa sí mantienen la
+          // condición original (solo en cara activa con zoom adecuado) para
+          // no saturar la pantalla en modo cubo.
           for (let faceIndex = 0; faceIndex < faceGroupsRef.current.length; faceIndex++) {
           const faceGroup = faceGroupsRef.current[faceIndex];
           const isActiveFace = (stableMostVisibleFaceIndex === faceIndex);
           const isFacingCamera = faceGroup.userData.facingCamera || false;
-          const shouldShowSprites = shouldShowNumbers && isFacingCamera && isActiveFace;
-          
-          // OPTIMIZACIÓN: Para caras inactivas, ocultar todos los sprites de una vez SIN iterar
-          if (!isActiveFace || !shouldShowSprites) {
-            // Ocultar todos los sprites de esta cara sin procesamiento individual
-            if (faceGroup.userData.minedPatches) {
-              faceGroup.userData.minedPatches.forEach(patch => {
-                if (patch && typeof patch.visible !== 'undefined') patch.visible = false;
-              });
-            }
-            if (faceGroup.userData.minedNumberSprites) {
-              faceGroup.userData.minedNumberSprites.forEach(sprite => {
-                if (sprite && typeof sprite.visible !== 'undefined') sprite.visible = false;
-              });
-            }
-            if (faceGroup.userData.rewardIndicators) {
-              faceGroup.userData.rewardIndicators.forEach(sprite => {
-                if (sprite && typeof sprite.visible !== 'undefined') sprite.visible = false;
-              });
-            }
-            continue; // ✅ Saltar al siguiente faceIndex sin hacer culling costoso
-          }
-          
-          // SOLO PARA CARA ACTIVA: Hacer viewport culling preciso (usa scratch para evitar allocations)
-          // Controlar parches grises oscuros de celdas minadas
+          const shouldShowAux = shouldShowNumbers && isFacingCamera && isActiveFace;
+
+          // PARCHES grises: solo viewport culling por celda. Three.js hace el
+          // back-face culling automáticamente con FrontSide.
           if (faceGroup.userData.minedPatches) {
             faceGroup.userData.minedPatches.forEach((patch) => {
               if (patch && typeof patch.visible !== 'undefined') {
@@ -3559,7 +4718,22 @@ const handleZoomButton = useCallback((direction) => {
             });
           }
 
-          // Controlar números grises de celdas minadas
+          // NÚMEROS grises e INDICADORES: solo en cara activa con zoom dentro
+          // del rango (mantiene la lógica original para no saturar).
+          if (!shouldShowAux) {
+            if (faceGroup.userData.minedNumberSprites) {
+              faceGroup.userData.minedNumberSprites.forEach(sprite => {
+                if (sprite && typeof sprite.visible !== 'undefined') sprite.visible = false;
+              });
+            }
+            if (faceGroup.userData.rewardIndicators) {
+              faceGroup.userData.rewardIndicators.forEach(sprite => {
+                if (sprite && typeof sprite.visible !== 'undefined') sprite.visible = false;
+              });
+            }
+            continue;
+          }
+
           if (faceGroup.userData.minedNumberSprites) {
             faceGroup.userData.minedNumberSprites.forEach((sprite) => {
               if (sprite && typeof sprite.visible !== 'undefined') {
@@ -3572,7 +4746,6 @@ const handleZoomButton = useCallback((direction) => {
             });
           }
 
-          // Controlar indicadores de premio (X y picos)
           if (faceGroup.userData.rewardIndicators) {
             faceGroup.userData.rewardIndicators.forEach((sprite) => {
               if (sprite && typeof sprite.visible !== 'undefined') {
@@ -3586,11 +4759,7 @@ const handleZoomButton = useCallback((direction) => {
           }
         }
         }
-        
-        // Debug: log caras visibles si hay cambios
-        if (currentlyVisible.length !== visibleFaces.length) {
-        }
-        
+
         // Actualizar ref de números visibles cada frame (sin re-render)
         visibleNumbersRef.current = currentVisibleNumbers;
 
@@ -3635,6 +4804,24 @@ const handleZoomButton = useCallback((direction) => {
           renderer.render(scene, camera);
           if (glRef.current) {
             glRef.current.endFrameEXP();
+          }
+
+          // Procesar la cola de lookahead — solo si el user NO está tocando.
+          // Timeboxed a 3ms para no afectar el frame budget. Si la cola es
+          // grande se completará a lo largo de varios frames idle.
+          if (!isGesturingRef.current) {
+            const _q = lookaheadQueueRef.current;
+            if (_q.list.length > 0) {
+              const _t0 = performance.now();
+              const _BUDGET = 3;
+              while (_q.list.length > 0 && performance.now() - _t0 < _BUDGET) {
+                const rawN = _q.list.shift();
+                _q.seen.delete(rawN);
+                try {
+                  createNumberTexture(rawN, { transparentBackground: false, digitColor: [0,0,0,255] });
+                } catch {}
+              }
+            }
           }
         } catch (renderError) {
           // FIX-P1: re-schedule incluso ante excepción transitoria (context lost,
@@ -3712,10 +4899,20 @@ const handleZoomButton = useCallback((direction) => {
   const onContextCreate = async (gl) => {
     try {
       glRef.current = gl;
-      
-      const renderer = new Renderer({ gl, antialias: false }); // Desactivar antialiasing para mejor rendimiento
-      
-      // Pixel ratio fijo: expo-three ya trabaja en coordenadas del drawing buffer
+      // Reset flag de context loss: el GLView se remontó con éxito, el contexto
+      // nuevo está vivo. El render loop puede volver a usarlo.
+      contextLostHandledRef.current = false;
+      renderPausedRef.current = false;
+      // Detectar tier de performance del device (Mali-G52 etc → low) y persistir.
+      // Carga override del user en paralelo si lo había seteado en Config.
+      try {
+        await perfTier.init();
+        await perfTier.detectFromGL(gl);
+      } catch {}
+
+      const renderer = createGLRenderer(gl, { antialias: false }); // Desactivar antialiasing para mejor rendimiento
+
+      // Pixel ratio fijo: WebGLRenderer toma el drawing buffer ya escalado por expo-gl.
       renderer.setPixelRatio(1);
       
       // Usar el drawing buffer para el tamaño interno inicial del renderer (evita offsets)
@@ -3758,7 +4955,34 @@ const handleZoomButton = useCallback((direction) => {
       scene.add(cubeGroup);
 
       // Creador de capa K
-      const buildLayer = (K) => {
+      const buildLayer = async (K) => {
+        // En tier LOW armamos las 6 caras yieldeando 1 frame entre cada una
+        // (~16ms) para no bloquear el main thread durante ~600-1200ms en
+        // devices flojos. Eso evita el ANR de Android cuando K=100 (240k
+        // instancias). En mid/high se construye sync como antes.
+        const yieldBetweenFaces = perfTier.getTier() === perfTier.TIER_LOW;
+        buildingLayerRef.current = true;
+        // v1.3.19: sincronizar state para mostrar loading overlay.
+        try { setIsBuildingLayer(true); } catch {}
+        if (initialCubeLoadRef.current) buildStartRef.current = Date.now();
+        // Limpiar cola de lookahead — los rawN encolados de la capa anterior
+        // ya no son relevantes (numbers cambiaron en buildLayer).
+        try {
+          lookaheadQueueRef.current.list.length = 0;
+          lookaheadQueueRef.current.seen.clear();
+        } catch {}
+        // Safety net: si algo falla a mitad del build, el flag queda colgado
+        // y el render loop nunca se reanuda. Timer máximo 30s para garantizar
+        // recuperación.
+        const _buildSafety = setTimeout(() => { buildingLayerRef.current = false; }, 30000);
+       try {
+        // B2 fix (audit gráfico 2026-06-23+): reset del estado global de
+        // FaceDetection ANTES de cualquier otra cosa. Sin esto, el primer
+        // frame post-buildLayer corre con el `lastDetectedFace` viejo de
+        // la capa/montaje anterior → primera detección post-remount es
+        // a veces incorrecta (sigue mostrando 'back' cuando debería ser
+        // 'front'). El reset en cleanup llega tarde (después de dispose).
+        try { resetFaceDetection(); } catch {}
         // Limpiar capa anterior e invalidar cache de raycast
         invalidateIntersectablesCache();
         // CRIT-12: dispose recursivo de la capa anterior. Sin esto cada
@@ -3788,6 +5012,10 @@ const handleZoomButton = useCallback((direction) => {
           cubeGroup.remove(ch);
         }
         const faceGroups = [];
+        // K=0 (un solo cubo, cadena casi terminada): igual que en el modo
+        // server, se construyen las 6 caras normalmente -- todas muestran el
+        // mismo cubo #1 visto desde cada dirección (comportamiento ya
+        // correcto y esperado, idéntico al último cubo del juego estándar).
         for (let faceIndex=0; faceIndex<FACES.length; faceIndex++){
           const faceInfo = FACES[faceIndex];
           const { simpleMesh, borderMesh, createDetailedMesh, faceIndex: idx } = createFaceInstancesForLayer(K, faceIndex);
@@ -3826,16 +5054,42 @@ const handleZoomButton = useCallback((direction) => {
           };
           cubeGroup.add(faceGroup);
           faceGroups.push(faceGroup);
+          // Yield al main thread entre caras en tier LOW (evita ANR)
+          if (yieldBetweenFaces && faceIndex < FACES.length - 1) {
+            await new Promise((r) => setTimeout(r, 0));
+          }
         }
-        faceGroupsRef.current = faceGroups;
-        // NumeraciÃƒÂ³n global por shell K (continua y sin duplicados)
+        // v1.3.10: NO setear faceGroupsRef todavía. Antes lo hacíamos acá pero
+        // el listener Firestore podía llamar `applyMinedCell` → `addDarkPatch`
+        // ANTES de que la numeración global poblara `cubeNumbers`. Resultado:
+        // patches creados sin sprite de número ni reward indicator (parches
+        // "negros" sin nada encima). Moviendo la asignación al final, después
+        // de poblar cubeNumbers, garantizamos que cuando el listener pueda
+        // aplicar patches, los datos están completos.
+        // Numeración global por shell K. Como ahora un cubo de arista/esquina
+        // aparece en 2-3 caras, usamos un Map<coord3D, number> para que el
+        // mismo cubo tenga el mismo número en todas las caras donde aparece.
+        // El orden de iteración (front primero, prioridad clásica) asegura
+        // que el número canónico se asigna en la cara "owner" y se reutiliza
+        // en las vecinas.
         const shellBelow = (k) => {
           let s = 0;
           for (let t=0; t<k; t++) s += shellSize(t);
           return s;
         };
         let cursor = shellBelow(K) + 1;
+        const numberByCoord = new Map();
         const faceOrder = ['front','right','back','left','top','bottom'];
+        const faceNameToIndex = { front: 0, back: 1, right: 2, left: 3, top: 4, bottom: 5 };
+        // Modo Chain: el identificador operacional (el que viaja a placeCube y
+        // al doc de Firestore) es el número canónico dedup (n, el mismo que
+        // ya se calcula acá para el texto mostrado), NO el "apiId" derivado
+        // de faceGridToCubeNumber -- ese esquema usa un FACE_GRID_SIZE fijo
+        // basado en CURRENT_ECON_LAYER=100 y se rompería para K>100 (Chain
+        // llega a 250). Guardamos el mapeo inverso n -> [{faceIndex,gridX,gridY}]
+        // (un número puede aparecer en 2-3 caras si es arista/esquina) para
+        // que el listener de "placed" pueda pintar todas las apariciones.
+        if (chainMode) numberToPositionsRef.current = new Map();
         for (const faceName of faceOrder){
           const faceGroup = faceGroups.find(g => g.userData.name === faceName);
           if (!faceGroup) continue;
@@ -3850,19 +5104,87 @@ const handleZoomButton = useCallback((direction) => {
           for (let gy=0; gy<GRID_SIZE; gy++){
             for (let gx=0; gx<GRID_SIZE; gx++){
               const inst = indexByGrid[gy*GRID_SIZE + gx];
-              if (inst >= 0) {
-                numbers[inst] = cursor++;
+              if (inst < 0) continue;
+              // Mapear (gx, gy) → coord 3D del cubo según la cara
+              const a = gx - K, b = gy - K;
+              let ix=0, iy=0, iz=0;
+              switch(faceName){
+                case 'front':  iz = K;   ix = a;  iy = b; break;
+                case 'back':   iz = -K;  ix = -a; iy = b; break;
+                case 'right':  ix = K;   iz = -a; iy = b; break;
+                case 'left':   ix = -K;  iz = a;  iy = b; break;
+                case 'top':    iy = K;   ix = a;  iz = -b; break;
+                case 'bottom': iy = -K;  ix = a;  iz = b;  break;
+              }
+              const coordKey = ix * 1000000 + iy * 1000 + iz + 500500500;
+              let n = numberByCoord.get(coordKey);
+              if (n === undefined) {
+                n = cursor++;
+                numberByCoord.set(coordKey, n);
+              }
+              numbers[inst] = n;
+              if (chainMode) {
+                const faceIdx = faceNameToIndex[faceName];
+                const list = numberToPositionsRef.current.get(n) || [];
+                list.push({ faceIndex: faceIdx, gridX: gx, gridY: gy });
+                numberToPositionsRef.current.set(n, list);
               }
             }
           }
           // guardar de nuevo
           cubesMesh.userData.cubeNumbers = numbers;
         }
+        // v1.3.10: AHORA sí, con cubeNumbers poblado en todas las caras.
+        faceGroupsRef.current = faceGroups;
+        // Cambio 9: mecánica estándar -- la capa arranca sin nada minado
+        // (minedCubes vacío, igual que servers), no hace falta parchar nada
+        // acá. Los cubos ya minados de esta capa (si se re-entra a mitad de
+        // camino) llegan vía el listener de "placed"/"mined" + el retry de
+        // rehidratación (useEffect más abajo), igual que en servers.
+       } finally {
+        clearTimeout(_buildSafety);
+        buildingLayerRef.current = false;
+        // Cambio 5: si es la carga inicial (banner visible), asegurar que el
+        // overlay quede al menos ENTRY_BANNER_MIN_MS en pantalla para que el
+        // banner cuente como impresión viewable, aunque el build real haya
+        // sido más rápido. Transiciones de capa (no inicial) no se estiran.
+        if (initialCubeLoadRef.current) {
+          const elapsed = Date.now() - buildStartRef.current;
+          const remaining = ENTRY_BANNER_MIN_MS - elapsed;
+          if (remaining > 0) {
+            await new Promise((r) => setTimeout(r, remaining));
+          }
+          initialCubeLoadRef.current = false;
+          try { setShowEntryBanner(false); } catch {}
+        }
+        // v1.3.19: ocultar loading overlay.
+        try { setIsBuildingLayer(false); } catch {}
+       }
       };
 
-      // Construir capa inicial
-      buildLayer(currentLayer);
+      // Construir capa inicial (await porque buildLayer es async — en tier LOW
+      // yieldea entre caras; en mid/high resuelve sync sin yields).
+      await buildLayer(currentLayer);
       buildLayerRef.current = buildLayer;
+
+      // Pre-compilar shaders ANTES del primer renderer.render(). En Mali-G52
+      // y similares la compilación es bloqueante en el main thread; sin esto
+      // los primeros 5-10 frames stuttean fuerte (cada material nuevo bloquea
+      // 100-400ms al compilar). renderer.compile() lo hace todo de una vez
+      // mientras la pantalla aún está negra, y los siguientes frames salen
+      // limpios.
+      // v1.3.19: en LOW tier saltamos el precompile. En esos devices el costo
+      // bloqueante (1-3s) supera el beneficio (stutter en los primeros frames
+      // ya está dentro del rango "esperable" para esa gama). El user percibe
+      // 2-3s menos de pantalla negra al cold-start.
+      try {
+        const _skipCompile = perfTier.getTier() === perfTier.TIER_LOW;
+        if (!_skipCompile && rendererRef.current && sceneRef.current && cameraRef.current) {
+          rendererRef.current.compile(sceneRef.current, cameraRef.current);
+        }
+      } catch (e) {
+        try { logError('DynamicCube201.shaderPrecompile', e); } catch {}
+      }
 
       // Calcular y cachear rangos descendentes por cara de la capa actual
       try { recomputeFaceRanges(); } catch {}
@@ -3894,9 +5216,22 @@ const handleZoomButton = useCallback((direction) => {
     goToFaceCenter(faceName, true); // true = forceGridMode
   };
 
-  // Obtener rango ACTUAL por cara en numeraciÃƒÂ³n ascendente directamente desde la escena
+  // CRIT (Round 2 Agente #5 CRIT-4): leer del cache `faceRangesRef` en lugar
+  // de iterar los 240k cubeNumbers de la cara. Pre-fix: este getFaceRange se
+  // llamaba desde JSX (línea ~3974) que rerendea 15-60 veces/seg durante pan
+  // activo → 14M iteraciones/seg → stutter visible en Android low-end.
+  // El cache ya estaba poblado por recomputeFaceRanges() en buildLayer; el
+  // bug era que esta función nunca lo consultaba.
   const getFaceRange = (faceIndex) => {
     try {
+      const cached = faceRangesRef.current?.[faceIndex];
+      if (cached && typeof cached.start === 'number' && typeof cached.end === 'number') {
+        return cached;
+      }
+      // Fallback solo si cache miss — primera frame post-mount antes que
+      // buildLayer corra recomputeFaceRanges. Mantenemos la versión vieja
+      // para no devolver {start:0, end:0} (que rompería el render del label
+      // "Cara X: 1..N").
       const faceGroupEntry = faceGroupsRef.current?.[faceIndex];
       if (!faceGroupEntry) return { start: 0, end: 0 };
       const cubesMesh = faceGroupEntry.userData?.simpleMesh?.children?.[1]
@@ -3993,26 +5328,78 @@ const handleZoomButton = useCallback((direction) => {
         ))}
       </View>
 
+      {/* v1.3.19: loading overlay durante buildLayer. Bloquea touches con
+          pointerEvents auto para que el user no rote/zoom antes de tiempo
+          (eso causaba el crash que el user reportó). */}
+      {isBuildingLayer && (
+        <View style={styles.buildingOverlay} pointerEvents="auto">
+          <ActivityIndicator size="large" color="#ffffff" />
+          <Text style={styles.buildingText}>
+            {t('cube.loadingLayer') || 'Cargando capa...'}
+          </Text>
+          <Text style={styles.buildingSubtext}>
+            {t('cube.loadingHint') || 'Un momento, preparando el cubo'}
+          </Text>
+          {/* Cambio 5: banner pasivo solo en la carga inicial (no en
+              transiciones de capa completa). Sin relación con ningún pico
+              -- aparece por entrar al cubo, no por ninguna recompensa.
+              Cambio 15 (2026-07-06): solo Free y Chain -- los servers
+              pagos (estándar y a medida) ya cobran entrada, no llevan ads. */}
+          {showEntryBanner && (activeServer?.config?.isFreeServer || chainMode) && (
+            <View style={styles.entryBannerWrap}>
+              <Text style={styles.entryBannerDisclaimer}>
+                {t('cube.adDisclaimer') || 'Publicidad externa'}
+              </Text>
+              <View style={styles.entryBannerBox} pointerEvents="none">
+                {/* pointerEvents="none": ad pasivo, ninguna interacción
+                    esperada -- ver mismo comentario en ChainClaimPickModal. */}
+                <WebView
+                  source={{ uri: AD_FRAME_URL }}
+                  style={styles.entryBannerWebview}
+                  originWhitelist={['https://miningtheblocks.com', 'https://ads.miningtheblocks.com']}
+                  onShouldStartLoadWithRequest={(req) => req.url.startsWith('https://miningtheblocks.com') || req.url.startsWith('https://ads.miningtheblocks.com')}
+                  javaScriptEnabled
+                  domStorageEnabled
+                  setSupportMultipleWindows={true}
+                  javaScriptCanOpenWindowsAutomatically={false}
+                  onOpenWindow={() => {}}
+                />
+              </View>
+            </View>
+          )}
+        </View>
+      )}
+
       <View style={styles.hud} pointerEvents="box-none">
         {/* Barra superior: Hamburguesa + Picos */}
         <View style={styles.topRow}>
           <TouchableOpacity style={styles.hamburgerBtn} onPress={() => setMenuOpen(true)}>
             <Text style={styles.hamburgerTxt}>☰</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.picksWrap} onPress={() => { try { openModal('peaks'); } catch(e) {} }} activeOpacity={0.8}>
-            <Text style={styles.picksTxt}>⛏ x {typeof picks === 'number' ? picks : '...'}</Text>
+          <TouchableOpacity
+            style={styles.picksWrap}
+            onPress={() => {
+              // chainMode: "picos" acá son bloques reclamables de Chain
+              // (captcha + anuncio, ChainClaimPickModal), no el flujo normal
+              // de elegir un server para ver anuncios (GetPeaks/'peaks').
+              if (chainMode) { setShowChainClaimModal(true); return; }
+              try { openModal('peaks'); } catch(e) {}
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.picksTxt}>⛏ x {typeof (chainMode ? chainStatus?.picks : picks) === 'number' ? (chainMode ? chainStatus.picks : picks) : '...'}</Text>
           </TouchableOpacity>
-          <View style={styles.moneyWrap}>
-            <Text style={styles.moneyTxt}>${(Number(cash) || 0).toFixed(2)}</Text>
-          </View>
+          {/* v1.3.13: $0.00 removido del HUD del cubo. Las gemas/cash tienen su
+              lugar propio en /gems; en el cubo distraía sin aportar. */}
         </View>
-        {/* HUD minimal: Distance, Layer, Mined */}
+        {/* HUD v1.3.13: distance / Layer / Mined Layer / Mined Total / Next Layer / Players Online */}
         <Text style={styles.stats}>{t('cube.hudDistance')}: {realDistance.toFixed(1)}</Text>
         <Text style={styles.stats}>{t('cube.hudLayer')}: {currentLayer}</Text>
-        <Text style={styles.stats}>{t('cube.hudMined')}: {minedCubes.size}</Text>
-        <Text style={styles.stats}>{t('cube.hudRemaining')}: {Math.max(0, shellSize(currentLayer) - Number(layerMinedCount || 0))}</Text>
         <Text style={styles.stats}>{t('cube.hudLayerMined')}: {layerMinedCount}</Text>
         <Text style={styles.stats}>{t('cube.hudTotalMined')}: {totalMinedAllLayers}</Text>
+        <Text style={styles.stats}>{t('cube.hudNextLayer')}: {Math.max(0, shellSize(currentLayer) - Number(layerMinedCount || 0))}</Text>
+        <Text style={styles.stats}>{t('cube.hudPlayers')}: {serverMemberCount}</Text>
+        <Text style={styles.stats}>{t('cube.hudMinedByYou')}: {minedCubes.size}</Text>
         {hudToast && (
           <Text style={[styles.stats, { color: '#0a84ff', fontWeight: 'bold' }]}>
             {hudToast}
@@ -4223,7 +5610,7 @@ const handleZoomButton = useCallback((direction) => {
               ]}
             >
               <Text style={styles.pillTitle}>
-                {miningModal.status === 'mining' ? t('cube.miningTitle') : t('cube.mineQuestion')}
+                {chainMode ? t('chain.place') + '?' : (miningModal.status === 'mining' ? t('cube.miningTitle') : t('cube.mineQuestion'))}
               </Text>
               <Text style={styles.pillSubtitle}>#{miningModal.cubeNumber}</Text>
               {miningModal.status === 'mining' && (
@@ -4264,19 +5651,112 @@ const handleZoomButton = useCallback((direction) => {
                 if (miningModal.status === 'mining') {
                   return;
                 }
-                
+                // Sonido de confirmación de minado instantáneo (precargado, sin lag)
+                try { audioManager.playMiningOkSound(); } catch {}
+
                 if (!authReady) {
                   showAlert(t('cube.waitTitle'), t('cube.connectingBody'));
                   showHudToast(t('cube.toastConnecting'));
                   return;
                 }
-                if (typeof picks === 'number' && picks <= 0) {
+                // picks acá es el pico del juego estándar -- no aplica a Chain
+                // (que usa su propio contador, chainStatus.picks, validado
+                // server-side por placeCube con el error "no_picks").
+                if (!chainMode && typeof picks === 'number' && picks <= 0) {
                   showAlert(t('cube.noPicksTitle'), t('cube.noPicksBody'));
                   showHudToast(t('cube.toastNoPicks'));
                   return;
                 }
                 // Capturar snapshot del modal para usarlo en la animaciÃƒÂ³n
                 const modalData = miningModal ? { ...miningModal } : null;
+
+                // Modo Chain: misma coreografía de minado que servers (sonido
+                // de rotura + grietas + explosión), pero sin gemas/picos --
+                // la economía es MTB coin por racha, no premios por cubo
+                // individual. El cambio visual (parche) lo aplica el listener
+                // de "placed" en tiempo real (useEffect de arriba), y
+                // startMining con reward=0/gem=null (+ chainModeMining=true)
+                // se encarga de la explosión sin mostrar ningún asset de
+                // recompensa (ver fix en startMining).
+                if (chainMode) {
+                  const cubeNumber = resolveApiId(modalData);
+                  if (cubeNumber == null) {
+                    setMiningModal(null);
+                    showAlert(t('chain.errorTitle'), t('chain.errorPlace'));
+                    return;
+                  }
+                  setMiningProgress(0);
+                  if (miningProgressTimerRef.current) {
+                    clearInterval(miningProgressTimerRef.current);
+                    miningProgressTimerRef.current = null;
+                  }
+                  setMiningModal((prev) => prev ? { ...prev, status: 'mining' } : prev);
+                  if (miningWatchdogRef.current) {
+                    clearTimeout(miningWatchdogRef.current);
+                    miningWatchdogRef.current = null;
+                  }
+                  miningWatchdogRef.current = setTimeout(() => {
+                    try { setMiningModal(null); } catch {}
+                  }, 30000);
+                  roturaPlayedRef.current = false;
+                  roturaStartTimeRef.current = 0;
+                  miningProgressTimerRef.current = setInterval(() => {
+                    setMiningProgress((p) => Math.min(0.95, p + 0.08));
+                  }, 120);
+                  setTimeout(() => {
+                    if (roturaPlayedRef.current) return;
+                    roturaPlayedRef.current = true;
+                    try { setMiningModal(null); } catch {}
+                    requestAnimationFrame(() => {
+                      roturaStartTimeRef.current = Date.now();
+                      audioManager.playSound('rotura', 1.0);
+                      if (!cracksPromiseRef.current && !cracksRef.current) {
+                        showCracksAnimation(modalData);
+                      }
+                    });
+                  }, 1400);
+
+                  (async () => {
+                    try {
+                      const res = await callPlaceCube(cubeNumber);
+                      if (miningProgressTimerRef.current) {
+                        clearInterval(miningProgressTimerRef.current);
+                        miningProgressTimerRef.current = null;
+                      }
+                      setMiningProgress(1);
+                      setMiningModal(null);
+                      if (!cracksPromiseRef.current && !cracksRef.current) {
+                        showCracksAnimation(modalData);
+                      }
+                      await new Promise((r) => setTimeout(r, 250));
+                      await startMining(modalData, 0, null, true);
+                      if (res?.layerComplete) {
+                        showAlert(t('chain.layerCompleteTitle'), t('chain.layerCompleteBody', { n: res.newLayer }));
+                      } else {
+                        showHudToast(`+$${Number(res?.rate || 0).toFixed(4)}`);
+                      }
+                      refreshChainStatus();
+                    } catch (e) {
+                      if (miningProgressTimerRef.current) {
+                        clearInterval(miningProgressTimerRef.current);
+                        miningProgressTimerRef.current = null;
+                      }
+                      setMiningModal(null);
+                      try {
+                        if (cracksPromiseRef.current) { await cracksPromiseRef.current; cracksPromiseRef.current = null; }
+                      } catch {}
+                      try { cleanupCracksNow(sceneRef.current); } catch {}
+                      const code = e?.code || '';
+                      if (code.endsWith('failed-precondition') && e?.message?.includes('no_picks')) {
+                        showAlert(t('chain.errorTitle'), t('chain.noPicksBody'));
+                      } else {
+                        showAlert(t('chain.errorTitle'), t('chain.errorPlace'));
+                      }
+                    }
+                  })();
+                  return;
+                }
+
                 // Marcar celda en animación local
                 try {
                   if (modalData && typeof modalData.faceIndex === 'number' && typeof modalData.gridX === 'number' && typeof modalData.gridY === 'number') {
@@ -4303,29 +5783,32 @@ const handleZoomButton = useCallback((direction) => {
                   } catch {}
                 }, 30000); // 30s de seguridad
                 roturaPlayedRef.current = false; // Reset flag para rotura
+                roturaStartTimeRef.current = 0;
+                // Barra avanza linealmente hasta 95% durante ~1.4s (duración mining_ok)
+                // para acompañar visualmente el sonido del último pico.
                 miningProgressTimerRef.current = setInterval(() => {
-                  setMiningProgress((p) => {
-                    const np = p + 0.06;
-
-                    // Reproducir rotura.m4a a la mitad de la barra (50%), cerrar modal 150ms después, luego iniciar grietas
-                    if (np >= 0.5 && !roturaPlayedRef.current) {
-                      roturaPlayedRef.current = true;
-                      audioManager.playSound('rotura', 1.0);
-
-                      // Cerrar modal 150ms después para transición suave y que se vean las grietas
-                      setTimeout(async () => {
-                        try { setMiningModal(null); } catch {}
-                        // Guardar contra doble llamado si la API ya inició las grietas primero
-                        if (!cracksPromiseRef.current && !cracksRef.current) {
-                          await showCracksAnimation(modalData);
-                        }
-                      }, 150);
-                    }
-
-                    return np >= 0.95 ? 0.95 : np;
-                  });
-                  return;
+                  setMiningProgress((p) => Math.min(0.95, p + 0.08));
                 }, 120);
+
+                // Disparar rotura DESPUÉS que termine mining_ok (1.375s) para
+                // evitar solape. Secuencia exacta solicitada:
+                //   1) cerrar modal
+                //   2) sonido rotura + animación grieta arrancan SIMULTÁNEOS
+                //   3) al terminar rotura, explosión + fragmentos en startMining
+                setTimeout(() => {
+                  if (roturaPlayedRef.current) return;
+                  roturaPlayedRef.current = true;
+                  // 1) Cerrar modal primero
+                  try { setMiningModal(null); } catch {}
+                  // 2) Frame siguiente: sonido + animación de grieta JUNTOS
+                  requestAnimationFrame(() => {
+                    roturaStartTimeRef.current = Date.now();
+                    audioManager.playSound('rotura', 1.0);
+                    if (!cracksPromiseRef.current && !cracksRef.current) {
+                      showCracksAnimation(modalData);
+                    }
+                  });
+                }, 1400);
                 try {
                   // Asegurar apiCubeNumber vÃƒÂ¡lido (derivar si falta)
                   let apiId = modalData?.apiCubeNumber;
@@ -4357,6 +5840,24 @@ const handleZoomButton = useCallback((direction) => {
                   if (resp && resp.alreadyMined === true) {
                     setMiningModal(null);
                     showHudToast(t('cube.alreadyMined') || 'Ya minado');
+                    // v1.3.7: si las grietas ya arrancaron (rotura disparada a 1400ms)
+                    // y la API responde alreadyMined, las grietas quedan pegadas en
+                    // escena sin explosión. Esperar que el animation termine y limpiar.
+                    try {
+                      if (cracksPromiseRef.current) {
+                        await cracksPromiseRef.current;
+                        cracksPromiseRef.current = null;
+                      }
+                    } catch {}
+                    try { cleanupCracksNow(sceneRef.current); } catch {}
+                    // Liberar pendingAnimCells — el patch lo aplicará el listener
+                    // de Firestore en su próximo snapshot.
+                    try {
+                      if (modalData && typeof modalData.faceIndex === 'number') {
+                        const ck = `${currentLayer}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
+                        pendingAnimCellsRef.current.delete(ck);
+                      }
+                    } catch {}
                   } else if (resp && resp.ok === true) {
                     let finalReward = Number(resp?.reward || 0);
                     const finalGem = resp?.gem || null; // null or 1-9
@@ -4390,6 +5891,12 @@ const handleZoomButton = useCallback((direction) => {
                       if (modalData && typeof modalData.faceIndex === 'number') {
                         const ck = `${currentLayer}:${modalData.faceIndex}:${modalData.gridX}:${modalData.gridY}`;
                         pendingAnimCellsRef.current.delete(ck);
+                        // v1.3.7: red de seguridad — si startMining no logró
+                        // aplicar el patch (faceGroupsRef estaba a medio armar),
+                        // ya el `delete()` libera la celda y aquí forzamos un
+                        // último intento. Si startMining lo hizo OK, este call
+                        // es no-op gracias a `minedAppliedRef`.
+                        try { applyMinedCell(modalData.faceIndex, modalData.gridX, modalData.gridY, finalReward); } catch {}
                       }
                     } catch {}
                     // CRIT-01: extraído `rewardCash` como variable local para
@@ -4533,6 +6040,16 @@ const handleZoomButton = useCallback((direction) => {
                     const msg = (t('cube.invalidResponse') || '').replace('{msg}', JSON.stringify(resp));
                     showAlert(t('cube.errorTitle'), msg);
                     showHudToast(t('cube.serverErrorToast'));
+                    // v1.3.7: limpiar cracks si quedaron pegados (mismo motivo
+                    // que el path alreadyMined — la rotura disparó las grietas
+                    // pero startMining nunca ejecutó la explosión).
+                    try {
+                      if (cracksPromiseRef.current) {
+                        await cracksPromiseRef.current;
+                        cracksPromiseRef.current = null;
+                      }
+                    } catch {}
+                    try { cleanupCracksNow(sceneRef.current); } catch {}
                   }
                 } catch (e) {
                   console.error('❌ ERROR calling mineCube:', e);
@@ -4676,11 +6193,11 @@ const handleZoomButton = useCallback((direction) => {
               </Text>
               {episodeCompleteModal.episodeNumber != null && (
                 <Text style={styles.rewardMessage}>
-                  {t('cube.episodeCompleteMsg').replace('{n}', episodeCompleteModal.episodeNumber)}
+                  {t('cube.episodeCompleteMsg', { n: episodeCompleteModal.episodeNumber })}
                 </Text>
               )}
               <Text style={[styles.rewardMessage, { color: '#888', marginTop: 4 }]}>
-                {t('cube.episodeMined').replace('{n}', (episodeCompleteModal.totalMined || 0).toLocaleString())}
+                {t('cube.episodeMined', { n: (episodeCompleteModal.totalMined || 0).toLocaleString() })}
               </Text>
               <TouchableOpacity
                 style={[styles.rewardButton, { backgroundColor: '#ffd700', marginTop: 18 }]}
@@ -4708,6 +6225,57 @@ const handleZoomButton = useCallback((direction) => {
         </Modal>
       )}
 
+      {/* Cambio 6: HUD de gemas/picos restantes, a los costados del panel de
+          zoom. 5 tiers a la izquierda (1-5, los más raros/caros), 4 tiers +
+          picos a la derecha (6-9, los más comunes). Lee activeServer.gemsFoundByTier
+          (agregado incrementado en mineCube) contra la cantidad total por tier
+          — config.quantityPerTier si el server tiene config propia (Fase 3/4),
+          si no el fallback estándar de GEMS. Picos no tienen presupuesto fijo
+          en servers de pago (getRewardForCube es probabilístico sin tope), así
+          que ese indicador muestra "otorgados hasta ahora" en vez de "restantes". */}
+      {/* chainMode no tiene gemas (economía MTB coin, no tiers de premio fijo) */}
+      {activeServer && !chainMode && (() => {
+        const found = activeServer.gemsFoundByTier || {};
+        const customQty = activeServer.config?.quantityPerTier;
+        const totalFor = (tier) => customQty ? (customQty[tier - 1] ?? 0) : (GEMS[tier - 1]?.quantityPerServer ?? 0);
+        const remainingFor = (tier) => {
+          const done = Number(found[tier] || 0);
+          return Math.max(0, totalFor(tier) - done);
+        };
+        // Servers con config propia (Free, a medida) no siempre usan los 9
+        // tiers -- un tier con total 0 no tiene premio en ESTE server, así
+        // que no tiene sentido mostrar un pill con "0" fijo. Servers
+        // estándar (sin config) sí usan siempre los 9 tiers.
+        const renderPill = (tier) => {
+          if (totalFor(tier) === 0) return null;
+          return (
+            <View key={tier} style={styles.gemHudPill}>
+              <View style={styles.gemHudTopRow}>
+                <Image source={GEM_HUD_IMAGES[tier]} style={styles.gemHudImage} resizeMode="contain" />
+                <Text style={styles.gemHudTxt}>x {remainingFor(tier).toLocaleString()}</Text>
+              </View>
+              <Text style={styles.gemHudValueTxt}>${GEMS[tier - 1]?.price?.toLocaleString() || 0}</Text>
+            </View>
+          );
+        };
+        return (
+          <>
+            <View style={styles.gemHudColumnLeft} pointerEvents="none">
+              {[1, 2, 3, 4, 5].map(renderPill)}
+            </View>
+            <View style={styles.gemHudColumnRight} pointerEvents="none">
+              {[6, 7, 8, 9].map(renderPill)}
+              <View style={styles.gemHudPill}>
+                <View style={styles.gemHudTopRow}>
+                  <Text style={styles.gemHudPickIcon}>⛏</Text>
+                  <Text style={styles.gemHudTxt}>{Number(activeServer.picksAwarded || 0).toLocaleString()}</Text>
+                </View>
+              </View>
+            </View>
+          </>
+        );
+      })()}
+
       {/* Botones de Zoom - parte inferior central */}
       {showGridExitHint && (
         <View style={styles.gridExitHintBox} pointerEvents="none">
@@ -4730,6 +6298,17 @@ const handleZoomButton = useCallback((direction) => {
           <Text style={styles.zoomButtonText}>+</Text>
         </TouchableOpacity>
       </View>
+      {chainMode && (
+        <ChainClaimPickModal
+          visible={showChainClaimModal}
+          onClose={() => setShowChainClaimModal(false)}
+          onClaim={onClaimChainPick}
+          claiming={claimingChainPick}
+          pickReady={!!chainStatus && chainStatus.picks < 1 && chainStatus.pickNextAt <= Date.now()}
+          pickNextAt={chainStatus?.pickNextAt || 0}
+          serverNow={Date.now()}
+        />
+      )}
       {AlertComponent}
     </View>
   );
@@ -4739,13 +6318,62 @@ const styles = StyleSheet.create({
   container: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: '#000' },
   gl: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   hud: { position: 'absolute', left: 12, right: 12, top: 28, zIndex: 10 },
+  // v1.3.19: loading overlay durante buildLayer
+  buildingOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  buildingText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 18,
+    letterSpacing: 0.5,
+  },
+  buildingSubtext: {
+    color: '#888',
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 6,
+    letterSpacing: 0.2,
+  },
+  entryBannerWrap: {
+    position: 'absolute',
+    bottom: 40,
+    left: 20,
+    right: 20,
+  },
+  entryBannerDisclaimer: {
+    fontSize: 10,
+    color: '#888',
+    textAlign: 'center',
+    marginBottom: 4,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  entryBannerBox: {
+    // El script de Adsterra para este banner arma un iframe fijo de
+    // 300x250 (ver atOptions en ad-frame.html?type=banner) -- con
+    // height:70 el contenedor recortaba casi todo el anuncio real,
+    // dejando ver solo una franja vacía/negra del borde superior.
+    height: 250,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#0a0a0a',
+  },
+  entryBannerWebview: { flex: 1, backgroundColor: 'transparent' },
   label: { color: '#000', fontSize: 12, marginBottom: 4 },
   stats: { color: '#666', fontSize: 13, fontWeight: '700', marginBottom: 2 },
   hamburgerBtn: { alignSelf: 'flex-start', paddingVertical: 4, paddingHorizontal: 6, marginBottom: 6 },
   hamburgerTxt: { fontSize: 22, fontWeight: '900', color: '#666' },
   topRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 },
-  picksWrap: { paddingVertical: 2, paddingHorizontal: 6, borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.06)' },
-  picksTxt: { fontSize: 14, fontWeight: '900', color: '#666' },
+  picksWrap: { paddingVertical: 2, paddingHorizontal: 6, borderRadius: 8, backgroundColor: 'rgba(33,150,243,0.12)' },
+  picksTxt: { fontSize: 14, fontWeight: '900', color: '#2196f3' },
   moneyWrap: { marginLeft: 6, paddingVertical: 2, paddingHorizontal: 6, borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.06)' },
   moneyTxt: { fontSize: 14, fontWeight: '900', color: '#666' },
   // MenÃƒÂº hamburguesa
@@ -4821,7 +6449,7 @@ const styles = StyleSheet.create({
   // Botones de zoom - parte inferior central
   zoomPanel: {
     position: 'absolute',
-    bottom: 18,
+    bottom: 48,
     left: 0,
     right: 0,
     alignItems: 'center',
@@ -4846,11 +6474,59 @@ const styles = StyleSheet.create({
   },
   gridExitHintBox: {
     position: 'absolute',
-    bottom: 72,
+    bottom: 102,
     left: 0,
     right: 0,
     alignItems: 'center',
     zIndex: 12,
+  },
+  // Cambio 6: columnas de gemas/picos restantes a los costados del zoomPanel.
+  gemHudColumnLeft: {
+    position: 'absolute',
+    bottom: 40,
+    left: 10,
+    zIndex: 12,
+    gap: 6,
+  },
+  gemHudColumnRight: {
+    position: 'absolute',
+    bottom: 40,
+    right: 10,
+    zIndex: 12,
+    gap: 6,
+  },
+  gemHudPill: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(20,20,20,0.85)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#333',
+    paddingVertical: 3,
+    paddingHorizontal: 6,
+    gap: 2,
+    minWidth: 46,
+  },
+  gemHudTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  gemHudImage: {
+    width: 16,
+    height: 16,
+  },
+  gemHudTxt: {
+    color: '#ddd',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  gemHudValueTxt: {
+    color: '#ffd700',
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  gemHudPickIcon: {
+    fontSize: 11,
   },
   gridExitHintTxt: {
     color: '#ff9900',
@@ -4925,14 +6601,17 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end'
   },
   faceButton: {
-    flexShrink: 1,
+    // v1.3.13: width fijo. Antes era minWidth+flexShrink → los botones top/bottom
+    // se expandían más que el resto porque sus rangos numéricos son más altos
+    // (más dígitos = más ancho de texto). Forzar mismo width los alinea.
+    width: 88,
+    flexShrink: 0,
     backgroundColor: '#333333',
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 6,
     borderWidth: 1,
     borderColor: '#333333',
-    minWidth: 78,
     alignItems: 'center',
   },
   activeFaceButton: {

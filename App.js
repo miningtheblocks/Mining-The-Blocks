@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { StatusBar as RNStatusBar, Platform, Text, View, TouchableOpacity, Linking, AppState } from 'react-native';
-import MobileAds from 'react-native-google-mobile-ads';
+import { StatusBar as RNStatusBar, Platform, Text, View, TouchableOpacity, Linking, AppState, Alert } from 'react-native';
+// Round 2 Commit Q: react-native-google-mobile-ads removido. Pre-fix se
+// inicializaba el SDK aunque NO se renderizaban native ads (las ads están
+// en docs/adpick.html via Linking.openURL en GetPeaks.js). Sin el package:
+// APK más liviano + permisos AD_ID/ACCESS_ADSERVICES_* + AppMeasurementJobService
+// no se inyectan más en el manifest.
 // LAZY LOAD: Don't import Notifications at module level - causes EventEmitter crash
 // import * as Notifications from 'expo-notifications';
 import { NavigationContainer } from '@react-navigation/native';
@@ -9,11 +13,19 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, ensureUser, db } from './src/firebase/client';
+import audioManager from './src/utils/audioManager';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import UpdateModal from './src/components/UpdateModal';
+import NotificationsRationaleModal from './src/components/NotificationsRationaleModal';
 import ErrorBoundary from './src/components/ErrorBoundary';
+import { initSentry, Sentry } from './src/utils/sentry';
 
-import { APP_VERSION, TERMS_URL, compareVersions, StorageKeys } from './src/constants';
+// Inicializar Sentry lo antes posible — antes de cualquier render para
+// capturar errores tempranos (init de Firebase, lazy imports, etc.).
+// Si EXPO_PUBLIC_SENTRY_DSN está vacío queda no-op.
+initSentry();
+
+import { APP_VERSION, TERMS_URL, DISCORD_URL, compareVersions, StorageKeys } from './src/constants';
 import Home from './src/screens/Home';
 import ServerList from './src/screens/ServerList';
 import ChainHistoryScreen from './src/screens/ChainHistoryScreen';
@@ -33,12 +45,33 @@ function RootApp() {
   const [user, setUser] = useState(null);
   const isFirstAuthCheck = useRef(true);
   const [updateInfo, setUpdateInfo] = useState(null); // { forceUpdate, latestVersion, downloadUrl, messageEn, messageEs }
+  // Pre-prompt MTB de notifs: handlers cargados lazy en askConsentThenSetup
+  // (necesita acceso a `active` flag local del effect para evitar setup tras
+  // unmount/logout). Por eso usamos un ref con { onAccept, onDecline } en vez
+  // de un useState directo.
+  const [notifRationaleVisible, setNotifRationaleVisible] = useState(false);
+  const notifRationaleHandlers = useRef({ onAccept: null, onDecline: null });
 
   useEffect(() => {
     // LAZY LOAD: Load Notifications only when needed to avoid EventEmitter crash
+    // HIGH (Round 2 Agente #10 HIGH-10-09): registrar
+    // addNotificationResponseReceivedListener para que el TAP de un push
+    // dispare deep-link a la screen relevante. Sin esto, el tap solo abre la
+    // app en la última screen — el user que recibe "Tu NFT llegó!" no llega
+    // automáticamente a MyGems.
+    // Ultrareview bug_016: race entre `clearTimeout + cleanup` y la resolución
+    // del await dentro de setupNotifications. Si el componente se desmonta
+    // entre `setTimeout fires` y `addNotificationResponseReceivedListener
+    // resuelve`, el cleanup leía `responseSubscription === null` (closure
+    // stale) y el listener nuevo quedaba huérfano sin cleanup.
+    // Fix: ref que sobrevive la closure stale + flag `active` que setup
+    // chequea post-await para auto-removerse si ya unmount.
+    let active = true;
+    let responseSubscription = null;
     const setupNotifications = async () => {
       try {
         const Notifications = await import('expo-notifications');
+        if (!active) return;
         Notifications.setNotificationHandler({
           handleNotification: async () => ({
             shouldShowAlert: true,
@@ -46,26 +79,62 @@ function RootApp() {
             shouldSetBadge: false,
           }),
         });
-        // Ensure the default notification channel exists on Android
+        // Round 2 Agente #10 HIGH-10-10: canales Android granulares.
+        // Pre-fix: solo 'default' channel → el user solo podía mute/unmute
+        // el channel entero. Ahora 4 canales por tipo de notificación —
+        // mute granular en Settings → App → Notificaciones.
+        //
+        // 'default' se conserva por backwards-compat con tokens viejos / push
+        // mal-canalizadas.
         if (Platform.OS === 'android') {
-          await Notifications.setNotificationChannelAsync('default', {
-            name: 'Default',
+          const baseChannel = {
             importance: Notifications.AndroidImportance.HIGH,
+            sound: 'default',
+            vibrationPattern: [0, 250, 250, 250],
+          };
+          await Notifications.setNotificationChannelAsync('default', { name: 'Default', ...baseChannel });
+          await Notifications.setNotificationChannelAsync('mint', { name: 'NFT mints', description: 'When your gem is minted on Polygon', ...baseChannel });
+          await Notifications.setNotificationChannelAsync('payment', { name: 'Pagos', description: 'Credit purchase confirmations', ...baseChannel });
+          await Notifications.setNotificationChannelAsync('referral', { name: 'Referidos', description: 'Referral bonuses', ...baseChannel });
+          // marketing: importance DEFAULT (no high-priority), siempre opt-out fácil.
+          await Notifications.setNotificationChannelAsync('marketing', {
+            name: 'Anuncios y novedades',
+            description: 'Mensajes broadcast del equipo',
+            importance: Notifications.AndroidImportance.DEFAULT,
             sound: 'default',
             vibrationPattern: [0, 250, 250, 250],
           });
         }
+        // Round 2 #10 HIGH-10-09: deep-link al tap. Backend manda data.url
+        // (e.g. 'exp+miningtheblocks://gems') en el payload de mint complete,
+        // payment received, etc. Linking.openURL dispara el DeepLinkHandler
+        // de abajo, que ya conoce el scheme.
+        const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+          try {
+            const data = response?.notification?.request?.content?.data || {};
+            if (data && typeof data.url === 'string' && data.url.startsWith('exp+miningtheblocks://')) {
+              Linking.openURL(data.url).catch(() => {});
+            }
+          } catch (handlerErr) {
+            console.warn('Notification response handler error:', handlerErr?.message);
+          }
+        });
+        // Ultrareview bug_016: si unmount ocurrió mientras awaitamos, removemos
+        // el listener inmediatamente sin esperar al cleanup (que ya corrió
+        // con responseSubscription=null en la closure stale).
+        if (!active) { try { sub.remove(); } catch (_) {} return; }
+        responseSubscription = sub;
       } catch (e) {
         console.warn('Notifications setup failed:', e.message);
       }
     };
-    
+
     // BAJO-APP-02: guardar el id del timer para limpiarlo en cleanup. Sin esto,
     // si el componente se desmonta en el primer segundo (hot-reload, navegación
     // muy rápida), setupNotifications corre con árbol React desmontado.
     const notifSetupTimer = setTimeout(setupNotifications, 1000);
 
-    MobileAds().initialize().catch(e => console.warn('MobileAds init failed:', e?.message));
+    // MobileAds init removido en Commit Q — ads se sirven via docs/adpick.html.
 
     // CRIT-14: version check con anti-downgrade + cache (mismo patrón que
     // ServerList.js). Antes era getDoc one-shot sin protección: si Firebase
@@ -144,6 +213,11 @@ function RootApp() {
       try {
         // V1.1.0: sin modo anónimo. Si no hay user → null (App muestra Login).
         if (!u) {
+          // Round 2 Agente #4 MEDIO-FE-21: teardown del audio cuando el user
+          // hace signOut. Pre-fix: la música seguía sonando sobre la pantalla
+          // de Login (~5MB residente + UX disonante). cleanup() es idempotente
+          // y resetea flags para que un re-init después funcione.
+          try { await audioManager.cleanup(); } catch (_) {}
           isFirstAuthCheck.current = false;
           setUser(null);
         } else if (isFirstAuthCheck.current) {
@@ -180,13 +254,31 @@ function RootApp() {
     });
 
     return () => {
+      active = false;
       clearTimeout(notifSetupTimer);
+      if (responseSubscription) {
+        try { responseSubscription.remove(); } catch (_) {}
+      }
       appStateSub.remove();
       unsub();
     };
   }, []);
 
   // Registrar permisos y guardar push token - LAZY LOADED
+  // CRIT (Round 2 Agente #4 CRIT-FE-01 + Agente #10 HIGH-10-06): pre-permission
+  // UI antes del system prompt nativo. Pre-fix: requestPermissionsAsync se
+  // disparaba auto a los 2s del login sin contexto — Apple HIG y Google Play
+  // recomiendan modal explicativo ANTES del prompt nativo, sino el user
+  // rechaza por sorpresa y queda imposible de re-promptear sin deep-link a
+  // Settings.
+  //
+  // Flow:
+  //   1. Cold start con user logueado → leer AsyncStorage NOTIFICATIONS_CONSENT.
+  //   2. Si 'yes' → setupPushToken (sin prompt nativo si ya está granted).
+  //   3. Si 'no' → skip (no más prompts, respetar opt-out).
+  //   4. Si absent → mostrar custom Alert explicando los 3 tipos de notif +
+  //      "Activar" / "No gracias". Solo después de "Activar" se llama
+  //      requestPermissionsAsync.
   useEffect(() => {
     if (!user) return;
     let active = true;
@@ -197,7 +289,7 @@ function RootApp() {
         // LAZY LOAD: Import Notifications only when user is authenticated
         const Notifications = await import('expo-notifications');
 
-        // Pedir permisos
+        // Pedir permisos (ya con consent del user vía nuestro pre-prompt).
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
         let finalStatus = existingStatus;
         if (existingStatus !== 'granted') {
@@ -229,8 +321,39 @@ function RootApp() {
       }
     };
 
-    // Delay push token setup to ensure everything is ready
-    const timer = setTimeout(setupPushToken, 2000);
+    const askConsentThenSetup = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(StorageKeys.NOTIFICATIONS_CONSENT);
+        if (stored === 'no') {
+          // User opt-out previo — respetar, no preguntar más.
+          return;
+        }
+        if (stored === 'yes') {
+          // User opt-in previo — push token setup directo.
+          return setupPushToken();
+        }
+        // No preguntado → mostrar NotificationsRationaleModal (estética MTB).
+        // Reemplaza el Alert.alert nativo (genérico, sin íconos) por un modal
+        // con la paleta dark de la app, bullets con íconos y CTA primario verde.
+        // i18n se resuelve dentro del componente vía useI18n() (no necesita
+        // strings inline acá).
+        notifRationaleHandlers.current.onAccept = async () => {
+          setNotifRationaleVisible(false);
+          try { await AsyncStorage.setItem(StorageKeys.NOTIFICATIONS_CONSENT, 'yes'); } catch {}
+          if (active) setupPushToken();
+        };
+        notifRationaleHandlers.current.onDecline = async () => {
+          setNotifRationaleVisible(false);
+          try { await AsyncStorage.setItem(StorageKeys.NOTIFICATIONS_CONSENT, 'no'); } catch {}
+        };
+        setNotifRationaleVisible(true);
+      } catch (e) {
+        console.warn('askConsentThenSetup error:', String(e));
+      }
+    };
+
+    // Delay 2s para que el cold-start no compita con auth restore + push setup.
+    const timer = setTimeout(askConsentThenSetup, 2000);
     return () => { active = false; clearTimeout(timer); };
   }, [user]);
 
@@ -248,6 +371,11 @@ function RootApp() {
         messageEn={updateInfo?.messageEn}
         messageEs={updateInfo?.messageEs}
         onDismiss={() => setUpdateInfo(null)}
+      />
+      <NotificationsRationaleModal
+        visible={notifRationaleVisible}
+        onAccept={() => notifRationaleHandlers.current.onAccept?.()}
+        onDecline={() => notifRationaleHandlers.current.onDecline?.()}
       />
       <OverlayModalsProvider>
         <DeepLinkHandler />
@@ -287,7 +415,7 @@ function RootApp() {
   );
 }
 
-export default function App() {
+function App() {
   return (
     <ErrorBoundary>
       <I18nProvider initialLanguage="en">
@@ -298,6 +426,11 @@ export default function App() {
     </ErrorBoundary>
   );
 }
+
+// Sentry.wrap añade auto-tracking de navigation/screen + breadcrumbs de
+// React lifecycle. Si Sentry no está inicializado (DSN vacío), wrap es
+// efectivamente identity-función — no rompe nada.
+export default Sentry.wrap(App);
 
 function GameDrawer() {
   const { t } = useI18n();
@@ -351,6 +484,7 @@ function CustomDrawerContent(props) {
       <DrawerItem label={t('drawer.gems')} onPress={() => { props.navigation.closeDrawer(); openModal('gems'); }} />
       <DrawerItem label={t('drawer.getPeaks')} onPress={() => { props.navigation.closeDrawer(); openModal('peaks'); }} />
       <DrawerItem label={t('drawer.buyCredits')} onPress={() => { props.navigation.closeDrawer(); openModal('buyCredits'); }} />
+      <DrawerItem label={t('drawer.discord')} onPress={() => { props.navigation.closeDrawer(); Linking.openURL(DISCORD_URL).catch(() => {}); }} />
 
       {/* Separador */}
       <View style={{ height: 1, backgroundColor: '#333', marginVertical: 8, marginHorizontal: 16 }} />
@@ -375,8 +509,32 @@ function DeepLinkHandler() {
 
   useEffect(() => {
     const handle = ({ url }) => {
-      if (url && url.startsWith('exp+miningtheblocks://peaks')) {
-        openModal('peaks');
+      // Round 2 #10 HIGH-10-09: ampliado a más URLs. Backend manda data.url
+      // en push payloads (mint complete → gems, payment → servers, etc.).
+      // El response listener llama Linking.openURL que entra acá.
+      // Round 2 #9 MED-09-13: aceptar también el nuevo scheme `mtb://`.
+      if (!url) return;
+      let host = '';
+      if (url.startsWith('exp+miningtheblocks://')) {
+        host = url.replace('exp+miningtheblocks://', '').split(/[?\/]/)[0].toLowerCase();
+      } else if (url.startsWith('mtb://')) {
+        host = url.replace('mtb://', '').split(/[?\/]/)[0].toLowerCase();
+      } else if (url.startsWith('https://miningtheblocks.com/app/')) {
+        // Round 2 #9 HIGH-09-04: App Links HTTPS verificadas via autoVerify
+        // + assetlinks.json. El path después de /app/ mapea al modal target.
+        host = url.replace('https://miningtheblocks.com/app/', '').split(/[?\/]/)[0].toLowerCase();
+      } else {
+        return;
+      }
+      switch (host) {
+        case 'peaks':       openModal('peaks');      break;
+        case 'gems':
+        case 'mygems':      openModal('gems');       break;
+        case 'profile':     openModal('profile');    break;
+        case 'buycredits':  openModal('buyCredits'); break;
+        case 'config':      openModal('config');     break;
+        case 'servers':     navigate('ServerList');  break;
+        default: /* unknown host — ignore */         break;
       }
     };
     Linking.getInitialURL().then(url => { if (url) handle({ url }); }).catch(() => {});

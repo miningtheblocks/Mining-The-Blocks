@@ -1,8 +1,16 @@
 # Mining The Blocks
 
+[![Discord](https://img.shields.io/badge/Discord-Mining%20The%20Blocks-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ehsaYcSWc)
+[![Website](https://img.shields.io/badge/Web-miningtheblocks.com-000000?style=for-the-badge&logo=googlechrome&logoColor=white)](https://miningtheblocks.com)
+[![Polygon](https://img.shields.io/badge/Polygon-USDC-8247E5?style=for-the-badge&logo=polygon&logoColor=white)](https://polygonscan.com/address/0x2933Ff14AdeC0a4D74aD8380E5c491321bBd3195)
+
 Juego de minería 3D para Android. Cubos por capas, recompensas deterministas, gemas con NFT en Polygon, y pagos en USDC.
 
-Stack: React Native 0.81 + Expo SDK 54 (managed) · Three.js (expo-gl/expo-three) · Firebase (Auth · Firestore · Functions v2 · Hosting) · ethers.js v6 · AdMob.
+Stack: React Native 0.81 + Expo SDK 54 (managed) · Three.js (expo-gl/expo-three) · Firebase (Auth · Firestore · Functions v2 · Hosting) · ethers.js v6 · Adsterra (ads pasivos, sin SDK nativo).
+
+## Comunidad
+
+📣 **Discord oficial:** [discord.gg/ehsaYcSWc](https://discord.gg/ehsaYcSWc) — soporte, anuncios, AMAs, reportes de bugs y feedback en vivo.
 
 ## Instalación (usuarios)
 
@@ -11,9 +19,11 @@ Descargá el APK desde [miningtheblocks.com](https://miningtheblocks.com/) o des
 **Antes de instalar — verificar checksum** (recomendado):
 
 ```bash
-sha256sum -c MTB-v1.1.0.apk.sha256
-# debe imprimir: MTB-v1.1.0.apk: OK
+sha256sum -c MTB-latest.apk.sha256
+# debe imprimir: MTB-latest.apk: OK
 ```
+
+(o `MTB-v<versión>.apk.sha256` si descargaste una versión específica de la pestaña Releases, en vez del alias `latest`)
 
 **Instalación en Android:**
 
@@ -46,13 +56,17 @@ El APK se firma con un keystore propio mantenido por fuera del repo (variables d
 │   │   ├── ErrorBoundary.js
 │   │   └── OverlayModalsProvider.js
 │   ├── screens/                    # Pantallas de la app
+│   │   ├── GetPeaks.js            # Picos diarios (incondicionales) + ad pasivo
+│   │   └── CreateCustomServer.js  # Creación de servers a medida
 │   ├── firebase/                   # Cliente Firebase + wrappers de funciones
 │   ├── utils/                      # i18n, auth context, server context, logError
 │   └── constants.js               # APP_VERSION, URLs, StorageKeys
 ├── functions/                      # Cloud Functions v2
 │   ├── index.js                   # Exports (mining, gems, pagos, email...)
 │   ├── constants.js               # Constantes de juego/pagos
-│   └── helpers.js                 # Helpers puros (hash, geometría, códigos)
+│   ├── helpers.js                 # Helpers puros (hash, geometría, códigos)
+│   ├── freeServerConfig.js        # Config fija del server Free (150 capas, sin costo de entrada)
+│   └── serverConfig.js            # Deriva config de servers a medida (N jugadores, precio → premios)
 ├── firestore.rules                 # Reglas de seguridad Firestore
 ├── firebase.json                   # Hosting + headers de seguridad
 ├── public/                         # Hosting estático (verify, claim de gemas)

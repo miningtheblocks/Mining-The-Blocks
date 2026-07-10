@@ -1,0 +1,10 @@
+# Mining The Blocks — robots.txt
+# Round 2 audit #10 HIGH-6.
+
+User-agent: *
+Allow: /
+Disallow: /verify.html
+Disallow: /js/
+Disallow: /privacy.html$
+
+Sitemap: https://miningtheblocks.com/sitemap.xml

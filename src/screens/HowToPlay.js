@@ -73,7 +73,7 @@ export default function HowToPlay() {
               </View>
             </View>
             <Text style={s.gemQty}>×{gem.quantityPerServer.toLocaleString()} / server</Text>
-            <Text style={s.gemUnlock}>🔒 {t('cube.howToPlayUnlockAt').replace('{n}', gem.unlockAt.toLocaleString())}</Text>
+            <Text style={s.gemUnlock}>🔒 {t('cube.howToPlayUnlockAt', { n: gem.unlockAt.toLocaleString() })}</Text>
           </View>
         </View>
       ))}

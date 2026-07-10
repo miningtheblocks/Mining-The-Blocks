@@ -19,6 +19,13 @@ service cloud.firestore {
       // pushToken/pushTokenType/pushNotifications (van en update — el bootstrap
       // ya crea el doc con ensureUser y luego App.js hace setDoc(merge) que es
       // update, no create).
+      // Round 2 follow-up (smoke test 2026-06-16): create rule alineada con
+      // update rule — permitir null en displayName/email/avatarUrl/photoURL/language.
+      // Pre-fix: Registration.js manda `avatarUrl: avatarUrl || null` (null si el
+      // user no subió foto en signup, que es el caso default). La create rule
+      // exigía `is string` → rejection con `permission-denied` → setDoc del
+      // signup nunca escribía → profile data perdido. La update rule ya
+      // permitía null; ahora ambas son consistentes.
       allow create: if request.auth != null && request.auth.uid == uid
         && request.resource.data.keys().hasOnly([
              'picks', 'createdAt', 'updatedAt',
@@ -27,14 +34,19 @@ service cloud.firestore {
            ])
         && (!('picks' in request.resource.data) || request.resource.data.picks == 0)
         && (!('displayName' in request.resource.data) ||
+            request.resource.data.displayName == null ||
             (request.resource.data.displayName is string && request.resource.data.displayName.size() <= 60))
         && (!('email' in request.resource.data) ||
+            request.resource.data.email == null ||
             (request.resource.data.email is string && request.resource.data.email.size() <= 200))
         && (!('avatarUrl' in request.resource.data) ||
+            request.resource.data.avatarUrl == null ||
             (request.resource.data.avatarUrl is string && request.resource.data.avatarUrl.size() <= 500))
         && (!('photoURL' in request.resource.data) ||
+            request.resource.data.photoURL == null ||
             (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 500))
         && (!('language' in request.resource.data) ||
+            request.resource.data.language == null ||
             (request.resource.data.language is string && request.resource.data.language.size() <= 8));
 
       // SEC-P1-6: migrado a WHITELIST explícito. Antes era blacklist y si
@@ -82,6 +94,24 @@ service cloud.firestore {
         allow read: if request.auth != null && request.auth.uid == uid;
         allow write: if false; // only Cloud Functions (admin)
       }
+      // Cambio 1 (picos por cadena): pool de picos/ads por chainId, en vez
+      // del campo global users/{uid}.picks. Mismo patrón que serverAccess.
+      match /chainAccess/{chainId} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false; // only Cloud Functions (admin)
+      }
+      // Cambio 6 (modo Chain, cubo invertido): picos, racha y contribución
+      // $ del usuario en ese modo. Mismo patrón que chainAccess.
+      match /blockchainAccess/{doc} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false; // only Cloud Functions (admin)
+      }
+      // Cambio 7 (cierre de cadena): ledger de reparto por cadena cerrada
+      // (SIN movimiento real de plata todavía, ver closeChainAndArchive).
+      match /blockchainPayouts/{doc} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false; // only Cloud Functions (admin)
+      }
       // notifications: in-app notifications (referral bonus, etc.)
       match /notifications/{notifId} {
         allow read: if request.auth != null && request.auth.uid == uid;
@@ -98,8 +128,16 @@ service cloud.firestore {
 
       // Mined cubes: any authenticated user can read
       // Writes only via Cloud Functions (admin bypasses rules)
+      // Round 2 #2/#12 HIGH: cap query.limit (anti-DoS — sin cap el cliente
+      // puede traer toda la colección en bucle).
+      // 2026-06-25: subido de 500 → 2500 para alinear con PERF-004 del frontend
+      // (DynamicCube201.js listener pide limit(2500) para cubrir mineamientos
+      // recientes en capas K=100 que tienen ~242k cubos). Con 500 las queries
+      // del listener fallaban con permission-denied → los parches no
+      // persistían al reabrir la app. 2500 sigue siendo razonable como anti-DoS.
       match /mined/{cubeId} {
-        allow read: if request.auth != null;
+        allow read: if request.auth != null
+          && (request.query == null || request.query.limit <= 2500);
         allow write: if false;
       }
 
@@ -108,6 +146,34 @@ service cloud.firestore {
         allow read: if request.auth != null;
         allow write: if false;
       }
+    }
+
+    // Cambio 6 (modo Chain, cubo invertido): estado global del cubo único
+    // (capa actual, pool acumulado) + cubos colocados. Lectura pública
+    // (autenticado) para mostrar el pool/progreso en tiempo real, escritura
+    // solo desde placeCube (Cloud Function, admin).
+    match /blockchainState/{doc} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      match /placed/{cubeNumber} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+
+      // Cambio 16: historial de actividad ("quién minó qué cubo y
+      // cuándo") -- mismo patrón que placed/, solo placeCube escribe.
+      match /history/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+    }
+
+    // Cambio 7 (cierre de cadena): archivo de cadenas cerradas del modo
+    // Chain -- lectura pública (autenticado), solo Cloud Functions escribe.
+    match /blockchainHistory/{doc} {
+      allow read: if request.auth != null;
+      allow write: if false;
     }
 
     // Server chains: authenticated users can read chain data and write history entries
@@ -183,9 +249,13 @@ service cloud.firestore {
       }
     }
 
-    // Activity feed: any authenticated user can read (global live feed)
+    // Activity feed: any authenticated user can read (global live feed).
+    // Round 2 #2/#12 HIGH: cap explícito de query.limit a 100 para evitar
+    // cost amplification (cliente authed haciendo .get() sin limit descargaba
+    // toda la colección en bucle).
     match /activityFeed/{eventId} {
-      allow read: if request.auth != null;
+      allow read: if request.auth != null
+        && (request.query == null || request.query.limit <= 100);
       allow write: if false;
     }
 
@@ -213,11 +283,6 @@ service cloud.firestore {
 
     // Gem claims desde la web: solo Cloud Functions (admin) puede leer/escribir
     match /gemClaims/{doc} {
-      allow read, write: if false;
-    }
-
-    // Ad sessions: solo Cloud Functions (admin) — tokens de un solo uso para la página de anuncios
-    match /adSessions/{sessionId} {
       allow read, write: if false;
     }
 

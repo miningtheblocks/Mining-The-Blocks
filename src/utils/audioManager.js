@@ -1,37 +1,115 @@
-import { Audio } from 'expo-av';
+// Round 2 audit #5 MED-2: migrado de expo-av (deprecated) a expo-audio.
+// expo-av va a ser eliminado en Expo SDK 55. La API nueva es similar pero
+// con cambios significativos:
+//   - createAudioPlayer(source) devuelve el player directo (no { sound })
+//   - play/pause/seekTo son síncronos (no async); volumen es propiedad
+//     setteable (no setVolumeAsync)
+//   - Status: player.currentStatus (sync) en vez de getStatusAsync()
+//   - Listeners: addListener('playbackStatusUpdate', cb) devuelve subscription
+//     con .remove() en vez de setOnPlaybackStatusUpdate(null)
+//   - setAudioModeAsync sin namespace Audio; flags renombrados.
 
-// Sistema de gestión de audio para el juego
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+
 class AudioManager {
   constructor() {
     this.backgroundMusic = null;
+    this.backgroundMusicSub = null;
     this.sounds = {};
-    this.activeSounds = [];
+    this.activeSounds = []; // array de { player, sub }
     this.musicEnabled = true;
     this.soundEnabled = true;
     this.initialized = false;
     this.currentTrack = null;
     this.musicVolume = 0;
-    // Volúmenes base máximos (no superar)
-    this.baseMusicMax = 0.5; // 50% volumen máximo de música
-    // Factores ajustables por el usuario (0..1)
+    this.baseMusicMax = 0.5;
     this.musicVolumeFactor = 1.0;
     this.sfxVolumeFactor = 1.0;
-    // Objetivo actual de música = base * factor
     this.targetMusicVolume = this.baseMusicMax * this.musicVolumeFactor;
     this.crescendoInterval = null;
+    this.miningSound = null;
+    this.miningSoundSub = null;
+    this.miningCancelled = false;
+    this.miningOkPreloaded = null;
   }
 
-  // Inicializar sistema de audio
-  async init() {
-    if (this.initialized) return; // evitar doble inicialización
+  async playMiningOkSound() {
+    if (!this.soundEnabled) return;
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true, // Mantener audio en background
-        shouldDuckAndroid: true, // Reducir volumen cuando otras apps usan audio
-        interruptionModeIOS: 1, // Duck others
-        interruptionModeAndroid: 1, // Duck others
+      if (!this.miningOkPreloaded) {
+        const source = this.sounds.mining_ok;
+        if (!source) return;
+        const vol = Math.max(0, Math.min(1.0, this.sfxVolumeFactor));
+        const player = createAudioPlayer(source);
+        player.volume = vol;
+        this.miningOkPreloaded = player;
+      }
+      try { this.miningOkPreloaded.seekTo(0); } catch {}
+      try { this.miningOkPreloaded.play(); } catch {}
+    } catch (error) {
+      console.warn('Error reproduciendo mining_ok:', error?.message || error);
+    }
+  }
+
+  async playMiningSound() {
+    if (!this.soundEnabled) return;
+    await this.stopMiningSound();
+    this.miningCancelled = false;
+    try {
+      const source = this.sounds.mining;
+      if (!source) return;
+      const vol = Math.max(0, Math.min(1.0, this.sfxVolumeFactor));
+      const player = createAudioPlayer(source);
+      player.volume = vol;
+      if (this.miningCancelled) {
+        try { player.remove(); } catch {}
+        return;
+      }
+      this.miningSound = player;
+      this.miningSoundSub = player.addListener('playbackStatusUpdate', (status) => {
+        if (status && status.didJustFinish) {
+          try { this.miningSoundSub && this.miningSoundSub.remove(); } catch {}
+          this.miningSoundSub = null;
+          try { player.remove(); } catch {}
+          if (this.miningSound === player) this.miningSound = null;
+        }
+      });
+      try { player.play(); } catch {}
+    } catch (error) {
+      console.warn('Error reproduciendo mining:', error?.message || error);
+    }
+  }
+
+  async stopMiningSound() {
+    this.miningCancelled = true;
+    const s = this.miningSound;
+    const sub = this.miningSoundSub;
+    this.miningSound = null;
+    this.miningSoundSub = null;
+    if (sub) { try { sub.remove(); } catch {} }
+    if (s) {
+      try { s.pause(); } catch {}
+      try { s.seekTo(0); } catch {}
+      try { s.remove(); } catch {}
+    }
+  }
+
+  async init() {
+    if (this.initialized) return;
+    try {
+      // Round 2 audit #5 MED-2: API de audio mode en expo-audio.
+      // Flags renombrados respecto a expo-av:
+      //   allowsRecordingIOS    -> allowsRecording
+      //   playsInSilentModeIOS  -> playsInSilentMode
+      //   staysActiveInBackground -> shouldPlayInBackground
+      //   shouldDuckAndroid     -> (implícito en interruptionMode='duckOthers')
+      //   interruptionMode*     -> interruptionMode unificado
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        shouldPlayInBackground: false,
+        interruptionMode: 'duckOthers',
+        interruptionModeAndroid: 'duckOthers',
       });
       this.initialized = true;
     } catch (error) {
@@ -39,43 +117,73 @@ class AudioManager {
     }
   }
 
-  // Cargar y precargar sonidos (guardar solo las fuentes)
   async loadSounds() {
     try {
-      // Guardar las FUENTES de los sonidos, no las instancias
       this.sounds = {
         rotura: require('../../assets/sonidos/rotura.m4a'),
         explosion: require('../../assets/sonidos/explosion.m4a'),
         win: require('../../assets/sonidos/win.m4a'),
         lose: require('../../assets/sonidos/lose.m4a'),
+        mining: require('../../assets/sonidos/mining.m4a'),
+        mining_ok: require('../../assets/sonidos/mining_ok.m4a'),
       };
 
+      // B3 fix (audit gráfico 2026-06-23+): warmup explícito del decoder.
+      // expo-audio no carga el archivo hasta el primer play(), causando
+      // ~200-300ms latency en el primer mining_ok del juego. Forzamos un
+      // play() + pause() inmediato para que el buffer esté ready en RAM
+      // cuando el user toque por primera vez. Además: dispose del player
+      // anterior si loadSounds() se llama 2 veces (anti-leak entre re-inits).
+      try {
+        if (this.miningOkPreloaded) {
+          try { this.miningOkPreloaded.remove(); } catch {}
+          this.miningOkPreloaded = null;
+        }
+        const vol = Math.max(0, Math.min(1.0, this.sfxVolumeFactor));
+        const player = createAudioPlayer(this.sounds.mining_ok);
+        player.volume = 0; // silencio para el warmup (no audible)
+        try {
+          player.play();
+          // Pequeño delay para que el decoder cargue el buffer; después
+          // pause + seek + restore volume.
+          setTimeout(() => {
+            try { player.pause(); } catch {}
+            try { player.seekTo(0); } catch {}
+            try { player.volume = vol; } catch {}
+          }, 50);
+        } catch (warmupErr) {
+          // Si el warmup falla (uncommon), seteamos volume normal y seguimos.
+          try { player.volume = vol; } catch {}
+        }
+        this.miningOkPreloaded = player;
+      } catch (e) {
+        console.warn('No se pudo precargar mining_ok:', e?.message || e);
+      }
     } catch (error) {
       console.error('Error cargando sonidos:', error);
     }
   }
 
-  // Reproducir música de fondo aleatoria con crescendo
   async playBackgroundMusic() {
     if (!this.musicEnabled) return;
-    if (!this.initialized) return; // esperar a que init() termine
+    if (!this.initialized) return;
 
-    // Si ya hay música sonando, no reiniciar
     if (this.backgroundMusic) {
       try {
-        const status = await this.backgroundMusic.getStatusAsync();
-        if (status.isLoaded && status.isPlaying) return;
+        const status = this.backgroundMusic.currentStatus;
+        if (status && status.isLoaded && status.playing) return;
       } catch {}
     }
 
     try {
-      // Detener música anterior si existe
       if (this.backgroundMusic) {
-        await this.backgroundMusic.stopAsync();
-        await this.backgroundMusic.unloadAsync();
+        try { this.backgroundMusicSub && this.backgroundMusicSub.remove(); } catch {}
+        this.backgroundMusicSub = null;
+        try { this.backgroundMusic.pause(); } catch {}
+        try { this.backgroundMusic.remove(); } catch {}
+        this.backgroundMusic = null;
       }
 
-      // Seleccionar track aleatorio
       const tracks = [
         require('../../assets/sonidos/corte.m4a'),
         require('../../assets/sonidos/invention.m4a'),
@@ -83,51 +191,43 @@ class AudioManager {
       const randomTrack = tracks[Math.floor(Math.random() * tracks.length)];
       this.currentTrack = randomTrack;
 
-      // Crear y configurar música
-      const { sound } = await Audio.Sound.createAsync(randomTrack, {
-        volume: 0, // Iniciar en 0 para crescendo
-        isLooping: false,
-      });
-      
-      this.backgroundMusic = sound;
+      const player = createAudioPlayer(randomTrack);
+      player.volume = 0; // Iniciar en 0 para crescendo
+      player.loop = false;
+
+      this.backgroundMusic = player;
       this.musicVolume = 0;
 
-      // Reproducir
-      await sound.playAsync();
-
-      // Escuchar cuando termine para reproducir siguiente track
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.didJustFinish) {
-          this.playBackgroundMusic(); // Reproducir siguiente track aleatorio
+      this.backgroundMusicSub = player.addListener('playbackStatusUpdate', (status) => {
+        if (status && status.didJustFinish) {
+          this.playBackgroundMusic();
         }
       });
 
-      // Iniciar crescendo (de 0 a 0.5 en 3 segundos)
+      try { player.play(); } catch {}
       this.startCrescendo();
     } catch (error) {
       console.error('Error reproduciendo música de fondo:', error);
     }
   }
 
-  // Crescendo gradual de volumen
   startCrescendo() {
     if (this.crescendoInterval) {
       clearInterval(this.crescendoInterval);
     }
 
-    const duration = 3000; // 3 segundos
-    const steps = 30; // 30 pasos
-    // recalcular target por si cambió el factor
+    const duration = 3000;
+    const steps = 30;
     this.targetMusicVolume = this.baseMusicMax * this.musicVolumeFactor;
     const increment = this.targetMusicVolume / steps;
     const interval = duration / steps;
 
-    this.crescendoInterval = setInterval(async () => {
+    this.crescendoInterval = setInterval(() => {
       if (this.musicVolume < this.targetMusicVolume) {
         this.musicVolume += increment;
         if (this.backgroundMusic) {
           try {
-            await this.backgroundMusic.setVolumeAsync(Math.min(this.musicVolume, this.targetMusicVolume));
+            this.backgroundMusic.volume = Math.min(this.musicVolume, this.targetMusicVolume);
           } catch (error) {
             console.warn('Error en crescendo:', error);
           }
@@ -139,7 +239,6 @@ class AudioManager {
     }, interval);
   }
 
-  // Reproducir efecto de sonido (con superposición permitida)
   async playSound(soundName, volumeMultiplier = 1.0) {
     if (!this.soundEnabled) return;
 
@@ -150,39 +249,72 @@ class AudioManager {
         return;
       }
 
-      // Crear NUEVA instancia del sonido (permite superposición)
       const vol = Math.max(0, Math.min(1.0, volumeMultiplier * this.sfxVolumeFactor));
-      const { sound } = await Audio.Sound.createAsync(soundSource, {
-        volume: vol,
-        shouldPlay: true, // Reproducir inmediatamente
-      });
+      const player = createAudioPlayer(soundSource);
+      player.volume = vol;
 
       // MEDIO-AM-06: cap del pool a 8 sonidos simultáneos. Si se supera,
-      // forzar unload del más viejo. Antes en caso de interrupción (background,
-      // ducking) los callbacks didJustFinish nunca disparaban y activeSounds
-      // crecía indefinidamente.
+      // forzar remove del más viejo para evitar leak ante interruptions.
       if (this.activeSounds.length >= 8) {
         const oldest = this.activeSounds.shift();
-        try { oldest && oldest.unloadAsync().catch(() => {}); } catch (_) {}
+        if (oldest) {
+          try { oldest.sub && oldest.sub.remove(); } catch (_) {}
+          try { oldest.player && oldest.player.remove(); } catch (_) {}
+        }
       }
-      this.activeSounds.push(sound);
 
-      // Auto-limpieza cuando termine de reproducirse
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.didJustFinish) {
-          sound.unloadAsync().catch(() => {});
-          const index = this.activeSounds.indexOf(sound);
+      const sub = player.addListener('playbackStatusUpdate', (status) => {
+        if (status && status.didJustFinish) {
+          const index = this.activeSounds.findIndex((s) => s.player === player);
           if (index > -1) {
             this.activeSounds.splice(index, 1);
+            try { sub.remove(); } catch {}
+            try { player.remove(); } catch {}
           }
         }
       });
+
+      this.activeSounds.push({ player, sub });
+      try { player.play(); } catch {}
     } catch (error) {
       console.error(`Error reproduciendo ${soundName}:`, error);
     }
   }
 
-  // Pausar música de fondo (mantener instancia)
+  // v1.3.17: detener TODOS los SFX activos. Llamado al ir a background
+  // (bloqueo de pantalla, home, etc.) para que el sonido pare inmediatamente
+  // en lugar de seguir reproduciéndose 1-2 segundos. Limpia activeSounds,
+  // miningSound y reseta el preloaded de mining_ok.
+  async stopAllSfx() {
+    try {
+      // miningSound (continuo)
+      const ms = this.miningSound;
+      const msSub = this.miningSoundSub;
+      this.miningSound = null;
+      this.miningSoundSub = null;
+      this.miningCancelled = true;
+      if (msSub) { try { msSub.remove(); } catch {} }
+      if (ms) {
+        try { ms.pause(); } catch {}
+        try { ms.remove(); } catch {}
+      }
+      // activeSounds (rotura, explosion, win, lose, etc.)
+      const sfx = this.activeSounds.splice(0);
+      for (const entry of sfx) {
+        try { entry.sub && entry.sub.remove(); } catch {}
+        try { entry.player && entry.player.pause(); } catch {}
+        try { entry.player && entry.player.remove(); } catch {}
+      }
+      // mining_ok preloaded — solo pause+seek a 0 (no remove, lo seguimos usando).
+      if (this.miningOkPreloaded) {
+        try { this.miningOkPreloaded.pause(); } catch {}
+        try { this.miningOkPreloaded.seekTo(0); } catch {}
+      }
+    } catch (e) {
+      console.warn('stopAllSfx error', e?.message || e);
+    }
+  }
+
   async pauseBackgroundMusic() {
     try {
       if (this.crescendoInterval) {
@@ -191,9 +323,9 @@ class AudioManager {
       }
 
       if (this.backgroundMusic) {
-        const status = await this.backgroundMusic.getStatusAsync();
-        if (status.isLoaded && status.isPlaying) {
-          await this.backgroundMusic.pauseAsync();
+        const status = this.backgroundMusic.currentStatus;
+        if (status && status.isLoaded && status.playing) {
+          try { this.backgroundMusic.pause(); } catch {}
         }
       }
     } catch (error) {
@@ -201,13 +333,12 @@ class AudioManager {
     }
   }
 
-  // Reanudar música de fondo
   async resumeBackgroundMusic() {
     try {
       if (this.backgroundMusic) {
-        const status = await this.backgroundMusic.getStatusAsync();
-        if (status.isLoaded && !status.isPlaying) {
-          await this.backgroundMusic.playAsync();
+        const status = this.backgroundMusic.currentStatus;
+        if (status && status.isLoaded && !status.playing) {
+          try { this.backgroundMusic.play(); } catch {}
         }
       }
     } catch (error) {
@@ -215,7 +346,6 @@ class AudioManager {
     }
   }
 
-  // Detener música de fondo (eliminar instancia)
   async stopMusic() {
     try {
       if (this.crescendoInterval) {
@@ -224,8 +354,10 @@ class AudioManager {
       }
 
       if (this.backgroundMusic) {
-        await this.backgroundMusic.stopAsync();
-        await this.backgroundMusic.unloadAsync();
+        try { this.backgroundMusicSub && this.backgroundMusicSub.remove(); } catch {}
+        this.backgroundMusicSub = null;
+        try { this.backgroundMusic.pause(); } catch {}
+        try { this.backgroundMusic.remove(); } catch {}
         this.backgroundMusic = null;
       }
     } catch (error) {
@@ -233,7 +365,6 @@ class AudioManager {
     }
   }
 
-  // Actualizar configuración de audio
   async updateSettings(musicEnabled, soundEnabled) {
     this.musicEnabled = musicEnabled;
     this.soundEnabled = soundEnabled;
@@ -245,7 +376,6 @@ class AudioManager {
     }
   }
 
-  // Limpiar recursos al salir
   async cleanup() {
     try {
       if (this.crescendoInterval) {
@@ -253,19 +383,23 @@ class AudioManager {
       }
 
       if (this.backgroundMusic) {
-        await this.backgroundMusic.unloadAsync();
+        try { this.backgroundMusicSub && this.backgroundMusicSub.remove(); } catch {}
+        this.backgroundMusicSub = null;
+        try { this.backgroundMusic.remove(); } catch {}
       }
 
       // Limpiar todas las instancias activas de sonidos
-      for (const sound of this.activeSounds) {
-        try {
-          await sound.unloadAsync();
-        } catch {}
+      for (const entry of this.activeSounds) {
+        try { entry.sub && entry.sub.remove(); } catch {}
+        try { entry.player && entry.player.remove(); } catch {}
       }
       this.activeSounds = [];
-      // MEDIO-AM-05: resetear flags para que un re-init después de cleanup
-      // funcione correctamente. Antes `initialized` seguía true → init salía
-      // temprano y la app quedaba sin audio hasta proceso fresh.
+
+      if (this.miningOkPreloaded) {
+        try { this.miningOkPreloaded.remove(); } catch {}
+        this.miningOkPreloaded = null;
+      }
+
       this.initialized = false;
       this.backgroundMusic = null;
       this.crescendoInterval = null;
@@ -274,15 +408,13 @@ class AudioManager {
     }
   }
 
-  // Setters para factores de volumen de usuario (0..1)
   async setMusicVolumeFactor(factor) {
     const f = Math.max(0, Math.min(1, Number(factor) || 0));
     this.musicVolumeFactor = f;
     this.targetMusicVolume = this.baseMusicMax * this.musicVolumeFactor;
-    // Aplicar inmediatamente si hay música sonando
     if (this.backgroundMusic) {
       try {
-        await this.backgroundMusic.setVolumeAsync(Math.min(this.musicVolume, this.targetMusicVolume));
+        this.backgroundMusic.volume = Math.min(this.musicVolume, this.targetMusicVolume);
       } catch {}
     }
   }
@@ -293,5 +425,4 @@ class AudioManager {
   }
 }
 
-// Exportar instancia singleton
 export default new AudioManager();
