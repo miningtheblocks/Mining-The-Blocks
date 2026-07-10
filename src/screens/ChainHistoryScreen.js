@@ -234,7 +234,11 @@ export default function ChainHistoryScreen() {
   const route = useRoute();
   const { t } = useI18n();
   const { openModal } = useOverlayModals();
-  const { chainId, chainName } = route.params || {};
+  // Cambio 16 (2026-07-06): isChainMode reusa esta misma pantalla para el
+  // historial de minado del modo Chain (blockchainState/main/history) en
+  // vez de servers estándar (serverChains/{chainId}/history) -- sin este
+  // flag, comportamiento 100% idéntico al de siempre.
+  const { chainId, chainName, isChainMode } = route.params || {};
 
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -246,26 +250,25 @@ export default function ChainHistoryScreen() {
   const [typeFilter, setTypeFilter] = useState('all');
 
   useEffect(() => {
-    // BAJO-CH-01: si no hay chainId, igual hay que dejar loading=false sino
-    // queda spinner infinito.
-    if (!chainId) { setLoading(false); setEvents([]); return; }
+    // BAJO-CH-01: si no hay chainId (y no es modo Chain), igual hay que
+    // dejar loading=false sino queda spinner infinito.
+    if (!isChainMode && !chainId) { setLoading(false); setEvents([]); return; }
     setLoading(true);
-    const q = query(
-      collection(db, 'serverChains', chainId, 'history'),
-      orderBy('seq', 'desc'),
-      limit(500),
-    );
+    const historyCol = isChainMode
+      ? collection(db, 'blockchainState', 'main', 'history')
+      : collection(db, 'serverChains', chainId, 'history');
+    const q = query(historyCol, orderBy('seq', 'desc'), limit(500));
     const unsub = onSnapshot(q, (snap) => {
       setEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setLoading(false);
     }, (err) => {
       // BAJO-CH-02: loguear el error en lugar de tragarlo — útil para distinguir
       // "lista vacía" vs "permission-denied".
-      try { (async () => (await import('../utils/logError')).default('ChainHistory.snapshot', err, { chainId }))(); } catch (_) {}
+      try { (async () => (await import('../utils/logError')).default('ChainHistory.snapshot', err, { chainId, isChainMode }))(); } catch (_) {}
       setLoading(false);
     });
     return () => unsub();
-  }, [chainId]);
+  }, [chainId, isChainMode]);
 
   const renderItem = useCallback(({ item }) => <EventRow item={item} t={t} />, [t]);
   const keyExtractor = useCallback((item) => item.id, []);

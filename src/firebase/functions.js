@@ -102,10 +102,18 @@ export async function callCheckServerAccess(serverId) {
   return res.data; // { hasAccess: bool, serverCredits: number }
 }
 
-// Une al usuario a un server consumiendo 1 crédito
-export async function callJoinServer(serverId) {
+// Une al usuario a un server consumiendo 1 crédito. captchaToken solo hace
+// falta la primera vez que se entra al Free (servers pagos lo ignoran).
+export async function callJoinServer(serverId, captchaToken = null) {
   const fn = httpsCallable(functions, 'joinServer');
-  const res = await fn({ serverId });
+  const res = await fn({ serverId, captchaToken });
+  return res.data;
+}
+
+// Cambio 16: gate de captcha de una sola vez para desbloquear Chain.
+export async function callUnlockChain(captchaToken) {
+  const fn = httpsCallable(functions, 'unlockChain');
+  const res = await fn({ captchaToken });
   return res.data;
 }
 

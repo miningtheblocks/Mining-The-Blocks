@@ -160,6 +160,13 @@ service cloud.firestore {
         allow read: if request.auth != null;
         allow write: if false;
       }
+
+      // Cambio 16: historial de actividad ("quién minó qué cubo y
+      // cuándo") -- mismo patrón que placed/, solo placeCube escribe.
+      match /history/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
     }
 
     // Cambio 7 (cierre de cadena): archivo de cadenas cerradas del modo

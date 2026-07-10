@@ -19,9 +19,14 @@ import { useI18n } from '../utils/i18n';
 // que se muestra acá abajo es puramente pasivo (WebView aislado, mismo
 // subdominio separado que antes) -- no tiene ninguna relación server-side
 // con el claim, aparece igual haya o no picos disponibles.
-const AD_FRAME_URL = 'https://ads.miningtheblocks.com/ad-frame.html?type=social';
+// Fix "abre el navegador" (2026-07-05): ver docs/ad-safe.html -- el
+// anuncio va dentro de un iframe sandboxed (sin allow-popups/
+// allow-top-navigation) en vez de cargarse directo como documento
+// principal del WebView, donde el script del ad-network tenía privilegios
+// de navegación de nivel superior y disparaba un redirect automático.
+const AD_FRAME_URL = 'https://miningtheblocks.com/ad-safe.html?type=social';
 
-export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
+export default function GetPeaks({ asModal = false, onClose, chainId = null, isFreeServer = false }) {
   const { t } = useI18n();
 
   const [loading, setLoading] = useState(true);
@@ -109,7 +114,7 @@ export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
       applyStatus(res);
     } catch (e) {
       const code = e?.code || '';
-      if (code === 'failed-precondition') {
+      if (code.endsWith('failed-precondition')) {
         showAlert(t('peaks.adUnavailableTitle'), t('peaks.adUnavailableMsg'));
       } else {
         showAlert(t('peaks.errorTitle'), t('peaks.errorClaimAd'));
@@ -207,19 +212,28 @@ export default function GetPeaks({ asModal = false, onClose, chainId = null }) {
           Sin relación con onClaimAd: aparece siempre, haya o no picos
           disponibles para reclamar. originWhitelist restringe navegación
           a ese origen; el WebView no comparte JS/DOM con la app (proceso
-          web aislado, a diferencia de un iframe same-origin). */}
+          web aislado, a diferencia de un iframe same-origin).
+          Cambio 15 (2026-07-06): solo Free -- los servers pagos (estándar
+          y a medida) ya cobran entrada, no llevan ads. */}
+      {isFreeServer && (
+      <>
       <Text style={styles.adDisclaimer}>{t('peaks.adDisclaimer')}</Text>
-      <View style={styles.adBannerBox}>
+      <View style={styles.adBannerBox} pointerEvents="none">
+        {/* pointerEvents="none": ad pasivo, ninguna interacción esperada. */}
         <WebView
           source={{ uri: AD_FRAME_URL }}
           style={styles.adBannerWebview}
-          originWhitelist={['https://ads.miningtheblocks.com']}
-          onShouldStartLoadWithRequest={(req) => req.url.startsWith('https://ads.miningtheblocks.com')}
+          originWhitelist={['https://miningtheblocks.com', 'https://ads.miningtheblocks.com']}
+          onShouldStartLoadWithRequest={(req) => req.url.startsWith('https://miningtheblocks.com') || req.url.startsWith('https://ads.miningtheblocks.com')}
           javaScriptEnabled
           domStorageEnabled
-          setSupportMultipleWindows={false}
+          setSupportMultipleWindows={true}
+          javaScriptCanOpenWindowsAutomatically={false}
+          onOpenWindow={() => {}}
         />
       </View>
+      </>
+      )}
 
       {/* Referidos */}
       <View style={styles.referralCard}>

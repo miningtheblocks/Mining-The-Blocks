@@ -16,6 +16,12 @@ export default function Config({ asModal = false, onClose }) {
   const [notifyDaily, setNotifyDaily] = useState(true);
   const [notifyRewards, setNotifyRewards] = useState(true);
   const [notifyNewLayer, setNotifyNewLayer] = useState(true);
+  // Cambio 16 (2026-07-06): mute independiente por categoría de "pico
+  // listo" -- Chain, Free y servers pagos tienen cooldowns/mecánicas
+  // distintas, así que se notifican por separado.
+  const [notifyChainPick, setNotifyChainPick] = useState(true);
+  const [notifyFreePick, setNotifyFreePick] = useState(true);
+  const [notifyPaidServerPick, setNotifyPaidServerPick] = useState(true);
   const [musicEnabled, setMusicEnabled] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [musicVolumeFactor, setMusicVolumeFactor] = useState(1.0);
@@ -42,6 +48,9 @@ export default function Config({ asModal = false, onClose }) {
     setNotifyDaily(settings?.notifyDaily ?? true);
     setNotifyRewards(settings?.notifyRewards ?? true);
     setNotifyNewLayer(settings?.notifyNewLayer ?? true);
+    setNotifyChainPick(settings?.notifyChainPick ?? true);
+    setNotifyFreePick(settings?.notifyFreePick ?? true);
+    setNotifyPaidServerPick(settings?.notifyPaidServerPick ?? true);
     setMusicEnabled(settings?.musicEnabled ?? true);
     setSoundEnabled(settings?.soundEnabled ?? true);
     const mvf = typeof settings?.musicVolumeFactor === 'number' ? Math.max(0, Math.min(1, settings.musicVolumeFactor)) : 1.0;
@@ -55,6 +64,9 @@ export default function Config({ asModal = false, onClose }) {
       notifyDaily: settings?.notifyDaily ?? true,
       notifyRewards: settings?.notifyRewards ?? true,
       notifyNewLayer: settings?.notifyNewLayer ?? true,
+      notifyChainPick: settings?.notifyChainPick ?? true,
+      notifyFreePick: settings?.notifyFreePick ?? true,
+      notifyPaidServerPick: settings?.notifyPaidServerPick ?? true,
       musicEnabled: settings?.musicEnabled ?? true,
       soundEnabled: settings?.soundEnabled ?? true,
       musicVolumeFactor: mvf,
@@ -107,6 +119,9 @@ export default function Config({ asModal = false, onClose }) {
     if (key === 'notifyDaily') setNotifyDaily(value);
     if (key === 'notifyRewards') setNotifyRewards(value);
     if (key === 'notifyNewLayer') setNotifyNewLayer(value);
+    if (key === 'notifyChainPick') setNotifyChainPick(value);
+    if (key === 'notifyFreePick') setNotifyFreePick(value);
+    if (key === 'notifyPaidServerPick') setNotifyPaidServerPick(value);
     if (key === 'musicEnabled') setMusicEnabled(value);
     if (key === 'soundEnabled') setSoundEnabled(value);
     await saveSettings({ [key]: value });
@@ -255,6 +270,54 @@ export default function Config({ asModal = false, onClose }) {
           >
             <Text style={[styles.toggleTxt, notifyNewLayer && styles.toggleTxtOn]}>
               {notifyNewLayer ? t('common.on') : t('common.off')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.cardRow}>
+          <Text style={styles.cardTitleRow}>{t('config.notifyChainPick')}</Text>
+          <TouchableOpacity
+            style={[styles.toggleBtn, notifyChainPick && styles.toggleBtnOn]}
+            onPress={() => toggle('notifyChainPick', !notifyChainPick)}
+            activeOpacity={0.85}
+            accessibilityLabel={t('config.notifyChainPick')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyChainPick }}
+          >
+            <Text style={[styles.toggleTxt, notifyChainPick && styles.toggleTxtOn]}>
+              {notifyChainPick ? t('common.on') : t('common.off')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.cardRow}>
+          <Text style={styles.cardTitleRow}>{t('config.notifyFreePick')}</Text>
+          <TouchableOpacity
+            style={[styles.toggleBtn, notifyFreePick && styles.toggleBtnOn]}
+            onPress={() => toggle('notifyFreePick', !notifyFreePick)}
+            activeOpacity={0.85}
+            accessibilityLabel={t('config.notifyFreePick')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyFreePick }}
+          >
+            <Text style={[styles.toggleTxt, notifyFreePick && styles.toggleTxtOn]}>
+              {notifyFreePick ? t('common.on') : t('common.off')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.cardRow}>
+          <Text style={styles.cardTitleRow}>{t('config.notifyPaidServerPick')}</Text>
+          <TouchableOpacity
+            style={[styles.toggleBtn, notifyPaidServerPick && styles.toggleBtnOn]}
+            onPress={() => toggle('notifyPaidServerPick', !notifyPaidServerPick)}
+            activeOpacity={0.85}
+            accessibilityLabel={t('config.notifyPaidServerPick')}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: notifyPaidServerPick }}
+          >
+            <Text style={[styles.toggleTxt, notifyPaidServerPick && styles.toggleTxtOn]}>
+              {notifyPaidServerPick ? t('common.on') : t('common.off')}
             </Text>
           </TouchableOpacity>
         </View>

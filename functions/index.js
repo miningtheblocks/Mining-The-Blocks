@@ -47,6 +47,7 @@ const {
   GEM_TOKEN_URIS,
   MTBGEMS_CONTRACT,
   DAY_MS,
+  CHAIN_PICK_COOLDOWN_MS,
   PAYMENT_WALLET,
   NFT_RECEIVER_WALLET,
   USDC_CONTRACTS,
@@ -764,7 +765,7 @@ exports.previewServerConfig = onCall(async (request) => {
 });
 
 // Unirse a un server existente (consume 1 crédito)
-exports.joinServer = onCall(async (request) => {
+exports.joinServer = onCall({ secrets: [hcaptchaSecret] }, async (request) => {
   requireRegistered(request);
   // HIGH-06 (audit Round 2 / fix 2026-06-23+): checkRevoked en joinServer.
   // Pre-fix: token revocado podía consumir el serverCredit del user durante
@@ -778,6 +779,27 @@ exports.joinServer = onCall(async (request) => {
 
   const serverRef = db.collection("servers").doc(serverId);
   const userRef = db.collection("users").doc(uid);
+
+  // Cambio 16 (captcha de desbloqueo único, 2026-07-06): el Free exige
+  // verificación humana la PRIMERA vez que se entra -- no en cada join.
+  // Se verifica ANTES de la transacción (llamada HTTP externa a hCaptcha,
+  // no debe vivir dentro de una tx que Firestore puede reintentar
+  // automáticamente ante conflictos, lo que consumiría el token de un
+  // solo uso más de una vez). Servers pagos (estándar y a medida) no
+  // piden captcha -- ya cobran entrada, ver Cambio 15 (sin ads tampoco).
+  // Backfill implícito: si `serverAccess/{serverId}` YA existe, el usuario
+  // ya entró antes (con o sin captcha, en versiones viejas) -- no se le
+  // vuelve a pedir. Esto también es exactamente lo que ya hace la
+  // transacción de abajo (`if (accessSnap.exists) return`), así que este
+  // chequeo solo se cumple la primera vez real.
+  const preServerSnap = await serverRef.get();
+  if (preServerSnap.exists && preServerSnap.data().config && preServerSnap.data().config.isFreeServer) {
+    const preAccessSnap = await userRef.collection("serverAccess").doc(serverId).get();
+    if (!preAccessSnap.exists) {
+      const captchaToken = String((request.data && request.data.captchaToken) || "");
+      await verifyCaptcha(captchaToken, hcaptchaSecret.value());
+    }
+  }
 
   // Track whether this was an actual new (paid) join vs already-had-access
   let wasNewPaidJoin = false;
@@ -1424,11 +1446,24 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
     // El bonus de tier 6 NO aplica al server Free (D5, ver más abajo) -- sin
     // el `!isFreeServer` acá, el HUD contaría un tier-6 "encontrado" que en
     // realidad nunca se persiste como gema para esa cadena.
+    // BUG (2026-07-05, mismo patrón que claimAdSlotPick): la clave computada
+    // `gemsFoundByTier.${gem}` con set({merge:true}) se guardaba como campo
+    // LITERAL "gemsFoundByTier.1" (con el punto en el nombre), no como el
+    // mapa anidado gemsFoundByTier:{1:...} que se pretendía -- rompiendo el
+    // HUD de "gemas restantes por tier" (siempre leía el mapa real vacío).
+    // Fix: objeto anidado real bajo una sola clave, mismo pisado de valor
+    // que antes cuando gem===6 coincide con el bonus de cierre (2 en vez
+    // de 1+1 -- Firestore aplica el último valor asignado a esa clave en
+    // el objeto JS, igual que pasaba con las claves de punto).
+    const gemsFoundByTier = {};
     if (gem) {
-      serverUpdate[`gemsFoundByTier.${gem}`] = FieldValue.increment(1);
+      gemsFoundByTier[gem] = FieldValue.increment(1);
     }
     if (episodeComplete && !isFreeServer) {
-      serverUpdate['gemsFoundByTier.6'] = FieldValue.increment(gem === 6 ? 2 : 1);
+      gemsFoundByTier[6] = FieldValue.increment(gem === 6 ? 2 : 1);
+    }
+    if (Object.keys(gemsFoundByTier).length > 0) {
+      serverUpdate.gemsFoundByTier = gemsFoundByTier;
     }
 
     tx.set(serverRef, serverUpdate, { merge: true });
@@ -1603,12 +1638,17 @@ exports.mineCube = onCall({ secrets: [serverSeed] }, async (request) => {
 // este cambio) antes que corromper silenciosamente el balance del usuario.
 const DEFAULT_AD_SLOTS = 2;
 
-// Helper: config de una cadena relevante para Picos (cantidad de slots).
+// Helper: config de una cadena relevante para Picos (cantidad de slots y
+// cooldown por slot). Cambio 14 (2026-07-06): cooldown configurable por
+// cadena -- antes fijo en DAY_MS para todas, ahora el Free puede tener un
+// valor distinto (config.adCooldownMs en serverChains/{chainId}) sin
+// afectar a los servers pagos, que siguen en 24h por default.
 async function getChainPeaksConfig(chainId) {
   const chainSnap = await db.collection("serverChains").doc(chainId).get();
   const config = (chainSnap.exists && chainSnap.data().config) || {};
   return {
     dailyAdSlots: Number(config.dailyAdSlots) || DEFAULT_AD_SLOTS,
+    adCooldownMs: Number(config.adCooldownMs) || DAY_MS,
   };
 }
 
@@ -1627,7 +1667,7 @@ exports.getPeaksStatus = onCall(async (request) => {
   const userRef = db.collection("users").doc(uid);
   const chainAccessRef = userRef.collection("chainAccess").doc(chainId);
 
-  const [userSnap, accessSnap, { dailyAdSlots }] = await Promise.all([
+  const [userSnap, accessSnap, { dailyAdSlots, adCooldownMs }] = await Promise.all([
     userRef.get(), chainAccessRef.get(), getChainPeaksConfig(chainId),
   ]);
 
@@ -1638,7 +1678,7 @@ exports.getPeaksStatus = onCall(async (request) => {
   }
 
   if (accessSnap.exists) {
-    return buildChainStatus(accessSnap.data(), nowMs, dailyAdSlots);
+    return buildChainStatus(accessSnap.data(), nowMs, dailyAdSlots, adCooldownMs);
   }
   // Migración lazy "grandfather": primera vez que se pide status de esta
   // cadena -> semillar con el balance global actual (snapshot único, NO se
@@ -1646,7 +1686,7 @@ exports.getPeaksStatus = onCall(async (request) => {
   const globalPicks = userSnap.exists ? (Number(userSnap.data().picks) || 0) : 0;
   const seed = { chainId, picks: globalPicks, createdAt: nowMs };
   await chainAccessRef.set(seed);
-  return buildChainStatus(seed, nowMs, dailyAdSlots);
+  return buildChainStatus(seed, nowMs, dailyAdSlots, adCooldownMs);
 });
 
 // Cambio 5 (compliance anuncios, 2026-07-03): reemplaza el viejo trío
@@ -1664,7 +1704,7 @@ exports.claimAdSlotPick = onCall(async (request) => {
   const chainId = requireChainId(request);
   const index = Number(request.data && request.data.index);
   const nowMs = Date.now();
-  const { dailyAdSlots } = await getChainPeaksConfig(chainId);
+  const { dailyAdSlots, adCooldownMs } = await getChainPeaksConfig(chainId);
   if (!Number.isInteger(index) || index < 1 || index > dailyAdSlots) {
     throw new HttpsError("invalid-argument", `index must be between 1 and ${dailyAdSlots}`);
   }
@@ -1679,10 +1719,17 @@ exports.claimAdSlotPick = onCall(async (request) => {
     const ads = data.ads || {};
     // eslint-disable-next-line security/detect-object-injection -- index validado 1..dailyAdSlots arriba
     const lastVal = toMillis(ads[index]) || 0;
-    if (nowMs < lastVal + DAY_MS) throw new HttpsError("failed-precondition", `Slot ${index} not ready`);
+    if (nowMs < lastVal + adCooldownMs) throw new HttpsError("failed-precondition", `Slot ${index} not ready`);
 
     if (accessSnap.exists) {
-      tx.set(chainAccessRef, { picks: FieldValue.increment(1), [`ads.${index}`]: nowMs }, { merge: true });
+      // BUG (2026-07-05): la clave computada `ads.${index}` con set({merge:true})
+      // se guardaba como campo LITERAL "ads.1"/"ads.2" (con el punto en el
+      // nombre), no como el mapa anidado ads:{1:...} que espera la lectura
+      // de arriba (`data.ads || {}`). Resultado: `ads` leído siempre vacío,
+      // cualquier slot parecía "nunca reclamado" -- reclamar CUALQUIER slot
+      // reseteaba el cooldown visible del otro. Fix: objeto anidado real,
+      // Firestore mergea profundo dentro del mapa `ads` existente.
+      tx.set(chainAccessRef, { picks: FieldValue.increment(1), ads: { [index]: nowMs } }, { merge: true });
     } else {
       tx.set(chainAccessRef, { chainId, createdAt: nowMs, picks: (data.picks || 0) + 1, ads: { [index]: nowMs } });
     }
@@ -1698,7 +1745,7 @@ exports.claimAdSlotPick = onCall(async (request) => {
 
     const updatedAds = Object.assign({}, ads, { [index]: nowMs });
     const updated = Object.assign({}, data, { picks: (data.picks || 0) + 1, ads: updatedAds });
-    return buildChainStatus(updated, nowMs, dailyAdSlots);
+    return buildChainStatus(updated, nowMs, dailyAdSlots, adCooldownMs);
   });
   return result;
 });
@@ -1768,31 +1815,80 @@ exports.getChainBlockchainStatus = onCall(async (request) => {
   const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
   const [stateSnap, accessSnap] = await Promise.all([stateRef.get(), accessRef.get()]);
 
-  const state = stateSnap.exists ? stateSnap.data() : { currentLayer: 0, placedInCurrentLayer: 0, poolUSD: 0 };
+  // Cambio 9 (2026-07-05): mecánica estándar (igual que servers) -- el cubo
+  // arranca COMPLETO en BLOCKCHAIN_LAYER_COUNT y se mina hacia el centro
+  // (K decrece), no al revés. Default cuando no existe el doc todavía:
+  // capa inicial = BLOCKCHAIN_LAYER_COUNT (antes era 0, mecánica invertida
+  // descartada por complejidad de render 3D sin beneficio real).
+  const state = stateSnap.exists ? stateSnap.data() : { currentLayer: BLOCKCHAIN_LAYER_COUNT, placedInCurrentLayer: 0, poolUSD: 0 };
   const access = accessSnap.exists ? accessSnap.data() : { picks: 0, streakDays: 0, totalContributedUSD: 0 };
   const nowMs = Date.now();
-  const lastPickAt = toMillis(access.lastPickAt) || 0;
+  // Cambio 13 (2026-07-06): el cooldown arranca al USAR el pico (placeCube
+  // setea lastUsedAt), no al reclamarlo -- lastPickAt ya no determina
+  // pickNextAt. Si ya tiene un pico sin usar (picks>=1), no hay nada que
+  // esperar todavía (el bloqueo real es "picks>=1", no el tiempo) --
+  // pickNextAt refleja cuándo se habilita el PRÓXIMO reclamo después de
+  // usar el actual.
+  const lastUsedAt = toMillis(access.lastUsedAt) || 0;
+  const currentLayer = state.currentLayer != null ? state.currentLayer : BLOCKCHAIN_LAYER_COUNT;
 
   return {
     name: state.name || BLOCKCHAIN_CHAIN_NAME,
-    currentLayer: state.currentLayer || 0,
+    currentLayer,
     layerCount: BLOCKCHAIN_LAYER_COUNT,
     placedInCurrentLayer: state.placedInCurrentLayer || 0,
-    layerSize: shellSizeDedup(state.currentLayer || 0),
+    layerSize: shellSizeDedup(currentLayer),
     poolUSD: state.poolUSD || 0,
     picks: access.picks || 0,
     streakDays: access.streakDays || 0,
     totalContributedUSD: access.totalContributedUSD || 0,
     currentRatePerCube: rateForStreakDays(access.streakDays || 0),
-    pickNextAt: lastPickAt ? lastPickAt + DAY_MS : 0,
+    pickNextAt: lastUsedAt ? lastUsedAt + CHAIN_PICK_COOLDOWN_MS : 0,
     serverNow: nowMs,
+    // Cambio 16 (captcha de desbloqueo único): true si ya pasó el gate de
+    // entrada (unlockChain). El cliente usa esto para decidir si el botón
+    // de la lista dice "Desbloquear" (primera vez) o "Minar" (ya verificado).
+    unlocked: !!access.unlockVerifiedAt,
   };
 });
 
-// Pico diario incondicional (1 slot) -- exige captcha verificado
-// server-side, anti-bot puro, sin relación a ningún anuncio. Reclamar el
-// pico NO cuenta para la racha de colocado (ver placeCube) -- pedido
-// explícito del usuario.
+// Cambio 16 (captcha de desbloqueo único, 2026-07-06): gate de entrada a
+// Chain -- se llama UNA vez, la primera vez que el usuario toca "Desbloquear"
+// en la lista, ANTES de dejarlo entrar al cubo por primera vez. Distinto de
+// claimChainPick (que sigue pidiendo captcha en CADA reclamo de pico, sin
+// cambios). Si ya está desbloqueado, no-op (idempotente, el cliente no
+// debería llamarlo de nuevo, pero no rompe nada si lo hace).
+exports.unlockChain = onCall({ secrets: [hcaptchaSecret] }, async (request) => {
+  requireRegistered(request);
+  const uid = request.auth.uid;
+
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  requireBlockchainModeEnabled(appConfigSnap);
+
+  const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
+  const accessSnap = await accessRef.get();
+  if (accessSnap.exists && accessSnap.data().unlockVerifiedAt) {
+    return { unlocked: true };
+  }
+
+  const captchaToken = String((request.data && request.data.captchaToken) || "");
+  await verifyCaptcha(captchaToken, hcaptchaSecret.value());
+
+  await accessRef.set({ unlockVerifiedAt: Date.now() }, { merge: true });
+  return { unlocked: true };
+});
+
+// Pico diario incondicional (1 slot, cooldown 2h) -- exige captcha
+// verificado server-side, anti-bot puro, sin relación a ningún anuncio.
+// Reclamar el pico NO cuenta para la racha de colocado (ver placeCube).
+//
+// Cambio 13 (2026-07-06): no se pueden "guardar" picos -- máximo 1 sin
+// usar a la vez (picks>=1 bloquea un nuevo reclamo), y el cooldown de 2h
+// para el PRÓXIMO reclamo arranca cuando el actual se USA (placeCube
+// setea lastUsedAt), no cuando se reclama. Esto ata la frecuencia de
+// impresiones del anuncio del modal de reclamo a cuánto juega el usuario
+// en la práctica, en vez de a cuántas veces puede tocar "reclamar" sin
+// usar nada.
 exports.claimChainPick = onCall({ secrets: [hcaptchaSecret] }, async (request) => {
   requireRegistered(request);
   const uid = request.auth.uid;
@@ -1809,25 +1905,33 @@ exports.claimChainPick = onCall({ secrets: [hcaptchaSecret] }, async (request) =
   const result = await db.runTransaction(async (tx) => {
     const accessSnap = await tx.get(accessRef);
     const data = accessSnap.exists ? accessSnap.data() : {};
-    const lastPickAt = toMillis(data.lastPickAt) || 0;
-    if (nowMs < lastPickAt + DAY_MS) throw new HttpsError("failed-precondition", "pick_not_ready");
+    if ((data.picks || 0) >= 1) throw new HttpsError("failed-precondition", "pick_already_held");
+    const lastUsedAt = toMillis(data.lastUsedAt) || 0;
+    if (nowMs < lastUsedAt + CHAIN_PICK_COOLDOWN_MS) throw new HttpsError("failed-precondition", "pick_not_ready");
 
     const updated = {
-      picks: (data.picks || 0) + 1,
-      lastPickAt: nowMs,
+      picks: 1,
       streakDays: data.streakDays || 0,
       lastPlacedDay: data.lastPlacedDay || null,
       totalContributedUSD: data.totalContributedUSD || 0,
+      lastUsedAt: data.lastUsedAt || null,
     };
     tx.set(accessRef, updated, { merge: true });
     return updated;
   });
-  return { picks: result.picks, pickNextAt: nowMs + DAY_MS };
+  // pickNextAt: 0 -- el pico recién reclamado todavía no se usó, no hay
+  // cooldown corriendo (arranca en placeCube). El cliente ya sabe que no
+  // puede reclamar de nuevo porque picks>=1 (ver claimChainPick arriba).
+  return { picks: result.picks, pickNextAt: 0 };
 });
 
-// Coloca (no mina) un cubo en la capa frontera actual. Consume 1 pico,
-// aporta al pool según la racha de días consecutivos de quien coloca, y
-// avanza a la siguiente capa cuando la actual se completa.
+// Mina un cubo de la capa actual (mecánica estándar, igual que servers --
+// Cambio 9, 2026-07-05: reemplaza la mecánica invertida original de este
+// modo, que hacía crecer el cubo desde 1 cubo hacia afuera; se descartó
+// por la complejidad/bugs del render 3D para capas chicas sin beneficio
+// real sobre simplemente reusar el mecanismo ya probado de servers).
+// Consume 1 pico, aporta al pool según la racha de días consecutivos de
+// quien mina, y retrocede a la capa interior cuando la actual se completa.
 exports.placeCube = onCall(async (request) => {
   requireRegistered(request);
   await assertFreshToken(request);
@@ -1842,16 +1946,19 @@ exports.placeCube = onCall(async (request) => {
 
   const stateRef = db.collection("blockchainState").doc("main");
   const accessRef = db.collection("users").doc(uid).collection("blockchainAccess").doc("main");
+  const userRef = db.collection("users").doc(uid);
   const nowMs = Date.now();
 
   const result = await db.runTransaction(async (tx) => {
-    const [stateSnap, accessSnap] = await Promise.all([tx.get(stateRef), tx.get(accessRef)]);
-    const state = stateSnap.exists ? stateSnap.data() : { currentLayer: 0, placedInCurrentLayer: 0, poolUSD: 0 };
-    const K = state.currentLayer || 0;
-    if (K > BLOCKCHAIN_LAYER_COUNT) throw new HttpsError("failed-precondition", "chain_closed");
+    const [stateSnap, accessSnap, userSnap] = await Promise.all([tx.get(stateRef), tx.get(accessRef), tx.get(userRef)]);
+    const state = stateSnap.exists ? stateSnap.data() : { currentLayer: BLOCKCHAIN_LAYER_COUNT, placedInCurrentLayer: 0, poolUSD: 0 };
+    const K = state.currentLayer != null ? state.currentLayer : BLOCKCHAIN_LAYER_COUNT;
+    if (K < 0) throw new HttpsError("failed-precondition", "chain_closed");
 
     // El cubeNumber tiene que caer en el rango de la capa K (acumulado
-    // dedup): (cumSumDedup(K-1), cumSumDedup(K)].
+    // dedup): (cumSumDedup(K-1), cumSumDedup(K)]. Este rango es geometría
+    // estática de la capa K -- no depende de la dirección en que se recorre
+    // el cubo, así que no cambia respecto a la mecánica anterior.
     const rangeMin = K > 0 ? cumSumDedup(K - 1) : 0;
     const rangeMax = cumSumDedup(K);
     if (n <= rangeMin || n > rangeMax) throw new HttpsError("invalid-argument", "cube_out_of_range");
@@ -1864,19 +1971,19 @@ exports.placeCube = onCall(async (request) => {
     const picks = access.picks || 0;
     if (picks < 1) throw new HttpsError("failed-precondition", "no_picks");
 
-    // Racha: solo avanza/mantiene si coloca en un día calendario distinto
-    // al último donde ya había colocado (evita inflar la racha colocando
+    // Racha: solo avanza/mantiene si mina en un día calendario distinto
+    // al último donde ya había minado (evita inflar la racha minando
     // 50 cubos el mismo día). Si el gap es de más de 1 día, se corta.
     const lastPlacedDay = access.lastPlacedDay || null;
     const todayKey = utcDayKey(nowMs);
     let streakDays = access.streakDays || 0;
     if (lastPlacedDay === todayKey) {
-      // ya colocó hoy -- racha no cambia, pero sigue coloando cubos hoy.
+      // ya minó hoy -- racha no cambia, pero sigue minando cubos hoy.
     } else if (lastPlacedDay) {
       const gap = daysBetweenUtc(new Date(lastPlacedDay + "T00:00:00Z").getTime(), nowMs);
       streakDays = gap === 1 ? streakDays + 1 : 1; // gap>1 corta la racha, arranca de nuevo
     } else {
-      streakDays = 1; // primera vez que coloca
+      streakDays = 1; // primera vez que mina
     }
 
     const rate = rateForStreakDays(streakDays);
@@ -1887,37 +1994,65 @@ exports.placeCube = onCall(async (request) => {
       streakDays,
       lastPlacedDay: todayKey,
       totalContributedUSD: (access.totalContributedUSD || 0) + rate,
+      // Cambio 13 (2026-07-06): acá arranca el cooldown del próximo pico
+      // (2h), no en claimChainPick -- ver comentario ahí.
+      lastUsedAt: nowMs,
     }, { merge: true });
 
     const placedInCurrentLayer = (state.placedInCurrentLayer || 0) + 1;
     const layerSize = shellSizeDedup(K);
     const layerComplete = placedInCurrentLayer >= layerSize;
+    const historySeq = (state.historySeq || 0) + 1;
     tx.set(stateRef, {
       name: state.name || BLOCKCHAIN_CHAIN_NAME,
-      currentLayer: layerComplete ? K + 1 : K,
+      currentLayer: layerComplete ? K - 1 : K,
       placedInCurrentLayer: layerComplete ? 0 : placedInCurrentLayer,
       poolUSD: (state.poolUSD || 0) + rate,
+      historySeq,
     }, { merge: true });
+
+    // Cambio 16 (2026-07-06): historial de actividad ("quién minó qué
+    // cubo y cuándo"), mismo concepto que el evento "mine" de servers
+    // estándar -- a diferencia de ahí (donde el cliente escribe con el
+    // SDK normal y las reglas de Firestore lo bloquean siempre, un bug
+    // preexistente confirmado en logcat de esta sesión: "Failed to
+    // persist mine to Firestore" / permission-denied), acá se escribe
+    // DESDE EL BACKEND con Admin SDK (bypasea las reglas), dentro de la
+    // misma transacción -- nunca falla silenciosamente.
+    const userData = userSnap.exists ? userSnap.data() : {};
+    const displayName = userData.displayName ||
+      (userData.profile && userData.profile.displayName) || null;
+    const histRef = stateRef.collection("history").doc(String(historySeq));
+    tx.set(histRef, {
+      type: "mine",
+      seq: historySeq,
+      ts: nowMs,
+      uid,
+      displayName,
+      cubeNumber: n,
+      layerK: K,
+      rate,
+    });
 
     return {
       cubeNumber: n,
       rate,
       streakDays,
       layerComplete,
-      newLayer: layerComplete ? K + 1 : K,
-      chainClosing: layerComplete && K === BLOCKCHAIN_LAYER_COUNT,
+      newLayer: layerComplete ? K - 1 : K,
+      chainClosing: layerComplete && K === 0,
       chainName: state.name || BLOCKCHAIN_CHAIN_NAME,
       poolUSD: (state.poolUSD || 0) + rate,
     };
   });
 
-  // Cambio 7 (cierre de cadena, 2026-07-04): la última capa (250) se acaba
-  // de completar con ESTE placeCube -- archivar, repartir proporcional y
-  // arrancar la próxima cadena. Corre DESPUÉS de la transacción (no adentro
-  // -- iterar todos los contribuyentes de la cadena es un collectionGroup
-  // query de tamaño no acotado, no cabe bien en una transacción de
-  // Firestore). Evento rarísimo en la práctica (ver estimación de tiempo
-  // para llenar 250 capas), no es un hot path.
+  // Cambio 7 (cierre de cadena, 2026-07-04): la última capa (K=0, el cubo
+  // central) se acaba de completar con ESTE placeCube -- archivar, repartir
+  // proporcional y arrancar la próxima cadena. Corre DESPUÉS de la
+  // transacción (no adentro -- iterar todos los contribuyentes de la
+  // cadena es un collectionGroup query de tamaño no acotado, no cabe bien
+  // en una transacción de Firestore). Evento rarísimo en la práctica (ver
+  // estimación de tiempo para minar 250 capas), no es un hot path.
   if (result.chainClosing) {
     try {
       await closeChainAndArchive(result.chainName, result.poolUSD);
@@ -1981,7 +2116,7 @@ async function closeChainAndArchive(chainName, finalPoolUSD) {
   batch.set(counterRef, { closedChains: closedChains + 1 });
   batch.set(stateRef, {
     name: nextName,
-    currentLayer: 0,
+    currentLayer: BLOCKCHAIN_LAYER_COUNT,
     placedInCurrentLayer: 0,
     poolUSD: 0,
   });
@@ -2346,6 +2481,119 @@ exports.mintProcessorScheduled = onSchedule(
       }
     },
 );
+
+// ─── Notificaciones de picos listos ──────────────────────────────────────────
+// Cambio 16 (2026-07-06): avisa cuando un pico terminó su cooldown y ya se
+// puede reclamar -- Chain, Free y servers pagos, cada uno con su propio
+// notifyKey (toggle en Config.js) y channelId (mute granular en Android).
+// Reusa sendPushToUser (ya existente, arriba) que ya respeta
+// userData.settings[notifyKey] y limpia tokens inválidos -- acá solo hay
+// que detectar QUIÉN está listo y no reenviar la misma notif en cada tick.
+//
+// notifyIfReady centraliza la regla "listo pero no notificado todavía para
+// ESTE ciclo de cooldown" -- lastNotifiedAt se compara contra el momento en
+// que ese cooldown específico terminó (readyAt), no contra "ahora", para
+// poder distinguir un cooldown viejo ya notificado de uno nuevo que arrancó
+// después (ej. el usuario reclamó y usó de nuevo).
+async function notifyIfReady(uid, lastReadyAt, cooldownMs, lastNotifiedAt, notifyKey, channelId, titles, bodies) {
+  if (!lastReadyAt) return null; // nunca usó/reclamó -- no hay cooldown corriendo
+  const readyAt = lastReadyAt + cooldownMs;
+  const nowMs = Date.now();
+  if (nowMs < readyAt) return null; // todavía no está listo
+  if (lastNotifiedAt && lastNotifiedAt >= readyAt) return null; // ya se notificó este ciclo
+  await sendPushToUser(uid, titles, bodies, { notifyKey, channelId });
+  return nowMs;
+}
+
+async function runPickNotificationsCheck() {
+  let sentCount = 0;
+
+  // Chain: blockchainAccess/main, un solo pico, lastUsedAt + cooldown fijo.
+  const chainSnap = await db.collectionGroup("blockchainAccess").get();
+  for (const docSnap of chainSnap.docs) {
+    if (docSnap.id !== "main") continue; // defensivo, por si hubiera otros docs
+    const uid = docSnap.ref.parent.parent.id;
+    const data = docSnap.data();
+    const sentAt = await notifyIfReady(
+        uid,
+        toMillis(data.lastUsedAt) || 0,
+        CHAIN_PICK_COOLDOWN_MS,
+        toMillis(data.lastNotifiedAt) || 0,
+        "notifyChainPick", "chain_pick",
+        {en: "Chain pick ready", es: "Pico de Chain listo"},
+        {en: "Your next Chain pick is ready to claim.", es: "Tu próximo pico de Chain ya está listo para reclamar."},
+    );
+    if (sentAt) {
+      await docSnap.ref.set({lastNotifiedAt: sentAt}, {merge: true});
+      sentCount++;
+    }
+  }
+
+  // Free y servers pagos: chainAccess/{chainId}, hasta dailyAdSlots picos
+  // independientes (ads[i]), cooldown por cadena (Free 6h configurable,
+  // pagos 24h fijo default) -- ver getChainPeaksConfig.
+  const appConfigSnap = await db.collection("config").doc("app").get();
+  const freeChainId = appConfigSnap.exists ? appConfigSnap.data().freeServerChainId : null;
+  const chainConfigCache = new Map();
+
+  const accessSnap = await db.collectionGroup("chainAccess").get();
+  for (const docSnap of accessSnap.docs) {
+    const uid = docSnap.ref.parent.parent.id;
+    const chainId = docSnap.id;
+    const data = docSnap.data();
+    const ads = data.ads || {};
+    const notifiedAds = data.notifiedAds || {};
+    const isFree = chainId === freeChainId;
+
+    let cfg = chainConfigCache.get(chainId);
+    if (!cfg) {
+      cfg = await getChainPeaksConfig(chainId);
+      chainConfigCache.set(chainId, cfg);
+    }
+    const notifyKey = isFree ? "notifyFreePick" : "notifyPaidServerPick";
+    const channelId = isFree ? "free_pick" : "paid_server_pick";
+    const titles = isFree ?
+      {en: "Free pick ready", es: "Pico Free listo"} :
+      {en: "Server pick ready", es: "Pico de server listo"};
+    const bodies = isFree ?
+      {en: "Your free daily pick is ready to claim.", es: "Tu pico diario gratis ya está listo para reclamar."} :
+      {en: "A daily pick is ready to claim.", es: "Tenés un pico diario listo para reclamar."};
+
+    const updatedNotifiedAds = {};
+    let anySent = false;
+    for (let i = 1; i <= cfg.dailyAdSlots; i++) {
+      // eslint-disable-next-line security/detect-object-injection -- i es un contador 1..dailyAdSlots (entero acotado)
+      const sentAt = await notifyIfReady(
+          uid, toMillis(ads[i]) || 0, cfg.adCooldownMs, toMillis(notifiedAds[i]) || 0,
+          notifyKey, channelId, titles, bodies,
+      );
+      if (sentAt) {
+        updatedNotifiedAds[i] = sentAt;
+        anySent = true;
+      }
+    }
+    if (anySent) {
+      await docSnap.ref.set({notifiedAds: Object.assign({}, notifiedAds, updatedNotifiedAds)}, {merge: true});
+      sentCount++;
+    }
+  }
+
+  return sentCount;
+}
+
+exports.pickReadyNotificationsScheduled = onSchedule("every 10 minutes", async () => {
+  const sentCount = await runPickNotificationsCheck();
+  console.log(`pickReadyNotificationsScheduled: sent=${sentCount}`);
+});
+
+// Endpoint de test manual -- dispara el mismo chequeo on-demand sin esperar
+// el cron, para poder probar con cooldowns reales (2h/6h/24h) sin esperar
+// horas. Requiere admin (mismo patrón que otros endpoints admin del archivo).
+exports.testPickNotifications = onCall(async (request) => {
+  await requireAdminFresh(request);
+  const sentCount = await runPickNotificationsCheck();
+  return {sentCount};
+});
 
 // ─── Referidos ────────────────────────────────────────────────────────────────
 

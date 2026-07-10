@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity,
-  StyleSheet, ActivityIndicator, Modal,
+  StyleSheet, ActivityIndicator, Modal, TextInput, BackHandler,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppAlert } from '../components/AppAlert';
@@ -19,6 +19,8 @@ import LayerLockedModal from '../components/LayerLockedModal';
 import { getLayerUnlockThreshold, isLayerUnlocked, TOTAL_PRIZE_POOL_USD } from '../utils/gems';
 import { APP_VERSION, compareVersions } from '../constants';
 import { logError } from '../utils/logError';
+import ChainMode from './ChainMode';
+import CaptchaModal from '../components/CaptchaModal';
 
 // SEC-A7: anti-downgrade. Cacheamos el máximo latestVersion visto históricamente.
 // Si Firebase es comprometido y un atacante setea latestVersion a una versión
@@ -71,7 +73,37 @@ export default function ServerList() {
   // default. El botón para crear un server a medida ni se muestra si esto
   // es false -- el backend también lo re-valida (defensa en profundidad).
   const [paramServerCreationEnabled, setParamServerCreationEnabled] = useState(false);
+  // Cambio 8 (modo Chain, 2026-07-05): pestaña al lado de "Servers" para
+  // entrar al modo Chain, en vez de estar escondida en el menú de adentro
+  // del cubo (donde era poco descubrible). Mismo gate que antes.
+  const [blockchainModeEnabled, setBlockchainModeEnabled] = useState(false);
+  const [view, setView] = useState('servers'); // 'servers' | 'chain'
+  // Cambio 10 (2026-07-05): contraseña simple para entrar a Chain mientras
+  // sigue en testing -- no es un mecanismo de seguridad real (la contraseña
+  // vive en el bundle cliente), solo evita que alguien entre por accidente
+  // mientras blockchainModeEnabled está activo en producción para pruebas.
+  const [showChainGate, setShowChainGate] = useState(false);
+  const [chainGateInput, setChainGateInput] = useState('');
+  const CHAIN_GATE_PASSWORD = 'bissi';
+  // Cambio 16 (captcha de desbloqueo único, 2026-07-06): pendingUnlockServer
+  // guarda el server mientras se resuelve el captcha, para poder reanudar
+  // el join (performJoin) con el token recién obtenido.
+  const [showUnlockCaptcha, setShowUnlockCaptcha] = useState(false);
+  const [pendingUnlockServer, setPendingUnlockServer] = useState(null);
   const { showAlert, AlertComponent } = useAppAlert();
+
+  // Cambio 11 (2026-07-05): sin esto, el botón/gesto de "atrás" de Android
+  // (swipe desde el borde) minimizaba la app entera estando en Chain, en
+  // vez de volver a la lista de Servers -- react-navigation no participa acá
+  // porque el cambio de "view" es un state local, no una screen navegada.
+  useEffect(() => {
+    if (view !== 'chain') return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setView('servers');
+      return true;
+    });
+    return () => sub.remove();
+  }, [view]);
 
   const currentUid = currentUser?.uid;
 
@@ -135,6 +167,7 @@ export default function ServerList() {
         processConfig(cfg, false);
         setFreeServerChainId(cfg.freeServerChainId || null);
         setParamServerCreationEnabled(cfg.paramServerCreationEnabled === true);
+        setBlockchainModeEnabled(cfg.blockchainModeEnabled === true);
         // Cache para próximo cold start
         AsyncStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(cfg)).catch(() => {});
       }, (err) => { logError('ServerList.configSnapshot', err); });
@@ -275,29 +308,11 @@ export default function ServerList() {
 
   const goToRegister = () => openModal('registration');
 
-  const joinServer = async (server) => {
-    if (!currentUser) { goToRegister(); return; }
-    // Audit feedback 2026-06-23+: bloquear entrada si la capa actual del
-    // server no tiene quorum suficiente. Modal explica + CTA share. El user
-    // no gasta créditos en un server que no puede minar todavía.
-    // Computamos en cliente (espejo de functions/helpers.js#isLayerUnlocked)
-    // porque ServerList lee via onSnapshot directo a Firestore, no via
-    // callGetServers (que sí anexaría layerUnlocked al payload).
-    const K = server?.currentLayer;
-    const members = server?.memberCount || 0;
-    // Cambio 2/3: el espejo cliente de isLayerUnlocked usa los umbrales fijos
-    // del cubo estándar (100 capas) — no aplica a servers con config propia
-    // (Free, a medida), que tienen su propia geometría/umbrales. Para esos,
-    // confiamos en que el backend (mineCube) gatee correctamente y salteamos
-    // este check especulativo del lado cliente.
-    if (!server?.config && typeof K === 'number' && !isLayerUnlocked(K, members)) {
-      setLayerLockedInfo({
-        current: members,
-        required: getLayerUnlockThreshold(K),
-        K,
-      });
-      return;
-    }
+  // Cambio 16 (captcha de desbloqueo único, 2026-07-06): performJoin hace el
+  // trabajo real (antes vivía inline dentro de joinServer) -- se separó para
+  // poder "pausar" el flujo en joinServer, mostrar el captcha de desbloqueo
+  // si hace falta, y recién REANUDAR acá con el token ya resuelto.
+  const performJoin = async (server, captchaToken) => {
     setJoining(server.id);
     const markJoined = () => {
       setMyServerAccess((prev) => {
@@ -321,7 +336,7 @@ export default function ServerList() {
         showAlert(t('serverList.noCreditsTitle'), t('serverList.noCreditsMsg'));
         return false;
       }
-      const joinResult = await callJoinServer(server.id);
+      const joinResult = await callJoinServer(server.id, captchaToken);
       markJoined();
       if (joinResult?.welcomePicks) {
         return 'welcome';
@@ -367,6 +382,53 @@ export default function ServerList() {
     } finally {
       setJoining(null);
     }
+  };
+
+  const joinServer = async (server) => {
+    if (!currentUser) { goToRegister(); return; }
+    // Audit feedback 2026-06-23+: bloquear entrada si la capa actual del
+    // server no tiene quorum suficiente. Modal explica + CTA share. El user
+    // no gasta créditos en un server que no puede minar todavía.
+    // Computamos en cliente (espejo de functions/helpers.js#isLayerUnlocked)
+    // porque ServerList lee via onSnapshot directo a Firestore, no via
+    // callGetServers (que sí anexaría layerUnlocked al payload).
+    const K = server?.currentLayer;
+    const members = server?.memberCount || 0;
+    // Cambio 2/3: el espejo cliente de isLayerUnlocked usa los umbrales fijos
+    // del cubo estándar (100 capas) — no aplica a servers con config propia
+    // (Free, a medida), que tienen su propia geometría/umbrales. Para esos,
+    // confiamos en que el backend (mineCube) gatee correctamente y salteamos
+    // este check especulativo del lado cliente.
+    if (!server?.config && typeof K === 'number' && !isLayerUnlocked(K, members)) {
+      setLayerLockedInfo({
+        current: members,
+        required: getLayerUnlockThreshold(K),
+        K,
+      });
+      return;
+    }
+
+    // Cambio 16: el Free exige captcha la PRIMERA vez (sin acceso todavía).
+    // Servers pagos (estándar/a medida) van directo, sin este paso.
+    const isFree = !!(server?.config && server.config.isFreeServer);
+    if (isFree) {
+      setJoining(server.id);
+      try {
+        const { hasAccess } = await callCheckServerAccess(server.id);
+        setJoining(null);
+        if (!hasAccess) {
+          setPendingUnlockServer(server);
+          setShowUnlockCaptcha(true);
+          return;
+        }
+      } catch (e) {
+        setJoining(null);
+        // Si el check falla, dejamos que performJoin lo intente de nuevo y
+        // maneje el error con su manejo de errores ya establecido.
+      }
+    }
+
+    await performJoin(server, null);
   };
 
   // Cambio 4: con el filtro "Mis Servers" activo, la fuente es servers (top-50)
@@ -493,8 +555,9 @@ export default function ServerList() {
         ) : null}
         {(() => {
           const hasAccess = myServerAccess.has(item.id);
+          const isFree = !!(item.config && item.config.isFreeServer);
           const btnStyle = hasAccess ? styles.mineBtn : styles.unlockBtn;
-          const label = hasAccess ? t('serverList.mine') : t('serverList.unlock');
+          const label = hasAccess ? t('serverList.mine') : (isFree ? t('serverList.unlockFree') : t('serverList.unlock'));
           const txtStyle = hasAccess ? styles.mineTxt : styles.unlockTxt;
           return (
             <TouchableOpacity
@@ -588,24 +651,52 @@ export default function ServerList() {
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.title}>{t('serverList.title')}</Text>
+          {blockchainModeEnabled ? (
+            <View style={styles.viewSwitchRow}>
+              <TouchableOpacity
+                onPress={() => setView('servers')}
+                activeOpacity={0.8}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: view === 'servers' }}
+              >
+                <Text style={[styles.title, styles.viewSwitchTitle, view !== 'servers' && styles.viewSwitchTitleInactive]}>
+                  {t('serverList.title')}
+                </Text>
+              </TouchableOpacity>
+              <Text style={styles.viewSwitchSep}>·</Text>
+              <TouchableOpacity
+                onPress={() => { if (view === 'chain') return; setChainGateInput(''); setShowChainGate(true); }}
+                activeOpacity={0.8}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: view === 'chain' }}
+              >
+                <Text style={[styles.title, styles.viewSwitchTitle, view !== 'chain' && styles.viewSwitchTitleInactive]}>
+                  {t('drawer.chain')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={styles.title}>{t('serverList.title')}</Text>
+          )}
           <Text style={styles.creditsLine}>
             🎟️ {serverCredits === null ? '…' : serverCredits} {t('serverList.credits')}
           </Text>
         </View>
         <View style={styles.headerRight}>
-          <TouchableOpacity
-            style={[styles.finishedBtn, tab === 'finished' && styles.finishedBtnActive]}
-            onPress={() => setTab(tab === 'finished' ? 'active' : 'finished')}
-            activeOpacity={0.8}
-            accessibilityRole="tab"
-            accessibilityLabel={tab === 'finished' ? t('serverList.backActive') : t('serverList.finished')}
-            accessibilityState={{ selected: tab === 'finished' }}
-          >
-            <Text style={[styles.finishedBtnTxt, tab === 'finished' && styles.finishedBtnTxtActive]}>
-              {tab === 'finished' ? t('serverList.backActive') : t('serverList.finished')}
-            </Text>
-          </TouchableOpacity>
+          {view === 'servers' && (
+            <TouchableOpacity
+              style={[styles.finishedBtn, tab === 'finished' && styles.finishedBtnActive]}
+              onPress={() => setTab(tab === 'finished' ? 'active' : 'finished')}
+              activeOpacity={0.8}
+              accessibilityRole="tab"
+              accessibilityLabel={tab === 'finished' ? t('serverList.backActive') : t('serverList.finished')}
+              accessibilityState={{ selected: tab === 'finished' }}
+            >
+              <Text style={[styles.finishedBtnTxt, tab === 'finished' && styles.finishedBtnTxtActive]}>
+                {tab === 'finished' ? t('serverList.backActive') : t('serverList.finished')}
+              </Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={styles.menuBtn}
             onPress={() => setMenuVisible(true)}
@@ -672,6 +763,12 @@ export default function ServerList() {
         </TouchableOpacity>
       </Modal>
 
+      {/* Cambio 8: pestaña Chain en el header -- todo lo de acá abajo (filtros,
+          botón de crear server, lista) es específico de la vista "servers". */}
+      {view === 'chain' ? (
+        <ChainMode />
+      ) : (
+      <>
       {/* Filter row — solo en tab activos. Cambio 4: chips ahora interactivos,
           alternan entre "Todos" y "Mis Servers" (creados + unidos). */}
       {tab === 'active' && (
@@ -738,6 +835,56 @@ export default function ServerList() {
           windowSize={5}
         />
       )}
+      </>
+      )}
+
+      {/* Cambio 16: captcha de desbloqueo único al entrar al Free por primera vez */}
+      <CaptchaModal
+        visible={showUnlockCaptcha}
+        onClose={() => { setShowUnlockCaptcha(false); setPendingUnlockServer(null); }}
+        onSuccess={(token) => {
+          setShowUnlockCaptcha(false);
+          const server = pendingUnlockServer;
+          setPendingUnlockServer(null);
+          if (server) performJoin(server, token);
+        }}
+      />
+
+      {/* Cambio 10: gate de contraseña para Chain (testing) */}
+      <Modal visible={showChainGate} transparent animationType="fade" onRequestClose={() => setShowChainGate(false)}>
+        <View style={wpStyles.overlay}>
+          <View style={wpStyles.box}>
+            <Text style={wpStyles.icon}>🔒</Text>
+            <Text style={wpStyles.title}>Chain</Text>
+            <TextInput
+              value={chainGateInput}
+              onChangeText={setChainGateInput}
+              placeholder="Contraseña"
+              placeholderTextColor="#666"
+              secureTextEntry
+              autoCapitalize="none"
+              autoFocus
+              style={styles.chainGateInput}
+              onSubmitEditing={() => {
+                if (chainGateInput === CHAIN_GATE_PASSWORD) { setShowChainGate(false); setView('chain'); }
+                else setChainGateInput('');
+              }}
+            />
+            <TouchableOpacity
+              style={wpStyles.btn}
+              onPress={() => {
+                if (chainGateInput === CHAIN_GATE_PASSWORD) { setShowChainGate(false); setView('chain'); }
+                else setChainGateInput('');
+              }}
+            >
+              <Text style={wpStyles.btnTxt}>Entrar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowChainGate(false)} style={{ marginTop: 10 }}>
+              <Text style={{ color: '#777', fontSize: 12 }}>{t('serverList.cancel') || 'Cancelar'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Welcome picks modal */}
       <Modal visible={showWelcomePicks} transparent animationType="fade" onRequestClose={() => setShowWelcomePicks(false)}>
@@ -867,6 +1014,14 @@ const styles = StyleSheet.create({
   creditsLine: { color: '#ffd700', fontSize: 12, fontWeight: '700', marginTop: 2 },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: '#fff', fontSize: 24, fontWeight: '900' },
+  viewSwitchRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  viewSwitchTitle: { fontSize: 22 },
+  viewSwitchTitleInactive: { color: '#555' },
+  viewSwitchSep: { color: '#444', fontSize: 20, fontWeight: '900' },
+  chainGateInput: {
+    width: '100%', backgroundColor: '#1a1a1a', borderRadius: 10, borderWidth: 1, borderColor: '#333',
+    color: '#fff', paddingVertical: 10, paddingHorizontal: 14, fontSize: 15, marginTop: 14, marginBottom: 6,
+  },
   menuBtn: { width: 36, height: 36, borderRadius: 8, backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#333', alignItems: 'center', justifyContent: 'center' },
   menuBtnTxt: { color: '#ccc', fontSize: 18 },
   // Overlay menu

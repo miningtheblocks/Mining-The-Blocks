@@ -331,15 +331,18 @@ function toMillis(ts) {
 // (nextDailyAt/dailyFreeClaim) — los picos incondicionales ahora se
 // reparten exclusivamente vía los N slots (2 en toda cadena, ver
 // claimAdSlotPick), cada uno con su propio cooldown en `ads[i]`.
-function buildChainStatus(chainData, nowMs, dailyAdSlots) {
+// Cambio 14 (2026-07-06): cooldown configurable por cadena (default 24h,
+// Free lo tiene en 6h) -- ver getChainPeaksConfig en index.js.
+function buildChainStatus(chainData, nowMs, dailyAdSlots, adCooldownMs) {
   chainData = chainData || {};
   const picks = Number(chainData.picks || 0);
   const ads = chainData.ads || {};
   const adNextAt = {};
   const slots = Number(dailyAdSlots) || 2;
+  const cooldownMs = Number(adCooldownMs) || DAY_MS;
   for (let i = 1; i <= slots; i++) {
     // eslint-disable-next-line security/detect-object-injection -- i es un contador 1..slots (entero acotado)
-    adNextAt[i] = (toMillis(ads[i]) || 0) + DAY_MS;
+    adNextAt[i] = (toMillis(ads[i]) || 0) + cooldownMs;
   }
   return {
     picks,

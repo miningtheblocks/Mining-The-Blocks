@@ -1,10 +1,13 @@
 
-// Cambio 6 (modo Chain, 2026-07-03): config del modo "Chain" nuevo -- un
-// cubo ÚNICO (no episodios/eslabones) donde las capas se AGREGAN a medida
-// que se completan, en vez de destruirse como en el cubo estándar/Free.
-// Arranca en K=0 (shellSizeDedup(0)=1, un solo cubo) y crece hacia afuera.
+// Cambio 6 (modo Chain, 2026-07-03), mecánica actualizada en Cambio 9
+// (2026-07-05): config del modo "Chain" nuevo -- un cubo ÚNICO (no
+// episodios/eslabones), mecánica de minado IDÉNTICA a servers/Free (arranca
+// completo en BLOCKCHAIN_LAYER_COUNT, se mina hacia el centro). La versión
+// original (Cambio 6) hacía crecer el cubo desde 1 cubo hacia afuera -- se
+// descartó por la complejidad/bugs de render 3D para capas chicas, sin
+// beneficio real sobre reusar el mecanismo ya probado de servers.
 //
-// Economía: NO hay premios en gemas fijos. En cambio, cada cubo colocado
+// Economía: NO hay premios en gemas fijos. En cambio, cada cubo minado
 // suma una tarifa en USD (según la racha de días consecutivos del que lo
 // coloca) a un pool compartido ("MTB coin"). Al cerrar el modo (llegar a
 // BLOCKCHAIN_LAYER_COUNT), el pool se reparte proporcional a cuánto $

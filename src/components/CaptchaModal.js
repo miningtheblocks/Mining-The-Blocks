@@ -11,29 +11,16 @@ import { useI18n } from '../utils/i18n';
 // no hay JS/DOM compartido con el resto de la app).
 //
 // HCAPTCHA_SITE_KEY es pública (a diferencia del secret, que vive solo en
-// el backend vía HCAPTCHA_SECRET) -- reemplazar por la key real una vez que
-// el usuario cree la cuenta en hCaptcha.
+// el backend vía HCAPTCHA_SECRET).
+//
+// Fix "invalid data" (2026-07-05): hCaptcha valida el sitekey contra un
+// dominio registrado en su dashboard. Cargar el widget vía HTML inline
+// (source={{ html: ... }}) no tiene un origen real -- hCaptcha lo
+// rechazaba. Ahora se carga por URL desde docs/captcha.html (GitHub
+// Pages, https://miningtheblocks.com/captcha.html), un dominio real
+// registrable en el sitekey.
 const HCAPTCHA_SITE_KEY = 'a05aeafa-e782-45c8-98ac-4b0edef0c056';
-
-function buildCaptchaHtml(siteKey) {
-  return `<!DOCTYPE html><html><head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<script src="https://js.hcaptcha.com/1/api.js" async defer></script>
-<style>
-  html,body{margin:0;padding:0;background:#0a0a0a;display:flex;align-items:center;justify-content:center;min-height:100vh;}
-</style>
-</head><body>
-<div class="h-captcha" data-sitekey="${siteKey}" data-callback="onCaptchaSuccess" data-error-callback="onCaptchaError"></div>
-<script>
-  function onCaptchaSuccess(token) {
-    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'success', token }));
-  }
-  function onCaptchaError() {
-    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error' }));
-  }
-</script>
-</body></html>`;
-}
+const CAPTCHA_URL = `https://miningtheblocks.com/captcha.html?sitekey=${HCAPTCHA_SITE_KEY}`;
 
 export default function CaptchaModal({ visible, onSuccess, onClose }) {
   const { t } = useI18n();
@@ -58,11 +45,16 @@ export default function CaptchaModal({ visible, onSuccess, onClose }) {
             </TouchableOpacity>
           </View>
           <WebView
-            source={{ html: buildCaptchaHtml(HCAPTCHA_SITE_KEY) }}
+            source={{ uri: CAPTCHA_URL }}
             style={styles.webview}
             onMessage={onMessage}
+            originWhitelist={['https://miningtheblocks.com', 'https://js.hcaptcha.com', 'https://*.hcaptcha.com']}
+            onShouldStartLoadWithRequest={(req) => req.url.startsWith('https://miningtheblocks.com') || req.url.includes('hcaptcha.com')}
             javaScriptEnabled
             domStorageEnabled
+            setSupportMultipleWindows={true}
+            javaScriptCanOpenWindowsAutomatically={false}
+            onOpenWindow={() => {}}
             startInLoadingState
             renderLoading={() => (
               <View style={styles.loadingBox}>
@@ -78,7 +70,10 @@ export default function CaptchaModal({ visible, onSuccess, onClose }) {
 
 const styles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.88)', alignItems: 'center', justifyContent: 'center', padding: 20 },
-  box: { width: '100%', maxWidth: 380, height: 340, backgroundColor: '#0a0a0a', borderRadius: 16, borderWidth: 1, borderColor: '#222', overflow: 'hidden' },
+  // hCaptcha puede mostrar un desafío visual (grilla de imágenes) más alto
+  // que el simple checkbox -- 340 lo cortaba. maxHeight relativo a la
+  // pantalla para que siga entrando en dispositivos chicos.
+  box: { width: '100%', maxWidth: 380, height: '80%', maxHeight: 560, backgroundColor: '#0a0a0a', borderRadius: 16, borderWidth: 1, borderColor: '#222', overflow: 'hidden' },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#1a1a1a', backgroundColor: '#111' },
   title: { color: '#fff', fontSize: 14, fontWeight: '900' },
   closeBtn: { paddingVertical: 5, paddingHorizontal: 9, borderRadius: 8, backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#333' },

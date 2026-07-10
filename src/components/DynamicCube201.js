@@ -1,14 +1,15 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { createRealisticPickaxeTexture, getHighDefinitionPickaxeTexture } from './PickaxeFromPNG';
 import { findClosestFaceFixed, resetFaceDetection, setForcedFace } from './FaceDetection';
-import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform, ActivityIndicator } from 'react-native';
+import { View, PanResponder, Dimensions, Text, TouchableOpacity, Modal, StyleSheet, TouchableWithoutFeedback, PixelRatio, Image, AppState, ScrollView, Platform, ActivityIndicator, BackHandler } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useAppAlert } from './AppAlert';
 import { GLView } from 'expo-gl';
 import * as THREE from 'three';
 import { ensureUser } from '../firebase/client';
-import { callMineCube } from '../firebase/functions';
+import { callMineCube, callGetChainBlockchainStatus, callPlaceCube, callClaimChainPick } from '../firebase/functions';
 import { auth, db } from '../firebase/client';
+import ChainClaimPickModal from './ChainClaimPickModal';
 import { doc, onSnapshot, collection, query, where, limit, orderBy, setDoc, addDoc, serverTimestamp, increment, runTransaction } from 'firebase/firestore';
 import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { signOut, onAuthStateChanged } from 'firebase/auth';
@@ -79,6 +80,10 @@ const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 // Capa 0 (centro): 1 cubo solo
 // La capa economica actual - iniciar en 100 (mas externa) y bajar progresivamente
 const CURRENT_ECON_LAYER = 100;
+// Debe coincidir con BLOCKCHAIN_LAYER_COUNT en functions/blockchainConfig.js.
+// Cambio 9: mecánica estándar -- Chain es un cubo de tamaño fijo (como
+// servers), solo que con 250 capas en vez de 100.
+const CHAIN_LAYER_COUNT = 250;
 
 // Funcion para obtener el tamano de grilla de una capa K
 function getLayerGridSize(K) {
@@ -96,8 +101,17 @@ const DISPLAY_START = 8120610;
 // Cambio 5 (compliance anuncios, 2026-07-03): banner pasivo (Social Bar)
 // solo en la carga inicial del cubo, estirado a este mínimo para que cuente
 // como impresión viewable aunque el build real sea más rápido.
-const ENTRY_BANNER_MIN_MS = 1100;
-const AD_FRAME_URL = 'https://ads.miningtheblocks.com/ad-frame.html?type=banner';
+// Subido de 1100 a 3000 (2026-07-06): el anuncio ahora carga vía
+// docs/ad-safe.html (iframe sandboxed que a su vez carga ad-frame.html y
+// el script externo de Adsterra) -- un hop extra de red que 1100ms no
+// alcanzaba a cubrir en servers estándar (el cubo se construye muy rápido
+// ahí, dejando poco margen). En Chain esto nunca se notaba porque
+// construir K=250 ya tarda más que el mínimo de por sí.
+const ENTRY_BANNER_MIN_MS = 3000;
+// Fix "abre el navegador" (2026-07-05): ver docs/ad-safe.html -- el
+// anuncio va dentro de un iframe sandboxed sin allow-popups/
+// allow-top-navigation, en vez de cargarse directo.
+const AD_FRAME_URL = 'https://miningtheblocks.com/ad-safe.html?type=banner';
 
 
 function faceGridToCubeNumber(faceIndex, gridX, gridY) {
@@ -1448,6 +1462,17 @@ function shellSize(K){
   return 24*K*K + 2;
 }
 
+// Suma acumulada de shellSize(0..K) -- mismo cálculo que shellBelow() usa
+// inline más abajo para asignar el cursor de numeración, pero reusable
+// module-level para el modo Chain (rango de cubeNumber de la capa K:
+// [cumSumDedup(K-1)+1, cumSumDedup(K)]). Coincide con cumSumDedup del
+// backend (functions/helpers.js) -- misma fórmula, dos lados.
+function cumSumDedup(K) {
+  let s = 0;
+  for (let t = 0; t <= K; t++) s += shellSize(t);
+  return s;
+}
+
 // DueÃƒÂ±o ÃƒÂºnico de una celda del shell (evita duplicados en aristas/esquinas)
 function ownerFaceIndex(ix,iy,iz,K){
   if (Math.max(Math.abs(ix),Math.abs(iy),Math.abs(iz)) !== K) return -1;
@@ -1583,7 +1608,7 @@ function createFaceInstancesForLayer(K, faceIndex){
 }
 
 // Agregar parche gris oscuro en la celda minada (cara local)
-function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0) {
+function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0, skipRewardIndicator = false) {
   try {
     const faceGroupEntry = faceGroupsRef.current?.[faceIndex];
     if (!faceGroupEntry) {
@@ -1664,7 +1689,10 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
         }
         
         // SIEMPRE CREAR INDICADOR DE RECOMPENSA (X o picos) - FUERA del if del número
-        try {
+        // Modo Chain: no hay gemas/premios por cubo individual (solo aporte
+        // al pool vía placeCube) -- omitir el sprite por completo, ni
+        // siquiera la "X" de sin-recompensa tiene sentido acá.
+        if (!skipRewardIndicator) try {
           const rewardSprite = createRewardIndicatorSprite(
             rewardPicks,
             new THREE.Vector3(a, b - 0.25, zOffsetCubes + 0.012),
@@ -1687,19 +1715,149 @@ function addDarkPatch(faceIndex, gridX, gridY, faceGroupsRef, K, rewardPicks = 0
   }
 }
 
-export default function DynamicCube201() {
+export default function DynamicCube201({ chainMode = false, onExitChain } = {}) {
   const navigation = useNavigation && typeof useNavigation === 'function' ? useNavigation() : null;
   const { t, language } = useI18n();
   const { openModal } = useOverlayModals ? useOverlayModals() : { openModal: () => {} };
-  const { activeServer } = useServer ? useServer() : { activeServer: null };
+  const { activeServer: contextActiveServer } = useServer ? useServer() : { activeServer: null };
+  // Modo Chain (blockchain invertido, 2026-07-05): no hay doc real en
+  // `servers/{id}` -- el estado viene de callGetChainBlockchainStatus() y se
+  // empaqueta con la MISMA forma que activeServer para no tener que tocar
+  // los ~12 usos existentes de esa variable en el resto del componente.
+  const [chainSyntheticServer, setChainSyntheticServer] = useState(null);
+  const activeServer = chainMode ? chainSyntheticServer : contextActiveServer;
+  const [chainStatus, setChainStatus] = useState(null); // status completo (picks, pool, rate, streak) -- activeServer solo copia currentLayer/config
+  const [showChainClaimModal, setShowChainClaimModal] = useState(false);
+  const [claimingChainPick, setClaimingChainPick] = useState(false);
   const { showAlert, AlertComponent } = useAppAlert();
-  const serverId = activeServer?.id || null;
+  const serverId = chainMode ? 'chain-main' : (activeServer?.id || null);
+
+  // Modo Chain: el identificador operacional (usado para minedCubes.has() y
+  // para llamar a la API) es el número canónico dedup (obj.cubeNumber), no
+  // apiCubeNumber/faceGridToCubeNumber -- ese esquema asume FACE_GRID_SIZE
+  // fijo basado en CURRENT_ECON_LAYER=100 y no escala a K>100 (Chain llega
+  // a 250). En modo server, comportamiento IDÉNTICO a antes.
+  const resolveApiId = useCallback((obj) => {
+    if (!obj) return null;
+    if (chainMode) return obj.cubeNumber ?? null;
+    return obj.apiCubeNumber || faceGridToCubeNumber(obj.faceIndex, obj.gridX, obj.gridY);
+  }, [chainMode]);
+
+  // Cambio 9: mecánica estándar en ambos modos -- minedCubes.has(apiId)
+  // siempre significa "ya minado" (server y chain). Se mantiene como helper
+  // (no inline) porque hay ~6 puntos de selección/interacción que lo usan.
+  const isCellAvailable = useCallback((apiId) => {
+    if (apiId == null) return false;
+    return !minedCubes.has(apiId);
+  }, [minedCubes]);
+
+  // Refresca el status de Chain contra el backend y lo empaqueta como
+  // "activeServer" sintético. Se llama al montar, tras cada placeCube propio,
+  // y cuando el listener de blockchainState/main detecta currentLayer
+  // adelantado por OTRO usuario (evita quedar colocando contra una capa ya
+  // cerrada).
+  // transitionToLayerRef: se puebla más abajo (transitionToLayer se declara
+  // después por las mismas razones de TDZ que showHudToast/recomputeFaceRanges).
+  // Cambio 9: mecánica estándar -- el cubo tiene tamaño FIJO (BLOCKCHAIN_LAYER_COUNT,
+  // igual que servers usan su layerCount fijo), ya no crece con el tiempo.
+  const transitionToLayerRef = useRef(null);
+  const refreshChainStatus = useCallback(async () => {
+    if (!chainMode) return;
+    try {
+      const data = await callGetChainBlockchainStatus();
+      setChainStatus(data);
+      // El valor ya viene correcto para la capa vigente (el backend lo
+      // resetea a 0 cuando layerComplete) -- no hace falta un listener
+      // separado de "mined count" como en servers (blockchainState/main no
+      // tiene la colección layers/{K} de servers).
+      setLayerMinedCount(data.placedInCurrentLayer || 0);
+      setChainSyntheticServer({
+        id: 'chain-main',
+        chainId: 'chain-main',
+        currentLayer: data.currentLayer,
+        config: { layerCount: data.layerCount, isChain: true },
+        name: data.name,
+      });
+      // Si ya está montado y el backend reporta una capa distinta a la que
+      // tenemos localmente (propio placeCube con layerComplete, u otro
+      // usuario que la completó primero), transicionar con el mismo
+      // mecanismo que servers -- no reconstruir a mano.
+      if (chainMountedRef.current && data.currentLayer !== currentLayerRef.current && transitionToLayerRef.current) {
+        transitionToLayerRef.current(data.currentLayer);
+      }
+    } catch (e) {
+      console.warn('refreshChainStatus error', e && e.message);
+    }
+  }, [chainMode]);
+
+  const onClaimChainPick = useCallback(async (token) => {
+    setClaimingChainPick(true);
+    try {
+      await callClaimChainPick(token);
+      await refreshChainStatus();
+      setShowChainClaimModal(false);
+    } catch (e) {
+      const code = e?.code || '';
+      if (code.endsWith('failed-precondition')) {
+        showAlert(t('chain.errorTitle'), t('chain.pickNotReadyBody'));
+      } else {
+        showAlert(t('chain.errorTitle'), t('chain.errorClaimPick'));
+      }
+    } finally {
+      setClaimingChainPick(false);
+    }
+  }, [refreshChainStatus, showAlert, t]);
+
+  useEffect(() => {
+    if (!chainMode) return;
+    refreshChainStatus();
+  }, [chainMode, refreshChainStatus]);
+
+  // Cambio 11 (2026-07-05): botón/gesto de "atrás" dentro del cubo de Chain
+  // vuelve a la lista de Chain (onExitChain) en vez de propagarse y
+  // minimizar la app. Se registra DESPUÉS que el listener equivalente de
+  // ServerList (que vuelve de la lista de Chain a Servers) porque este
+  // componente está más adentro en el árbol -- BackHandler en RN consulta
+  // los listeners en orden LIFO, así que este intercepta primero.
+  useEffect(() => {
+    if (!chainMode || !onExitChain) return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onExitChain();
+      return true;
+    });
+    return () => sub.remove();
+  }, [chainMode, onExitChain]);
+
+  // Listener liviano solo para detectar avances de capa de OTROS usuarios
+  // (blockchainState/main.currentLayer). No sustituye refreshChainStatus
+  // (picks/streak/rate son por-usuario, no viven en este doc compartido).
+  const lastKnownLayerRef = useRef(null);
+  useEffect(() => {
+    if (!chainMode) return;
+    const unsub = onSnapshot(doc(db, 'blockchainState', 'main'), (snap) => {
+      if (!snap.exists()) return;
+      const remoteLayer = snap.data().currentLayer;
+      if (lastKnownLayerRef.current == null) {
+        lastKnownLayerRef.current = remoteLayer;
+        return;
+      }
+      if (remoteLayer !== lastKnownLayerRef.current) {
+        lastKnownLayerRef.current = remoteLayer;
+        refreshChainStatus();
+      }
+    }, () => {});
+    return () => unsub();
+  }, [chainMode, refreshChainStatus]);
   // Cambio 2/3 (server Free / a medida): la capa inicial ya no es siempre 100.
   // Varias calibraciones de cámara (distancia a la superficie externa) se
   // escriben como "100 + offset" -- acá generalizamos la base a la capa
   // inicial real del server activo, preservando exactamente el comportamiento
   // actual cuando layerCount es 100 (o no hay config, servers estándar).
-  const startK = activeServer?.config?.layerCount || CURRENT_ECON_LAYER;
+  // chainMode: mismo motivo que el fallback de currentLayer arriba -- antes
+  // de que refreshChainStatus() resuelva, activeServer es null y este
+  // fallback caía en CURRENT_ECON_LAYER=100, calibrando cámara/zoom para un
+  // cubo de radio 100 cuando el real (K=0) es casi un punto.
+  const startK = activeServer?.config?.layerCount || (chainMode ? CHAIN_LAYER_COUNT : CURRENT_ECON_LAYER);
   // Ref-shadow (mismo patrón que camStateRef/cameraModeRef en este archivo)
   // para poder leer el valor fresco dentro de useCallbacks con deps [] sin
   // forzar su recreación en cada cambio de activeServer.
@@ -1738,6 +1896,9 @@ export default function DynamicCube201() {
   const lastActivityRef = useRef(Date.now());
   const markActive = () => { lastActivityRef.current = performance.now(); };
   const faceGroupsRef = useRef([]);
+  // Modo Chain: mapa número canónico dedup -> posiciones {faceIndex,gridX,gridY}
+  // donde aparece (ver bloque de asignación de cursor más abajo).
+  const numberToPositionsRef = useRef(new Map());
 
   // Sincroniza tamaños de renderer/cámara/viewport usando drawingBuffer (YA escalado por expo-gl)
   const syncRendererSize = useCallback(() => {
@@ -1797,7 +1958,8 @@ const handleZoomButton = useCallback((direction) => {
     // Con startK=100 (server estándar) da 355.2, igual que antes.
     const GRID_EXIT_THRESHOLD = startKRef.current + 255.2;
     const currentDist = camStateRef.current?.distance ?? 300;
-    const step = currentDist < 150 ? 5 : 25;
+    // Mismo fix de escala que en el resto de handleZoomButton (ver más abajo).
+    const step = currentDist < startKRef.current + 50 ? 5 : 25;
     const nextDist = currentDist + step;
 
     if (nextDist >= GRID_EXIT_THRESHOLD) {
@@ -1836,16 +1998,35 @@ const handleZoomButton = useCallback((direction) => {
     // No está en el límite → zoom out normal (continúa abajo)
   }
   setCamState((prev) => {
-    const minDist = 106.6;
+    // BUG (server Free, layerCount=150): minDist estaba hardcodeado en 106.6,
+    // que asume startK=100 (106.6 - 100 = 6.6 de margen desde la superficie
+    // del cubo, ver comentario en línea ~2436). Para layerCount=150 esto deja
+    // minDist POR DEBAJO del radio real del cubo (106.6 - 150 = -43.4),
+    // permitiendo que la cámara cruce "adentro" del cubo -- justo donde la
+    // detección de modo grid (que sí escala con startKRef) queda en un
+    // estado inconsistente con este clamp fijo y rebota a zoom lejano.
+    const minDist = startKRef.current + 6.6;
     const maxDist = 3000;
-    const step = prev.distance < 150 ? 5 : 25;
+    // Mismo bug de escala: el umbral de 150 asumía startK=100 (150-100=50 de
+    // margen por encima de la superficie donde todavía conviene el paso
+    // fino). Para layerCount=150 (Free), CUALQUIER distancia cercana ya es
+    // >=156.6, siempre por encima de 150 -- el paso fino (5) nunca se
+    // activaba, todo el rango "cerca" usaba el paso grande (25).
+    const step = prev.distance < startKRef.current + 50 ? 5 : 25;
     const next = THREE.MathUtils.clamp(prev.distance - direction * step, minDist, maxDist);
     return { ...prev, distance: next };
   });
 }, []);
 
   // Capa actual (shell) 0..100; 100 = externa
-  const [currentLayer, setCurrentLayer] = useState(activeServer?.currentLayer ?? 100);
+  // chainMode: activeServer (chainSyntheticServer) todavía es null en el
+  // primer render -- refreshChainStatus() es async y no resolvió todavía.
+  // Caer al fallback de 100 (tamaño de server estándar) haría que
+  // onContextCreate arranque construyendo una capa de 240,002 instancias
+  // para lo que debería ser un solo cubo (K=0), colgando el hilo de JS y
+  // crasheando por OOM antes de que la reconstrucción correcta llegue a
+  // correr. En chainMode el fallback barato es 0 (1 solo cubo).
+  const [currentLayer, setCurrentLayer] = useState(chainMode ? (activeServer?.currentLayer ?? CHAIN_LAYER_COUNT) : (activeServer?.currentLayer ?? 100));
 
   // Keep ref updated
   camStateRef.current = camState;
@@ -1898,16 +2079,6 @@ const handleZoomButton = useCallback((direction) => {
   const [serverMemberCount, setServerMemberCount] = useState(0);
   // Menú hamburguesa
   const [menuOpen, setMenuOpen] = useState(false);
-  // Cambio 6 (modo Chain): entrada de menú gateada por
-  // config/app.blockchainModeEnabled, mismo patrón que
-  // paramServerCreationEnabled en ServerList.js.
-  const [blockchainModeEnabled, setBlockchainModeEnabled] = useState(false);
-  useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'config', 'app'), (snap) => {
-      if (snap.exists()) setBlockchainModeEnabled(snap.data().blockchainModeEnabled === true);
-    }, () => {});
-    return () => unsub();
-  }, []);
   // Modal "Cómo se juega?"
   const [howToPlayVisible, setHowToPlayVisible] = useState(false);
   // UI de progreso de minado dentro del modal
@@ -2054,16 +2225,26 @@ const handleZoomButton = useCallback((direction) => {
     };
   }, []);
 
-  // Reset layer when the active server changes (user switches servers)
+  // Reset layer when the active server changes (user switches servers).
+  // Cambio 9: chainMode con mecánica estándar ya no necesita reaccionar a
+  // cada cambio de activeServer.currentLayer acá -- las transiciones de capa
+  // (propias o de otros usuarios) llaman transitionToLayer directamente
+  // (ver refreshChainStatus y el listener de blockchainState/main más abajo),
+  // el mismo mecanismo que usa el juego estándar. Este efecto solo necesita
+  // correr en el MONTAJE inicial de Chain (serverId es fijo 'chain-main', no
+  // cambia con cada capa como sí pasa con serverId en servers).
+  const chainMountedRef = useRef(false);
   useEffect(() => {
+    if (chainMode && chainMountedRef.current) return;
     if (activeServer?.currentLayer != null) {
+      if (chainMode) chainMountedRef.current = true;
       setCurrentLayer(activeServer.currentLayer);
       setMinedCubes(new Set());
       setLayerMinedCount(0);
       setTotalMinedAllLayers(0);
       try { minedAppliedRef.current.clear(); } catch {}
     }
-  }, [serverId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [serverId, chainMode ? activeServer?.currentLayer : null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Guard y helper de transiciÃƒÂ³n de capa (elimina capa actual y construye la siguiente)
   const transitioningRef = useRef(false);
@@ -2147,6 +2328,7 @@ const handleZoomButton = useCallback((direction) => {
      }
     })();
   }, [recomputeFaceRanges, showHudToast]);
+  useEffect(() => { transitionToLayerRef.current = transitionToLayer; }, [transitionToLayer]);
 
   // Aplica visualmente una celda minada (parche + ocultar instancia) una sola vez.
   // 2026-06-24: ahora propaga el patch a TODAS las caras donde aparece el cubo
@@ -2194,11 +2376,61 @@ const handleZoomButton = useCallback((direction) => {
     }
   }, [currentLayer]);
 
+  // Modo Chain: listener de "placed" (equivalente de "mined" de servers,
+  // Cambio 9 -- mecánica estándar, ya no invertida). El doc id es el número
+  // canónico dedup directo (String(n), sin prefijo K -- el backend de
+  // placeCube ya lo escribe así, ver functions/index.js placeCube ->
+  // stateRef.collection("placed").doc(String(n))). Cada N que llega se
+  // AGREGA a minedCubes (semántica estándar: estar en el set = ya minado,
+  // igual que servers) y se le pone el patch en TODAS sus posiciones
+  // (numberToPositionsRef, cubre aristas/esquinas -- Chain no puede usar el
+  // apiCubeNumber/faceGridToCubeNumber de servers porque ese esquema no
+  // escala a K>100 y Chain llega a 250, así que sigue haciendo falta este
+  // mapeo inverso número->posiciones incluso con la mecánica estándar).
+  // docChanges()+'added' en vez de forEach: procesar solo lo nuevo, no
+  // TODO el resultado en cada cambio (evita reprocesar cubos ya pintados).
+  useEffect(() => {
+    if (!chainMode || !serverId) return;
+    const K = currentLayer;
+    const rangeMin = K > 0 ? cumSumDedup(K - 1) : 0;
+    const rangeMax = cumSumDedup(K);
+    const placedCol = collection(db, 'blockchainState', 'main', 'placed');
+    const q = query(
+      placedCol,
+      where('__name__', '>=', String(rangeMin + 1)),
+      where('__name__', '<=', String(rangeMax)),
+      limit(3000)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const idsToAdd = [];
+      snap.docChanges().forEach((ch) => {
+        if (ch.type !== 'added') return;
+        const n = Number(ch.doc.id);
+        if (!Number.isFinite(n)) return;
+        const positions = numberToPositionsRef.current.get(n);
+        if (positions) {
+          for (const pos of positions) {
+            try { addDarkPatch(pos.faceIndex, pos.gridX, pos.gridY, faceGroupsRef, K, 0, true); } catch {}
+          }
+        }
+        idsToAdd.push(n);
+      });
+      if (idsToAdd.length > 0) {
+        setMinedCubes((prev) => {
+          const s = new Set(prev);
+          for (const id of idsToAdd) s.add(id);
+          return s;
+        });
+      }
+    }, (err) => console.warn('placed onSnapshot error', err));
+    return () => unsub();
+  }, [chainMode, serverId, currentLayer]);
+
   // Rehidratación + realtime de minados globales (todos los usuarios)
   // CRÍTICO: Suscribirse a TODA la capa, no solo activeFaceIndex
   // En modo cubo se ven múltiples caras simultáneamente
   useEffect(() => {
-    if (!serverId) return;
+    if (chainMode || !serverId) return;
     let unsub = null;
     try {
       const col = collection(db, 'servers', serverId, 'mined');
@@ -2338,7 +2570,11 @@ const handleZoomButton = useCallback((direction) => {
   // Suscripción a estadísticas de la capa actual (una sola suscripción para layerMinedCount Y globalMinedCurrentLayer)
   // + suscripción a todas las capas para totalMinedAllLayers
   useEffect(() => {
-    if (!serverId) return;
+    // chainMode: no hay doc real en servers/{serverId} (serverId='chain-main'
+    // es sintético) -- este listener quedaba consultando servers/chain-main/
+    // layers/{K}, un path inexistente, seteando layerMinedCount=0 sin
+    // sentido (Chain usa su propio conteo vía chainStatus.placedInCurrentLayer).
+    if (chainMode || !serverId) return;
     let unsubCurrentLayer = null;
     let unsubAllLayers = null;
     try {
@@ -2396,7 +2632,14 @@ const handleZoomButton = useCallback((direction) => {
   }, [db, serverId, currentLayer]);
 
   // Transición global: si las estadísticas del backend indican que la capa actual está completa, avanzar a la siguiente
+  // chainMode: usa transiciones EXPLÍCITAS (refreshChainStatus llama
+  // transitionToLayer directamente cuando el backend reporta un currentLayer
+  // distinto), no este mecanismo indirecto basado en layerMinedCount local --
+  // Chain no tiene el equivalente de servers/{id}/layers/{K} para alimentar
+  // layerMinedCount en tiempo real de forma barata, así que confía en la
+  // respuesta directa de getChainBlockchainStatus/placeCube en su lugar.
   useEffect(() => {
+    if (chainMode) return;
     try {
       const need = shellSize(currentLayer);
       if (Number(layerMinedCount) >= need && currentLayer > 0) {
@@ -2414,8 +2657,8 @@ const handleZoomButton = useCallback((direction) => {
 
     visibleNumbersRef.current.forEach(numberData => {
       // Ignorar cubitos ya minados para interacción - USAR apiCubeNumber único
-      const apiId = numberData.apiCubeNumber || faceGridToCubeNumber(numberData.faceIndex, numberData.gridX, numberData.gridY);
-      if (apiId && minedCubes.has(apiId)) return;
+      const apiId = resolveApiId(numberData);
+      if (apiId && !isCellAvailable(apiId)) return;
       const dx = touchX - numberData.screenX;
       const dy = touchY - numberData.screenY;
       const distance = Math.sqrt(dx * dx + dy * dy);
@@ -2427,7 +2670,7 @@ const handleZoomButton = useCallback((direction) => {
     });
 
     return closestNumber;
-  }, [minedCubes]);
+  }, [minedCubes, resolveApiId]);
 
   // Animar cámara hacia una cara específica con easing suave (rotación y distancia)
   const goToFaceCenter = useCallback((faceName, forceGridMode = false) => {
@@ -2601,10 +2844,10 @@ const handleZoomButton = useCallback((direction) => {
           0
         );
       }
-      const pickedApiId = picked ? (picked.apiCubeNumber || faceGridToCubeNumber(picked.faceIndex, picked.gridX, picked.gridY)) : null;
-      if (picked && pickedApiId && !minedCubes.has(pickedApiId)) {
+      const pickedApiId = picked ? resolveApiId(picked) : null;
+      if (picked && pickedApiId && isCellAvailable(pickedApiId)) {
         selectedCube = picked;
-      } else if (picked && pickedApiId && minedCubes.has(pickedApiId)) {
+      } else if (picked && pickedApiId && !isCellAvailable(pickedApiId)) {
         showHudToast(t('cube.alreadyMined') || 'Ya minado');
         if (sceneRef.current && picked.worldPosition) showXAnimation(sceneRef.current, picked.worldPosition, THREE);
         return;
@@ -2651,9 +2894,9 @@ const handleZoomButton = useCallback((direction) => {
     }
 
     // USAR apiCubeNumber único para verificar si está minado
-    const closestApiId = closestNumber ? (closestNumber.apiCubeNumber || faceGridToCubeNumber(closestNumber.faceIndex, closestNumber.gridX, closestNumber.gridY)) : null;
-    if (closestNumber && closestApiId && !minedCubes.has(closestApiId)) {
-      
+    const closestApiId = closestNumber ? resolveApiId(closestNumber) : null;
+    if (closestNumber && closestApiId && isCellAvailable(closestApiId)) {
+
       // Mostrar modal de minado
       setMiningModal({
         cubeNumber: closestNumber.cubeNumber,
@@ -2668,7 +2911,7 @@ const handleZoomButton = useCallback((direction) => {
       setSelectedCube(null);
       
       // Ya no necesitamos raycast de refinamiento porque se hizo PRIMERO
-    } else if (closestNumber && closestApiId && minedCubes.has(closestApiId)) {
+    } else if (closestNumber && closestApiId && !isCellAvailable(closestApiId)) {
       showHudToast(t('cube.alreadyMined') || 'Ya minado');
       if (sceneRef.current && closestNumber.worldPosition) showXAnimation(sceneRef.current, closestNumber.worldPosition, THREE);
     } else {
@@ -2676,8 +2919,8 @@ const handleZoomButton = useCallback((direction) => {
         // Fallback: usar el primer número visible NO minado si existe
         if (!closestNumber) {
           let firstNumber = visibleNumbersRef.current.find(n => {
-            const apiId = n.apiCubeNumber || faceGridToCubeNumber(n.faceIndex, n.gridX, n.gridY);
-            return apiId && !minedCubes.has(apiId);
+            const apiId = resolveApiId(n);
+            return apiId && isCellAvailable(apiId);
           });
           if (firstNumber) {
           } else {
@@ -2942,7 +3185,7 @@ const handleZoomButton = useCallback((direction) => {
     cracksRef.current = null;
   }, []);
 
-  const startMining = useCallback(async (modalData, reward = 0, gem = null) => {
+  const startMining = useCallback(async (modalData, reward = 0, gem = null, chainModeMining = false) => {
     if (!modalData) {
       console.warn('startMining sin modalData');
       return;
@@ -3011,7 +3254,7 @@ const handleZoomButton = useCallback((direction) => {
           let anyPatched = false;
           for (const fi of facesShowing) {
             const { gridX: gxF, gridY: gyF } = coordToGrid(K, fi, ix, iy, iz);
-            const patched = addDarkPatch(fi, gxF, gyF, faceGroupsRef, K, reward);
+            const patched = addDarkPatch(fi, gxF, gyF, faceGroupsRef, K, reward, chainModeMining);
             if (patched) {
               anyPatched = true;
               if (typeof setMinedCubeColor === 'function') {
@@ -3029,18 +3272,24 @@ const handleZoomButton = useCallback((direction) => {
 
       try {
         audioManager.playSound('explosion', 1.0);
-        if (hasPickReward || hasGemReward) audioManager.playSound('win', 1.0);
+        // Modo Chain: minar SIEMPRE es un resultado positivo (aporta al pool
+        // aunque no dé gemas/picos) -- 'lose' + la X blanca comunicarían
+        // "fallaste", que no aplica acá. Mismo sonido/coreografía que un
+        // acierto en servers, pero sin mostrar ningún asset de gema/pico.
+        if (hasPickReward || hasGemReward || chainModeMining) audioManager.playSound('win', 1.0);
         else audioManager.playSound('lose', 1.0);
         const fragments = createFragments(modalData.position, face.normal, 1.0);
         fragments.forEach(fragment => scene.add(fragment));
         if (hasGemReward && gemDef) showGemAnimation(scene, modalData.position, THREE, gemDef);
         await Promise.all([
           animateFragments(fragments, scene, 1760, fragmentsCancelRef),
-          hasPickReward
-            ? showRewardAnimation(scene, modalData, reward, THREE)
-            : !hasGemReward
-              ? (showXAnimation(scene, modalData.position, THREE, [255, 255, 255]), Promise.resolve())
-              : Promise.resolve(),
+          chainModeMining
+            ? Promise.resolve()
+            : hasPickReward
+              ? showRewardAnimation(scene, modalData, reward, THREE)
+              : !hasGemReward
+                ? (showXAnimation(scene, modalData.position, THREE, [255, 255, 255]), Promise.resolve())
+                : Promise.resolve(),
         ]);
       } catch (fragmentError) {
         console.error('Error with fragments, skipping animation:', fragmentError.message);
@@ -3073,7 +3322,7 @@ const handleZoomButton = useCallback((direction) => {
       setTimeout(() => {
         try {
           // USAR apiCubeNumber (único) en lugar de cubeNumber (puede repetirse entre caras)
-          const apiId = faceGridToCubeNumber(modalData.faceIndex, modalData.gridX, modalData.gridY);
+          const apiId = resolveApiId(modalData);
           if (apiId) {
             // CRITICAL: Marcar como minado INMEDIATAMENTE para prevenir doble minado
             setMinedCubes(prev => { const s = new Set(prev); s.add(apiId); return s; });
@@ -3089,7 +3338,7 @@ const handleZoomButton = useCallback((direction) => {
     } catch (error) {
       console.error('Error durante el minado:', error);
     }
-  }, [sceneRef, rendererRef]);
+  }, [sceneRef, rendererRef, resolveApiId]);
   
   // FunciÃƒÂ³n para cancelar el minado
   const cancelMining = useCallback(() => {
@@ -3345,7 +3594,8 @@ const handleZoomButton = useCallback((direction) => {
             // Zoom por pellizco
             if (Math.abs(ratio - 1) > 0.005) {
               {
-                const minDist = 106.6;
+                // Mismo fix que handleZoomButton -- ver comentario ahí.
+                const minDist = startKRef.current + 6.6;
                 const maxDist = 3000;
                 const zoomFactor = ratio > 1 ? 0.95 : 1.05;
                 const nextDist = THREE.MathUtils.clamp((camStateRef.current?.distance || 300) * zoomFactor, minDist, maxDist);
@@ -4271,7 +4521,7 @@ const handleZoomButton = useCallback((direction) => {
                     continue;
                   }
                   // USAR apiCubeNumber (ÃƒÂºnico por cara) para verificar si estÃƒÂ¡ minado
-                  const apiId = faceGridToCubeNumber(faceIndex, gridX, gridY);
+                  const apiId = chainMode ? cubeNumberAsc : faceGridToCubeNumber(faceIndex, gridX, gridY);
                   const isMined = apiId ? minedCubes.has(apiId) : false;
                   
                   // DEBUG: Logging para verificar independencia de caras
@@ -4762,6 +5012,10 @@ const handleZoomButton = useCallback((direction) => {
           cubeGroup.remove(ch);
         }
         const faceGroups = [];
+        // K=0 (un solo cubo, cadena casi terminada): igual que en el modo
+        // server, se construyen las 6 caras normalmente -- todas muestran el
+        // mismo cubo #1 visto desde cada dirección (comportamiento ya
+        // correcto y esperado, idéntico al último cubo del juego estándar).
         for (let faceIndex=0; faceIndex<FACES.length; faceIndex++){
           const faceInfo = FACES[faceIndex];
           const { simpleMesh, borderMesh, createDetailedMesh, faceIndex: idx } = createFaceInstancesForLayer(K, faceIndex);
@@ -4826,6 +5080,16 @@ const handleZoomButton = useCallback((direction) => {
         let cursor = shellBelow(K) + 1;
         const numberByCoord = new Map();
         const faceOrder = ['front','right','back','left','top','bottom'];
+        const faceNameToIndex = { front: 0, back: 1, right: 2, left: 3, top: 4, bottom: 5 };
+        // Modo Chain: el identificador operacional (el que viaja a placeCube y
+        // al doc de Firestore) es el número canónico dedup (n, el mismo que
+        // ya se calcula acá para el texto mostrado), NO el "apiId" derivado
+        // de faceGridToCubeNumber -- ese esquema usa un FACE_GRID_SIZE fijo
+        // basado en CURRENT_ECON_LAYER=100 y se rompería para K>100 (Chain
+        // llega a 250). Guardamos el mapeo inverso n -> [{faceIndex,gridX,gridY}]
+        // (un número puede aparecer en 2-3 caras si es arista/esquina) para
+        // que el listener de "placed" pueda pintar todas las apariciones.
+        if (chainMode) numberToPositionsRef.current = new Map();
         for (const faceName of faceOrder){
           const faceGroup = faceGroups.find(g => g.userData.name === faceName);
           if (!faceGroup) continue;
@@ -4859,6 +5123,12 @@ const handleZoomButton = useCallback((direction) => {
                 numberByCoord.set(coordKey, n);
               }
               numbers[inst] = n;
+              if (chainMode) {
+                const faceIdx = faceNameToIndex[faceName];
+                const list = numberToPositionsRef.current.get(n) || [];
+                list.push({ faceIndex: faceIdx, gridX: gx, gridY: gy });
+                numberToPositionsRef.current.set(n, list);
+              }
             }
           }
           // guardar de nuevo
@@ -4866,6 +5136,11 @@ const handleZoomButton = useCallback((direction) => {
         }
         // v1.3.10: AHORA sí, con cubeNumbers poblado en todas las caras.
         faceGroupsRef.current = faceGroups;
+        // Cambio 9: mecánica estándar -- la capa arranca sin nada minado
+        // (minedCubes vacío, igual que servers), no hace falta parchar nada
+        // acá. Los cubos ya minados de esta capa (si se re-entra a mitad de
+        // camino) llegan vía el listener de "placed"/"mined" + el retry de
+        // rehidratación (useEffect más abajo), igual que en servers.
        } finally {
         clearTimeout(_buildSafety);
         buildingLayerRef.current = false;
@@ -5067,21 +5342,27 @@ const handleZoomButton = useCallback((direction) => {
           </Text>
           {/* Cambio 5: banner pasivo solo en la carga inicial (no en
               transiciones de capa completa). Sin relación con ningún pico
-              -- aparece por entrar al cubo, no por ninguna recompensa. */}
-          {showEntryBanner && (
+              -- aparece por entrar al cubo, no por ninguna recompensa.
+              Cambio 15 (2026-07-06): solo Free y Chain -- los servers
+              pagos (estándar y a medida) ya cobran entrada, no llevan ads. */}
+          {showEntryBanner && (activeServer?.config?.isFreeServer || chainMode) && (
             <View style={styles.entryBannerWrap}>
               <Text style={styles.entryBannerDisclaimer}>
                 {t('cube.adDisclaimer') || 'Publicidad externa'}
               </Text>
-              <View style={styles.entryBannerBox}>
+              <View style={styles.entryBannerBox} pointerEvents="none">
+                {/* pointerEvents="none": ad pasivo, ninguna interacción
+                    esperada -- ver mismo comentario en ChainClaimPickModal. */}
                 <WebView
                   source={{ uri: AD_FRAME_URL }}
                   style={styles.entryBannerWebview}
-                  originWhitelist={['https://ads.miningtheblocks.com']}
-                  onShouldStartLoadWithRequest={(req) => req.url.startsWith('https://ads.miningtheblocks.com')}
+                  originWhitelist={['https://miningtheblocks.com', 'https://ads.miningtheblocks.com']}
+                  onShouldStartLoadWithRequest={(req) => req.url.startsWith('https://miningtheblocks.com') || req.url.startsWith('https://ads.miningtheblocks.com')}
                   javaScriptEnabled
                   domStorageEnabled
-                  setSupportMultipleWindows={false}
+                  setSupportMultipleWindows={true}
+                  javaScriptCanOpenWindowsAutomatically={false}
+                  onOpenWindow={() => {}}
                 />
               </View>
             </View>
@@ -5095,8 +5376,18 @@ const handleZoomButton = useCallback((direction) => {
           <TouchableOpacity style={styles.hamburgerBtn} onPress={() => setMenuOpen(true)}>
             <Text style={styles.hamburgerTxt}>☰</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.picksWrap} onPress={() => { try { openModal('peaks'); } catch(e) {} }} activeOpacity={0.8}>
-            <Text style={styles.picksTxt}>⛏ x {typeof picks === 'number' ? picks : '...'}</Text>
+          <TouchableOpacity
+            style={styles.picksWrap}
+            onPress={() => {
+              // chainMode: "picos" acá son bloques reclamables de Chain
+              // (captcha + anuncio, ChainClaimPickModal), no el flujo normal
+              // de elegir un server para ver anuncios (GetPeaks/'peaks').
+              if (chainMode) { setShowChainClaimModal(true); return; }
+              try { openModal('peaks'); } catch(e) {}
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.picksTxt}>⛏ x {typeof (chainMode ? chainStatus?.picks : picks) === 'number' ? (chainMode ? chainStatus.picks : picks) : '...'}</Text>
           </TouchableOpacity>
           {/* v1.3.13: $0.00 removido del HUD del cubo. Las gemas/cash tienen su
               lugar propio en /gems; en el cubo distraía sin aportar. */}
@@ -5154,18 +5445,6 @@ const handleZoomButton = useCallback((direction) => {
                 >
                   <Text style={styles.menuItemTxt}>{t('cube.menuPeaks')}</Text>
                 </TouchableOpacity>
-                {blockchainModeEnabled && (
-                  <TouchableOpacity
-                    style={styles.menuItem}
-                    onPress={() => {
-                      setMenuOpen(false);
-                      try { openModal('chain'); } catch { showAlert(t('cube.errorTitle'), t('cube.menuChain')); }
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.menuItemTxt}>{t('cube.menuChain')}</Text>
-                  </TouchableOpacity>
-                )}
                 <TouchableOpacity
                   style={styles.menuItem}
                   onPress={() => {
@@ -5331,7 +5610,7 @@ const handleZoomButton = useCallback((direction) => {
               ]}
             >
               <Text style={styles.pillTitle}>
-                {miningModal.status === 'mining' ? t('cube.miningTitle') : t('cube.mineQuestion')}
+                {chainMode ? t('chain.place') + '?' : (miningModal.status === 'mining' ? t('cube.miningTitle') : t('cube.mineQuestion'))}
               </Text>
               <Text style={styles.pillSubtitle}>#{miningModal.cubeNumber}</Text>
               {miningModal.status === 'mining' && (
@@ -5380,13 +5659,104 @@ const handleZoomButton = useCallback((direction) => {
                   showHudToast(t('cube.toastConnecting'));
                   return;
                 }
-                if (typeof picks === 'number' && picks <= 0) {
+                // picks acá es el pico del juego estándar -- no aplica a Chain
+                // (que usa su propio contador, chainStatus.picks, validado
+                // server-side por placeCube con el error "no_picks").
+                if (!chainMode && typeof picks === 'number' && picks <= 0) {
                   showAlert(t('cube.noPicksTitle'), t('cube.noPicksBody'));
                   showHudToast(t('cube.toastNoPicks'));
                   return;
                 }
                 // Capturar snapshot del modal para usarlo en la animaciÃƒÂ³n
                 const modalData = miningModal ? { ...miningModal } : null;
+
+                // Modo Chain: misma coreografía de minado que servers (sonido
+                // de rotura + grietas + explosión), pero sin gemas/picos --
+                // la economía es MTB coin por racha, no premios por cubo
+                // individual. El cambio visual (parche) lo aplica el listener
+                // de "placed" en tiempo real (useEffect de arriba), y
+                // startMining con reward=0/gem=null (+ chainModeMining=true)
+                // se encarga de la explosión sin mostrar ningún asset de
+                // recompensa (ver fix en startMining).
+                if (chainMode) {
+                  const cubeNumber = resolveApiId(modalData);
+                  if (cubeNumber == null) {
+                    setMiningModal(null);
+                    showAlert(t('chain.errorTitle'), t('chain.errorPlace'));
+                    return;
+                  }
+                  setMiningProgress(0);
+                  if (miningProgressTimerRef.current) {
+                    clearInterval(miningProgressTimerRef.current);
+                    miningProgressTimerRef.current = null;
+                  }
+                  setMiningModal((prev) => prev ? { ...prev, status: 'mining' } : prev);
+                  if (miningWatchdogRef.current) {
+                    clearTimeout(miningWatchdogRef.current);
+                    miningWatchdogRef.current = null;
+                  }
+                  miningWatchdogRef.current = setTimeout(() => {
+                    try { setMiningModal(null); } catch {}
+                  }, 30000);
+                  roturaPlayedRef.current = false;
+                  roturaStartTimeRef.current = 0;
+                  miningProgressTimerRef.current = setInterval(() => {
+                    setMiningProgress((p) => Math.min(0.95, p + 0.08));
+                  }, 120);
+                  setTimeout(() => {
+                    if (roturaPlayedRef.current) return;
+                    roturaPlayedRef.current = true;
+                    try { setMiningModal(null); } catch {}
+                    requestAnimationFrame(() => {
+                      roturaStartTimeRef.current = Date.now();
+                      audioManager.playSound('rotura', 1.0);
+                      if (!cracksPromiseRef.current && !cracksRef.current) {
+                        showCracksAnimation(modalData);
+                      }
+                    });
+                  }, 1400);
+
+                  (async () => {
+                    try {
+                      const res = await callPlaceCube(cubeNumber);
+                      if (miningProgressTimerRef.current) {
+                        clearInterval(miningProgressTimerRef.current);
+                        miningProgressTimerRef.current = null;
+                      }
+                      setMiningProgress(1);
+                      setMiningModal(null);
+                      if (!cracksPromiseRef.current && !cracksRef.current) {
+                        showCracksAnimation(modalData);
+                      }
+                      await new Promise((r) => setTimeout(r, 250));
+                      await startMining(modalData, 0, null, true);
+                      if (res?.layerComplete) {
+                        showAlert(t('chain.layerCompleteTitle'), t('chain.layerCompleteBody', { n: res.newLayer }));
+                      } else {
+                        showHudToast(`+$${Number(res?.rate || 0).toFixed(4)}`);
+                      }
+                      refreshChainStatus();
+                    } catch (e) {
+                      if (miningProgressTimerRef.current) {
+                        clearInterval(miningProgressTimerRef.current);
+                        miningProgressTimerRef.current = null;
+                      }
+                      setMiningModal(null);
+                      try {
+                        if (cracksPromiseRef.current) { await cracksPromiseRef.current; cracksPromiseRef.current = null; }
+                      } catch {}
+                      try { cleanupCracksNow(sceneRef.current); } catch {}
+                      const code = e?.code || '';
+                      if (code.endsWith('failed-precondition') && e?.message?.includes('no_picks')) {
+                        showAlert(t('chain.errorTitle'), t('chain.noPicksBody'));
+                      } else {
+                        showAlert(t('chain.errorTitle'), t('chain.errorPlace'));
+                      }
+                    }
+                  })();
+                  return;
+                }
+
                 // Marcar celda en animación local
                 try {
                   if (modalData && typeof modalData.faceIndex === 'number' && typeof modalData.gridX === 'number' && typeof modalData.gridY === 'number') {
@@ -5863,7 +6233,8 @@ const handleZoomButton = useCallback((direction) => {
           si no el fallback estándar de GEMS. Picos no tienen presupuesto fijo
           en servers de pago (getRewardForCube es probabilístico sin tope), así
           que ese indicador muestra "otorgados hasta ahora" en vez de "restantes". */}
-      {activeServer && (() => {
+      {/* chainMode no tiene gemas (economía MTB coin, no tiers de premio fijo) */}
+      {activeServer && !chainMode && (() => {
         const found = activeServer.gemsFoundByTier || {};
         const customQty = activeServer.config?.quantityPerTier;
         const totalFor = (tier) => customQty ? (customQty[tier - 1] ?? 0) : (GEMS[tier - 1]?.quantityPerServer ?? 0);
@@ -5927,6 +6298,17 @@ const handleZoomButton = useCallback((direction) => {
           <Text style={styles.zoomButtonText}>+</Text>
         </TouchableOpacity>
       </View>
+      {chainMode && (
+        <ChainClaimPickModal
+          visible={showChainClaimModal}
+          onClose={() => setShowChainClaimModal(false)}
+          onClaim={onClaimChainPick}
+          claiming={claimingChainPick}
+          pickReady={!!chainStatus && chainStatus.picks < 1 && chainStatus.pickNextAt <= Date.now()}
+          pickNextAt={chainStatus?.pickNextAt || 0}
+          serverNow={Date.now()}
+        />
+      )}
       {AlertComponent}
     </View>
   );
@@ -5975,7 +6357,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   entryBannerBox: {
-    height: 70,
+    // El script de Adsterra para este banner arma un iframe fijo de
+    // 300x250 (ver atOptions en ad-frame.html?type=banner) -- con
+    // height:70 el contenedor recortaba casi todo el anuncio real,
+    // dejando ver solo una franja vacía/negra del borde superior.
+    height: 250,
     borderRadius: 10,
     overflow: 'hidden',
     backgroundColor: '#0a0a0a',

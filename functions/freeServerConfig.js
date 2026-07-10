@@ -120,7 +120,11 @@ const FREE_CONFIG = {
   isFreeServer: true,
   layerCount: FREE_LAYER_COUNT,
   maxMembers: null,
-  dailyAdSlots: 2,
+  // El Free no cobra entrada -- 1 solo pico incondicional (los servers
+  // pagos mantienen 2, ver serverConfig.js), con cooldown más corto (6h
+  // en vez de las 24h default) ya que no hay entry fee que compensar.
+  dailyAdSlots: 1,
+  adCooldownMs: 6 * 60 * 60 * 1000,
   totalPrizePoolUSD: FREE_TOTAL_PRIZE_POOL_USD,
   quantityPerTier: FREE_QUANTITY_PER_TIER,
   tierTable: FREE_PRIZE_TABLE,
