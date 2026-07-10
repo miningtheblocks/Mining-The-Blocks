@@ -151,6 +151,8 @@
     .stat { border: 1.5px solid #e0e0e0; border-radius: 10px; padding: 14px 16px; }
     .stat-num { font-size: 24px; font-weight: 900; color: #000; }
     .stat-lbl { font-size: 12px; color: #222; margin-top: 3px; font-weight: 700; line-height: 1.4; }
+    .stat-qualifier { font-weight: 500; color: #888; }
+    .stats-note { font-size: 12px; color: #666; line-height: 1.6; margin: -8px 0 20px; font-weight: 500; }
 
     p.desc { font-size: 15px; color: #222; line-height: 1.75; margin-bottom: 14px; font-weight: 400; }
 
@@ -162,27 +164,32 @@
       padding: 8px 12px; border-bottom: 2px solid #ccc;
     }
     .gems-table th:nth-child(2),
-    .gems-table td:nth-child(2) { text-align: right; }
+    .gems-table td:nth-child(2),
     .gems-table th:nth-child(3),
-    .gems-table td:nth-child(3) { text-align: right; }
+    .gems-table td:nth-child(3),
+    .gems-table th:nth-child(4),
+    .gems-table td:nth-child(4) { text-align: right; }
     .gems-table td {
-      padding: 9px 12px; font-size: 14px; color: #111;
+      padding: 9px 8px; font-size: 13px; color: #111;
       border-bottom: 1px solid #ebebeb; font-weight: 500;
       vertical-align: middle;
     }
     .gems-table tr:last-child td { border-bottom: none; }
     .gems-table .gem-name {
       font-weight: 700; color: #000;
-      display: flex; align-items: center; gap: 9px;
+      display: flex; align-items: center; gap: 7px;
+      font-size: 13px;
     }
     .gem-icon {
-      width: 28px; height: 28px;
+      width: 24px; height: 24px;
       image-rendering: pixelated;
       image-rendering: crisp-edges;
       flex-shrink: 0;
     }
     .gems-table .gem-prize { font-weight: 800; color: #000; }
     .gems-table .gem-qty { color: #222; font-weight: 600; }
+    .gems-total-row td { font-weight: 800; color: #000; border-top: 2px solid #ccc; padding-top: 10px; }
+    .gems-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .gem-note {
       font-size: 13px; color: #222; font-weight: 600;
       margin-top: 12px; line-height: 1.6;
@@ -609,23 +616,23 @@
     <div class="stats-grid">
       <div class="stat">
         <div class="stat-num">8.1M</div>
-        <div class="stat-lbl" data-lang="es">Cubos por bloque</div>
-        <div class="stat-lbl" data-lang="en visible">Cubes per block</div>
+        <div class="stat-lbl" data-lang="es">Cubos por bloque <span class="stat-qualifier">(estándar)</span></div>
+        <div class="stat-lbl" data-lang="en visible">Cubes per block <span class="stat-qualifier">(standard)</span></div>
       </div>
       <div class="stat">
         <div class="stat-num">$650K</div>
-        <div class="stat-lbl" data-lang="es">En premios por bloque</div>
-        <div class="stat-lbl" data-lang="en visible">In prizes per block</div>
+        <div class="stat-lbl" data-lang="es">En premios por bloque <span class="stat-qualifier">(estándar)</span></div>
+        <div class="stat-lbl" data-lang="en visible">In prizes per block <span class="stat-qualifier">(standard)</span></div>
       </div>
       <div class="stat">
         <div class="stat-num">9</div>
-        <div class="stat-lbl" data-lang="es">Tipos de gemas con valor real</div>
-        <div class="stat-lbl" data-lang="en visible">Gem types with real cash value</div>
+        <div class="stat-lbl" data-lang="es">Tipos de gemas con valor real <span class="stat-qualifier">(estándar)</span></div>
+        <div class="stat-lbl" data-lang="en visible">Gem types with real cash value <span class="stat-qualifier">(standard)</span></div>
       </div>
       <div class="stat">
         <div class="stat-num">10</div>
-        <div class="stat-lbl" data-lang="es">Episodios por cadena</div>
-        <div class="stat-lbl" data-lang="en visible">Episodes per chain</div>
+        <div class="stat-lbl" data-lang="es">Episodios por cadena <span class="stat-qualifier">(estándar y a medida)</span></div>
+        <div class="stat-lbl" data-lang="en visible">Episodes per chain <span class="stat-qualifier">(standard and custom)</span></div>
       </div>
       <div class="stat">
         <div class="stat-num">100K</div>
@@ -638,12 +645,21 @@
         <div class="stat-lbl" data-lang="en visible">Picks on sign-up</div>
       </div>
     </div>
+    <p class="stats-note" data-lang="es">Free y los servers a medida tienen su propia escala — el Free llega a 27,5M de cubos (150 capas) con $35.000 en premios; a medida varía según lo que configurés.</p>
+    <p class="stats-note" data-lang="en visible">Free and custom servers have their own scale — Free reaches 27.5M cubes (150 layers) with $35,000 in prizes; custom varies based on your configuration.</p>
+
+    <div class="episode-free">
+      <div class="episode-free-title" data-lang="es">🎯 Estándar</div>
+      <div class="episode-free-title" data-lang="en visible">🎯 Standard</div>
+      <div class="episode-free-desc" data-lang="es">El server original: <strong>$15</strong> por episodio, cadenas de 10 episodios, hasta <strong>$650.000</strong> en premios repartidos en 9 gemas distintas. Es también la configuración de referencia para calcular los servers a medida.</div>
+      <div class="episode-free-desc" data-lang="en visible">The original server: <strong>$15</strong> per episode, chains of 10 episodes, up to <strong>$650,000</strong> in prizes across 9 different gems. It's also the reference configuration used to calculate custom servers.</div>
+    </div>
 
     <div class="episode-free">
       <div class="episode-free-title" data-lang="es">🎁 Episodio 10 gratis</div>
       <div class="episode-free-title" data-lang="en visible">🎁 Episode 10 is free</div>
-      <div class="episode-free-desc" data-lang="es">Si participás en los 9 episodios anteriores de la misma cadena, el episodio final no tiene costo de entrada.</div>
-      <div class="episode-free-desc" data-lang="en visible">If you participate in the 9 previous episodes of the same chain, the final episode has no entry cost.</div>
+      <div class="episode-free-desc" data-lang="es">En cadenas estándar y a medida: si participás en los 9 episodios anteriores de la misma cadena, el episodio final no tiene costo de entrada.</div>
+      <div class="episode-free-desc" data-lang="en visible">On standard and custom chains: if you participate in the 9 previous episodes of the same chain, the final episode has no entry cost.</div>
     </div>
 
     <div class="episode-free">
@@ -672,58 +688,49 @@
   <section>
     <div class="section-label" data-lang="es">Gemas y premios</div>
     <div class="section-label" data-lang="en visible">Gems &amp; prizes</div>
-    <p class="desc" data-lang="es">Cada modalidad tiene su propio pool de premios en gemas. Así se compara:</p>
-    <p class="desc" data-lang="en visible">Each mode has its own gem prize pool. Here's how they compare:</p>
+    <p class="desc" data-lang="es">Qué gema da cada modo y cuántas. El Free tiene 4 de las 9, en menor cantidad; los servers a medida reparten las mismas 9 que el Estándar, en proporción a tu configuración (hasta las cantidades del Estándar, que es el tope).</p>
+    <p class="desc" data-lang="en visible">Which gem each mode gives, and how many. Free has 4 of the 9, in smaller amounts; custom servers split the same 9 as Standard, in proportion to your configuration (up to Standard's amounts, which is the ceiling).</p>
 
-    <div class="episode-free">
-      <div class="episode-free-title" data-lang="es">🆓 Free</div>
-      <div class="episode-free-title" data-lang="en visible">🆓 Free</div>
-      <div class="episode-free-desc" data-lang="es">Entrada gratis · pool fijo de <strong>$35.000</strong> en 4 tipos de gema (hasta $10.000 c/u).</div>
-      <div class="episode-free-desc" data-lang="en visible">Free entry · fixed pool of <strong>$35,000</strong> across 4 gem types (up to $10,000 each).</div>
-    </div>
-    <div class="episode-free">
-      <div class="episode-free-title" data-lang="es">🎯 Estándar ($15)</div>
-      <div class="episode-free-title" data-lang="en visible">🎯 Standard ($15)</div>
-      <div class="episode-free-desc" data-lang="es">Entrada de <strong>$15</strong> por episodio · pool de <strong>$650.000</strong> repartido en las 9 gemas de la tabla de abajo.</div>
-      <div class="episode-free-desc" data-lang="en visible">Entry of <strong>$15</strong> per episode · pool of <strong>$650,000</strong> spread across the 9 gems in the table below.</div>
-    </div>
-    <div class="episode-free">
-      <div class="episode-free-title" data-lang="es">⚙️ A medida (desde $0,10)</div>
-      <div class="episode-free-title" data-lang="en visible">⚙️ Custom (from $0.10)</div>
-      <div class="episode-free-desc" data-lang="es">Vos elegís cuántos jugadores entran y cuánto cuesta la entrada — el pool de premios escala automáticamente según lo que recauda ese server.</div>
-      <div class="episode-free-desc" data-lang="en visible">You choose the player count and entry price — the prize pool scales automatically based on what that server raises.</div>
-    </div>
-
-    <p class="desc" data-lang="es" style="margin-top:16px;">La tabla siguiente muestra el reparto del server estándar (la configuración de referencia, $650.000). El Free usa 4 de estas 9 gemas a su propia escala; los servers a medida reparten las mismas 9 en proporción a su pool.</p>
-    <p class="desc" data-lang="en visible" style="margin-top:16px;">The table below shows the standard server's breakdown (the reference configuration, $650,000). Free uses 4 of these 9 gems at its own scale; custom servers split the same 9 in proportion to their pool.</p>
-
+    <div class="gems-table-wrap">
     <table class="gems-table">
       <thead>
         <tr>
           <th><span data-lang-inline="es">Gema</span><span data-lang-inline="en visible">Gem</span></th>
           <th><span data-lang-inline="es">Premio</span><span data-lang-inline="en visible">Prize</span></th>
-          <th><span data-lang-inline="es">Cant. / cubo</span><span data-lang-inline="en visible">Qty / cube</span></th>
+          <th><span data-lang-inline="es">Estándar</span><span data-lang-inline="en visible">Standard</span></th>
+          <th><span data-lang-inline="es">Free</span><span data-lang-inline="en visible">Free</span></th>
         </tr>
       </thead>
       <tbody>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_1.png" alt=""><span data-lang-inline="es">Diamante rojo</span><span data-lang-inline="en visible">Red Diamond</span></td>          <td class="gem-prize">$100,000</td><td class="gem-qty">×1</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_2.png" alt=""><span data-lang-inline="es">Painita</span><span data-lang-inline="en visible">Painite</span></td>                          <td class="gem-prize">$50,000</td> <td class="gem-qty">×1</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_3.png" alt=""><span data-lang-inline="es">Musgravita</span><span data-lang-inline="en visible">Musgravite</span></td>                    <td class="gem-prize">$10,000</td> <td class="gem-qty">×5</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_4.png" alt=""><span data-lang-inline="es">Jadeíta imperial</span><span data-lang-inline="en visible">Imperial Jadeite</span></td>        <td class="gem-prize">$1,000</td>  <td class="gem-qty">×50</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_5.png" alt=""><span data-lang-inline="es">Alejandrita</span><span data-lang-inline="en visible">Alexandrite</span></td>                  <td class="gem-prize">$500</td>    <td class="gem-qty">×100</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_6.png" alt=""><span data-lang-inline="es">Rubí sangre de paloma</span><span data-lang-inline="en visible">Pigeon Blood Ruby</span></td>  <td class="gem-prize">$100</td>    <td class="gem-qty">×500</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_7.png" alt=""><span data-lang-inline="es">Diamante azul</span><span data-lang-inline="en visible">Blue Diamond</span></td>               <td class="gem-prize">$50</td>     <td class="gem-qty">×1,000</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_8.png" alt=""><span data-lang-inline="es">Diamante rosa</span><span data-lang-inline="en visible">Pink Diamond</span></td>               <td class="gem-prize">$25</td>     <td class="gem-qty">×4,000</td></tr>
-        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_9.png" alt=""><span data-lang-inline="es">Esmeralda colombiana</span><span data-lang-inline="en visible">Colombian Emerald</span></td>   <td class="gem-prize">$15</td>     <td class="gem-qty">×10,000</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_1.png" alt=""><span data-lang-inline="es">Diamante rojo</span><span data-lang-inline="en visible">Red Diamond</span></td>          <td class="gem-prize">$100,000</td><td class="gem-qty">×1</td><td class="gem-qty">—</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_2.png" alt=""><span data-lang-inline="es">Painita</span><span data-lang-inline="en visible">Painite</span></td>                          <td class="gem-prize">$50,000</td> <td class="gem-qty">×1</td><td class="gem-qty">—</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_3.png" alt=""><span data-lang-inline="es">Musgravita</span><span data-lang-inline="en visible">Musgravite</span></td>                    <td class="gem-prize">$10,000</td> <td class="gem-qty">×5</td><td class="gem-qty">×1</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_4.png" alt=""><span data-lang-inline="es">Jadeíta imperial</span><span data-lang-inline="en visible">Imperial Jadeite</span></td>        <td class="gem-prize">$1,000</td>  <td class="gem-qty">×50</td><td class="gem-qty">×5</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_5.png" alt=""><span data-lang-inline="es">Alejandrita</span><span data-lang-inline="en visible">Alexandrite</span></td>                  <td class="gem-prize">$500</td>    <td class="gem-qty">×100</td><td class="gem-qty">—</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_6.png" alt=""><span data-lang-inline="es">Rubí sangre de paloma</span><span data-lang-inline="en visible">Pigeon Blood Ruby</span></td>  <td class="gem-prize">$100</td>    <td class="gem-qty">×500</td><td class="gem-qty">—</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_7.png" alt=""><span data-lang-inline="es">Diamante azul</span><span data-lang-inline="en visible">Blue Diamond</span></td>               <td class="gem-prize">$50</td>     <td class="gem-qty">×1,000</td><td class="gem-qty">×100</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_8.png" alt=""><span data-lang-inline="es">Diamante rosa</span><span data-lang-inline="en visible">Pink Diamond</span></td>               <td class="gem-prize">$25</td>     <td class="gem-qty">×4,000</td><td class="gem-qty">—</td></tr>
+        <tr><td class="gem-name"><img class="gem-icon" src="gems/gem_9.png" alt=""><span data-lang-inline="es">Esmeralda colombiana</span><span data-lang-inline="en visible">Colombian Emerald</span></td>   <td class="gem-prize">$15</td>     <td class="gem-qty">×10,000</td><td class="gem-qty">×1,000</td></tr>
       </tbody>
+      <tfoot>
+        <tr class="gems-total-row">
+          <td><span data-lang-inline="es">Total</span><span data-lang-inline="en visible">Total</span></td>
+          <td></td>
+          <td class="gem-qty">$650,000</td>
+          <td class="gem-qty">$35,000</td>
+        </tr>
+      </tfoot>
     </table>
+    </div>
+    <p class="desc" data-lang="es" style="margin-top:10px;font-size:13px;color:#666;">⚙️ A medida: mismas 9 gemas que el Estándar, en cantidades proporcionales a la cantidad de jugadores y el precio de entrada que elijas.</p>
+    <p class="desc" data-lang="en visible" style="margin-top:10px;font-size:13px;color:#666;">⚙️ Custom: same 9 gems as Standard, in amounts proportional to the player count and entry price you choose.</p>
     <p class="gem-note" data-lang="es">
       ⛏️
-      Además, el cubo contiene <strong>283,241 picos</strong> que dan acceso a turnos de minería adicionales.
+      Además, el estándar contiene <strong>283,241 picos</strong> y el Free <strong>400,000</strong> — turnos extra de minería más allá de los diarios gratis.
     </p>
     <p class="gem-note" data-lang="en visible">
       ⛏️
-      The cube also contains <strong>283,241 picks</strong> that grant additional mining turns.
+      The standard also contains <strong>283,241 picks</strong> and Free <strong>400,000</strong> — extra mining turns beyond the free daily ones.
     </p>
   </section>
 
